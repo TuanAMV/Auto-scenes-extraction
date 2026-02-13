@@ -66,6 +66,13 @@ flowchart LR
 
 ![P模式主体逻辑](logic_explanation/P模式主体逻辑.png)
 
+### `logic_keywords.json` 的作用 🧩
+
+- 统一维护标签词库与中英映射（`PL标签`）。
+- 定义标签组合约束（`分配规则`），减少无效 prompt 组合。
+- 提供 Cloze 模式模板与可填词（`选词填空规则`）。
+- 作为缓存版本依据：文件变更后会触发关键词/Prompt 缓存重建。
+
 ### 快速开始 🚀
 
 1. 将模型和工具放到 `models/`。
@@ -112,6 +119,13 @@ search, and exports matched clips.
 - `logic_explanation/P模式流程图.md`
 - `logic_explanation/text_search执行逻辑.md`
 - `logic_explanation/视频向量化逻辑.md`
+
+### What `logic_keywords.json` Does 🧩
+
+- Central keyword dictionary and zh/en mapping (`PL标签`).
+- Category-combination constraints (`分配规则`) to avoid invalid prompt pairs.
+- Cloze templates and candidate tokens (`选词填空规则`).
+- Cache invalidation key: updates trigger keyword/prompt cache regeneration.
 
 ---
 
