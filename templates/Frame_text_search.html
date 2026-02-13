@@ -1,0 +1,2743 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>AI视频库语义搜索工具</title>
+    <style>
+        :root {
+            --bg-main: #f4f7f8;
+            --bg-soft: #ffffff;
+            --bg-strong: #0f2f36;
+            --text-main: #1b2730;
+            --text-muted: #5f7180;
+            --line: #d4dfe4;
+            --primary: #0f7c8a;
+            --primary-strong: #0a6370;
+            --success: #1f8f55;
+            --danger: #c54848;
+            --chip: #e6f2f4;
+            --shadow-sm: 0 4px 12px rgba(16, 36, 43, 0.08);
+            --shadow-md: 0 10px 28px rgba(16, 36, 43, 0.12);
+        }
+        body {
+            font-family: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+            max-width: 1280px;
+            margin: 28px auto;
+            background: radial-gradient(circle at 10% 0%, #ffffff 0%, #eef4f6 45%, #e6edf0 100%);
+            padding: 24px;
+            border-radius: 14px;
+            box-shadow: var(--shadow-md);
+            color: var(--text-main);
+        }
+        h1 { border-bottom: 2px solid var(--primary); padding-bottom: 12px; color: #123341; margin-top: 0; }
+        .container { display: flex; gap: 26px; }
+        .setup-panel {
+            flex: 0 0 356px;
+            width: 356px;
+            background: linear-gradient(180deg, #fbfdfe 0%, #f3f8fa 100%);
+            border: 1px solid var(--line);
+            border-radius: 12px;
+            padding: 16px;
+            box-shadow: var(--shadow-sm);
+        }
+        .results-panel {
+            flex: 1;
+            border-left: 1px solid var(--line);
+            padding-left: 24px;
+            display: none;
+            min-width: 0;
+        }
+        .form-group { margin-bottom: 20px; }
+        label { display: block; font-weight: 600; margin-bottom: 8px; color: #2a4451; }
+        input[type="text"], select, textarea {
+            width: 100%;
+            padding: 10px;
+            box-sizing: border-box;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: #fff;
+            color: var(--text-main);
+        }
+        #text_query { font-size: 1.1em; }
+        textarea { resize: vertical; min-height: 80px; }
+        .slider-group { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 15px; margin-bottom: 20px; }
+        .slider-info { font-size: 0.85em; color: var(--text-muted); margin-top: 5px; }
+        button {
+            width: 100%;
+            padding: 12px;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 1.02em;
+            cursor: pointer;
+            background-color: var(--primary);
+            transition: background-color 0.2s ease, transform 0.2s ease;
+        }
+        button:hover { background-color: var(--primary-strong); transform: translateY(-1px); }
+        button:disabled { background-color: #ccc; cursor: not-allowed; }
+        #loadMoreBtn { background-color: #415c67; margin-top: 20px; }
+        .status-box {
+            margin-top: 25px;
+            padding: 14px;
+            background-color: #ebf3f6;
+            border-radius: 8px;
+            text-align: center;
+            font-weight: 500;
+            min-height: 50px;
+            border: 1px solid #dbe8ed;
+        }
+        .search-actions { display: flex; gap: 10px; margin-bottom: 10px; }
+        .search-actions button { width: 50%; font-size: 1em; padding: 10px 12px; }
+        .search-actions .clear-cache-btn { background-color: var(--danger); }
+        .search-actions .clear-cache-btn:hover { background-color: #a93d3d; }
+        .status-box.status-inline { margin-top: 0; margin-bottom: 18px; min-height: 44px; text-align: left; }
+        .input-group { display: flex; align-items: center; }
+        .input-group textarea { flex-grow: 1; }
+        .browse-btn {
+            width: auto;
+            flex: 0 0 auto;
+            padding: 0 12px;
+            height: 40px;
+            margin-left: 10px;
+            border: 1px solid #b9ccd4;
+            background-color: #edf4f6;
+            border-radius: 8px;
+            cursor: pointer;
+            white-space: nowrap;
+            color: #2a4451;
+        }
+        .refresh-btn { width: auto; padding: 8px 12px; font-size: 0.9em; margin-left: 10px; }
+
+        .model-info { font-size: 0.85em; color: var(--text-muted); margin-top: 5px; padding: 8px; background: #f3f8fa; border-radius: 8px; border: 1px solid #d7e5ea; }
+        .model-info .type-badge { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 0.8em; margin-left: 5px; }
+        .model-info .type-siglip { background: #d4edda; color: #155724; }
+        .model-info .type-clip { background: #cce5ff; color: #004085; }
+        .model-info .type-chinese_clip { background: #fff3cd; color: #856404; }
+        .model-info .type-fgclip2 { background: #e2d9f3; color: #563d7c; }
+        .model-info .type-qwen_embed { background: #fce4ec; color: #880e4f; }
+        .model-info .type-auto { background: #e2e3e5; color: #383d41; }
+
+        #logitScaleInfo { margin-top: 5px; padding: 5px 8px; background: #e7f3ff; border-left: 3px solid var(--primary); font-size: 0.85em; border-radius: 4px; }
+        #thresholdGuidance { margin-top: 3px; font-size: 0.8em; color: var(--success); font-weight: 500; }
+
+        .results-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; flex-wrap: wrap; gap: 10px; }
+        .sort-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
+        .sort-btn { width: auto; padding: 8px 12px; font-size: 0.85em; background-color: #4f6671; border-radius: 999px; }
+        .sort-btn:hover { background-color: #3f545e; }
+        .sort-btn.active { background-color: var(--primary); }
+        
+        /* 导出功能样式 */
+        .export-controls { display: flex; gap: 10px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
+        .export-btn { width: auto; padding: 8px 16px; font-size: 0.9em; background-color: var(--success); }
+        .export-btn:hover { background-color: #157645; }
+        .export-btn:disabled { background-color: #ccc; cursor: not-allowed; }
+        .select-all-container { display: flex; align-items: center; gap: 5px; }
+        .select-all-container input[type="checkbox"] { width: 18px; height: 18px; cursor: pointer; }
+        .select-all-container label { cursor: pointer; font-weight: 500; }
+        .selected-count { color: #666; font-size: 0.9em; }
+        
+        /* 卡片选择复选框 */
+        .result-card .card-checkbox {
+            position: absolute; top: 8px; left: 8px; z-index: 20;
+            width: 20px; height: 20px; cursor: pointer;
+            accent-color: var(--success);
+        }
+        .result-card.selected { border: 2px solid var(--success); box-shadow: 0 0 0 2px rgba(31, 143, 85, 0.25); }
+        
+        /* 导出模式选择对话框 */
+        .export-modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.6); display: none; justify-content: center; align-items: center; z-index: 2000; }
+        .export-modal-content { background-color: #fff; padding: 18px; border-radius: 8px; width: min(92vw, 780px); max-width: 780px; max-height: 92vh; overflow-y: auto; box-shadow: 0 5px 15px rgba(0,0,0,0.3); }
+        .export-modal-header { border-bottom: 1px solid #eee; padding-bottom: 10px; margin-bottom: 14px; }
+        .export-modal-header h4 { margin: 0; font-size: 1.2em; }
+        .export-modal-body { margin-bottom: 14px; }
+        .export-option { display: flex; align-items: flex-start; padding: 12px; margin-bottom: 8px; border: 1px solid #ddd; border-radius: 6px; cursor: pointer; transition: all 0.2s; }
+        .export-option:hover { border-color: var(--primary); background-color: #f8f9fa; }
+        .export-option.selected { border-color: var(--success); background-color: #dff2e7; }
+        .export-option input[type="radio"] { margin-right: 12px; margin-top: 3px; width: 18px; height: 18px; }
+        .export-option-info { flex: 1; }
+        .export-option-title { font-weight: 600; margin-bottom: 5px; }
+        .export-option-desc { font-size: 0.85em; color: #666; }
+        .export-modal-footer { display: flex; justify-content: flex-end; gap: 10px; padding-top: 15px; border-top: 1px solid #eee; }
+        .export-modal-footer button { width: auto; padding: 10px 20px; }
+        .export-cancel-btn { background-color: #6c757d; }
+        .export-confirm-btn { background-color: var(--success); }
+        .export-progress { margin-top: 15px; display: none; }
+        .export-progress-bar { height: 20px; background: #e9ecef; border-radius: 4px; overflow: hidden; }
+        .export-progress-fill { height: 100%; background: var(--success); transition: width 0.3s; width: 0%; }
+        .export-progress-text { text-align: center; margin-top: 8px; font-size: 0.9em; color: #666; white-space: normal; word-break: break-all; line-height: 1.4; }
+        
+        /* 输出目录选择 */
+        .export-output-dir { margin-top: 10px; }
+        .export-output-dir label { display: block; font-weight: 500; margin-bottom: 5px; }
+        .export-output-dir .input-group { display: flex; gap: 8px; align-items: center; }
+        .export-output-dir input { flex: 1; min-width: 0; padding: 8px; border: 1px solid #ccc; border-radius: 4px; }
+        .export-output-dir .browse-btn { margin-left: 0; height: 30px; padding: 0 10px; font-size: 0.9em; }
+        #ffmpegParamsSection { margin-top: 12px !important; padding: 10px !important; }
+        #ffmpegParamsBody { margin-top: 8px; }
+        #ffmpegParamsBody > div:first-child { margin-bottom: 8px !important; }
+        .ffmpeg-grid-row { gap: 8px !important; margin-bottom: 8px !important; }
+        .ffmpeg-grid-row > div { min-width: 0; }
+        .export-modal-content input, .export-modal-content select { box-sizing: border-box; }
+        .ffmpeg-grid-row > div > label {
+            margin-bottom: 4px !important;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            line-height: 1.2;
+        }
+        .ffmpeg-grid-row select,
+        .ffmpeg-grid-row input[type="text"],
+        .ffmpeg-grid-row input[type="number"] {
+            width: 100% !important;
+            min-width: 0;
+            height: 30px;
+            box-sizing: border-box;
+            padding: 4px 8px !important;
+            border: 1px solid #bfd0d8;
+            border-radius: 8px;
+            font-size: 0.84em;
+        }
+        .ffmpeg-toggle-row {
+            display: flex;
+            gap: 16px;
+            align-items: center;
+            margin-bottom: 8px;
+            flex-wrap: wrap;
+        }
+        .ffmpeg-toggle-row label {
+            margin: 0 !important;
+            font-size: 0.86em !important;
+            display: inline-flex !important;
+            align-items: center;
+            gap: 6px;
+            white-space: nowrap;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        
+        #resultsGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 15px; margin-top: 20px; }
+        .result-card {
+            border: 1px solid #cedbe1;
+            border-radius: 10px;
+            background-color: #fff;
+            overflow: hidden;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s, border-color 0.2s;
+        }
+        .result-card:hover { transform: translateY(-2px); box-shadow: 0 8px 18px rgba(15, 50, 60, 0.14); border-color: #9ec0cb; }
+        .result-card .card-info { font-size: 0.8em; padding: 8px; margin: 0; word-wrap: break-word; }
+        .result-card .similarity { font-weight: bold; color: var(--success); }
+        .result-card .duration { color: #6c757d; font-size: 0.9em; }
+        .result-card .video-name { color: #333; font-weight: 500; display: block; margin: 4px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .result-card .time-info { color: #666; }
+        .result-card .sub-score { color: #6c757d; font-size: 0.75em; display: block; margin-top: 2px; }
+        .toggle-row { display: flex; align-items: center; gap: 8px; }
+        .inline-note { font-size: 0.85em; color: var(--text-muted); margin-top: 6px; }
+        @media (max-width: 980px) {
+            .ffmpeg-grid-row { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+        }
+        @media (max-width: 680px) {
+            .ffmpeg-grid-row { grid-template-columns: 1fr !important; }
+        }
+        @media (max-width: 860px) {
+            .search-actions { flex-direction: column; }
+            .search-actions button { width: 100%; }
+            body { margin: 0; border-radius: 0; max-width: none; padding: 14px; }
+            .container { flex-direction: column; }
+            .setup-panel { width: auto; flex: 1; }
+            .results-panel { border-left: none; padding-left: 0; }
+        }
+        .modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.6); display: none; justify-content: center; align-items: center; z-index: 3200; } 
+        .modal-content { background-color: #fff; padding: 20px; border-radius: 8px; width: 80%; max-width: 700px; height: 70%; max-height: 500px; box-shadow: 0 5px 15px rgba(0,0,0,0.3); display: flex; flex-direction: column; } 
+        .modal-header { border-bottom: 1px solid #eee; padding-bottom: 10px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; } 
+        .modal-header h4 { margin: 0; } 
+        .modal-close { border: none; background: none; font-size: 1.5em; cursor: pointer; } 
+        .modal-path-container { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; } 
+        .modal-path-input { flex-grow: 1; padding: 5px 10px; border: 1px solid #ccc; border-radius: 4px; } 
+        .modal-body { flex-grow: 1; overflow-y: auto; border: 1px solid #ccc; border-radius: 4px; padding: 10px; } 
+        .modal-footer { padding-top: 10px; margin-top: 10px; border-top: 1px solid #eee; text-align: right; } 
+        .file-list { list-style-type: none; padding: 0; margin: 0; } 
+        .file-list li { padding: 8px 10px; cursor: pointer; border-radius: 4px; display: flex; align-items: center; gap: 8px; } 
+        .file-list li:hover { background-color: #edf5f7; } 
+        .file-list .icon { width: 20px; text-align: center; }
+        
+        .no-models { padding: 15px; background: #fff3cd; border: 1px solid #ffc107; border-radius: 4px; color: #856404; margin-top: 10px; }
+        
+        /* 视频播放相关样式 */
+        .result-card { position: relative; }
+        .result-card .thumbnail-container { position: relative; width: 100%; height: 120px; }
+        .result-card .thumbnail-container img { width: 100%; height: 100%; object-fit: cover; background-color: #f0f0f0; }
+        .result-card .thumbnail-container video { width: 100%; height: 100%; object-fit: cover; background-color: #000; display: none; }
+        .result-card .play-btn {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            width: 40px; height: 40px; border-radius: 50%; background: rgba(0,0,0,0.6);
+            color: white; border: none; cursor: pointer; font-size: 16px;
+            display: flex; align-items: center; justify-content: center;
+            transition: background 0.2s, transform 0.2s;
+            z-index: 10;
+        }
+        .result-card .play-btn:hover { background: rgba(0,0,0,0.8); transform: translate(-50%, -50%) scale(1.1); }
+        .result-card .play-btn.loading { pointer-events: none; }
+        .result-card .play-btn.loading::after {
+            content: ''; width: 20px; height: 20px; border: 2px solid #fff;
+            border-top-color: transparent; border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .result-card.playing .thumbnail-container img { display: none; }
+        .result-card.playing .thumbnail-container video { display: block; }
+        .result-card.playing .play-btn { display: none; }
+        
+        /* 进度条样式 */
+        .result-card .progress-container {
+            position: absolute; bottom: 0; left: 0; right: 0;
+            height: 24px; background: rgba(0,0,0,0.7);
+            display: none; align-items: center; padding: 0 10px;
+            z-index: 15;
+        }
+        .result-card.playing .progress-container { display: flex; }
+        .result-card .progress-bar {
+            flex: 1; height: 24px; background: transparent;
+            cursor: pointer; position: relative;
+            display: flex; align-items: center;
+        }
+        .result-card .progress-track {
+            position: absolute; left: 0; right: 0; top: 50%;
+            transform: translateY(-50%);
+            height: 4px; background: rgba(255,255,255,0.4);
+            border-radius: 2px;
+        }
+        .result-card .progress-fill {
+            position: absolute; left: 0; top: 50%;
+            transform: translateY(-50%);
+            height: 4px; background: #17a2b8; border-radius: 2px;
+            width: 0%;
+        }
+        .result-card .progress-bar:hover .progress-track,
+        .result-card .progress-bar:hover .progress-fill { height: 6px; }
+        .result-card .progress-handle {
+            position: absolute; top: 50%; transform: translate(-50%, -50%);
+            width: 12px; height: 12px; background: #fff;
+            border-radius: 50%; box-shadow: 0 1px 4px rgba(0,0,0,0.5);
+            left: 0%; z-index: 5;
+        }
+        .result-card .time-display {
+            color: #fff; font-size: 10px; white-space: nowrap;
+            margin-left: 8px;
+        }
+        .result-card .candidate-mark {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            z-index: 22;
+            background: rgba(16, 73, 86, 0.9);
+            color: #fff;
+            font-size: 11px;
+            padding: 3px 8px;
+            border-radius: 999px;
+            line-height: 1.2;
+            max-width: 60%;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            display: none;
+        }
+        .candidate-prompt-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+            margin-top: 4px;
+        }
+        .candidate-prompt-chip {
+            background: var(--chip);
+            color: #1f4e5a;
+            border: 1px solid #c3d8de;
+            border-radius: 999px;
+            padding: 2px 8px;
+            font-size: 11px;
+            max-width: 150px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .candidate-toggle-btn {
+            position: fixed;
+            right: 14px;
+            top: 42%;
+            z-index: 2500;
+            width: auto;
+            min-width: 52px;
+            padding: 10px 12px;
+            border-radius: 10px 0 0 10px;
+            box-shadow: 0 8px 18px rgba(8, 44, 53, 0.25);
+            background: linear-gradient(180deg, #0f7c8a 0%, #0d6170 100%);
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.92em;
+        }
+        .candidate-toggle-badge {
+            min-width: 20px;
+            height: 20px;
+            border-radius: 999px;
+            background: #fff;
+            color: #0f6070;
+            font-weight: 700;
+            font-size: 0.82em;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0 6px;
+        }
+        .candidate-drawer-backdrop {
+            position: fixed;
+            inset: 0;
+            background: rgba(10, 27, 32, 0.35);
+            z-index: 2490;
+            display: none;
+        }
+        .candidate-drawer {
+            position: fixed;
+            top: 0;
+            right: -480px;
+            width: min(460px, 92vw);
+            height: 100vh;
+            background: #f7fbfc;
+            border-left: 1px solid #c7d9df;
+            box-shadow: -8px 0 20px rgba(8, 36, 42, 0.22);
+            z-index: 2501;
+            transition: right 0.25s ease;
+            display: flex;
+            flex-direction: column;
+        }
+        .candidate-drawer.open { right: 0; }
+        .candidate-drawer-backdrop.open { display: block; }
+        .candidate-header {
+            padding: 12px 14px;
+            border-bottom: 1px solid #d5e4e9;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 8px;
+            background: #ffffff;
+        }
+        .candidate-title {
+            margin: 0;
+            font-size: 1.02em;
+            color: #1a3f4a;
+        }
+        .candidate-summary {
+            color: #57707b;
+            font-size: 0.86em;
+            margin-top: 3px;
+        }
+        .candidate-header-actions {
+            display: flex;
+            gap: 8px;
+        }
+        .candidate-header-actions button {
+            width: auto;
+            padding: 7px 10px;
+            font-size: 0.84em;
+            border-radius: 6px;
+        }
+        .candidate-clear-btn { background: #b95f2b; }
+        .candidate-clear-btn:hover { background: #994d21; }
+        .candidate-close-btn { background: #546b75; }
+        .candidate-close-btn:hover { background: #455862; }
+        .candidate-grid {
+            flex: 1;
+            overflow: auto;
+            padding: 12px;
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 10px;
+            align-content: start;
+        }
+        .candidate-grid .result-card {
+            border-radius: 8px;
+        }
+        .candidate-grid .result-card .thumbnail-container {
+            height: 86px;
+        }
+        .candidate-grid .result-card .card-info {
+            font-size: 0.74em;
+            padding: 6px;
+        }
+        .candidate-grid .result-card .play-btn {
+            width: 32px;
+            height: 32px;
+            font-size: 13px;
+        }
+        .candidate-grid .result-card .card-checkbox {
+            width: 16px;
+            height: 16px;
+            top: 6px;
+            left: 6px;
+        }
+        .candidate-grid .candidate-remove-btn {
+            width: 20px;
+            height: 20px;
+            font-size: 13px;
+            top: 6px;
+            right: 6px;
+        }
+        .candidate-grid .result-card .progress-container {
+            height: 20px;
+            padding: 0 6px;
+        }
+        .candidate-grid .result-card .time-display {
+            font-size: 9px;
+            margin-left: 6px;
+        }
+        @media (max-width: 560px) {
+            .candidate-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+        .candidate-empty {
+            margin-top: 36px;
+            color: #6f8792;
+            text-align: center;
+            font-size: 0.92em;
+        }
+        .candidate-remove-btn {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            width: 24px;
+            height: 24px;
+            z-index: 25;
+            border: none;
+            border-radius: 50%;
+            padding: 0;
+            font-size: 15px;
+            line-height: 1;
+            background: rgba(197, 72, 72, 0.92);
+            color: #fff;
+            cursor: pointer;
+        }
+        .candidate-remove-btn:hover { background: #a93d3d; transform: none; }
+    </style>
+</head>
+<body>
+    <h1>🎬 AI视频库语义搜索工具</h1>
+    <div class="container">
+        <div class="setup-panel">
+            <form id="search-form">
+                <div class="search-actions">
+                    <button type="submit" id="searchBtn">🔍 开始语义搜索</button>
+                    <button type="button" id="clearCacheBtn" class="clear-cache-btn">🗑️ 清理缓存并释放显存</button>
+                </div>
+                <div id="status" class="status-box status-inline">等待任务...</div>
+                <div class="form-group">
+                    <label for="text_query">1. 输入您想搜索的画面描述</label>
+                    <input type="text" id="text_query" name="query" placeholder="例如：一个男人在雨中奔跑" required>
+                </div>
+                <div class="form-group">
+                    <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: nowrap;">
+                        <label for="index_select" style="margin-bottom: 0;">2. 选择索引库 (.pkl) <small style="color:#666;">(可多选)</small></label>
+                        <div style="display: flex; gap: 5px; flex-shrink: 0;">
+                            <button type="button" class="browse-btn refresh-btn" id="refreshIndexBtn" title="刷新索引列表">🔄</button>
+                            <button type="button" class="browse-btn refresh-btn" id="browseIndexBtn" title="浏览文件夹">📁</button>
+                        </div>
+                    </div>
+                    <select id="index_select" name="index_path" multiple size="4" required style="height: auto; min-height: 80px;">
+                        <option value="">正在加载索引列表...</option>
+                    </select>
+                    <div class="model-info" id="indexInfo">
+                        💡 索引将从 <code>indexes/</code> 文件夹自动加载，按住 Ctrl 可多选
+                    </div>
+                    <!-- 隐藏的输入框用于存储完整路径 -->
+                    <input type="hidden" id="index_full_path" value="">
+                </div>
+                <div class="form-group" style="display:none;">
+                    <label style="margin-bottom: 6px;">3. AI模型</label>
+                    <div class="inline-note">已启用自动检测（按索引文件自动选择，无需手动设置）</div>
+                    <button type="button" id="refreshModelsBtn" style="display:none;" aria-hidden="true">刷新</button>
+                    <select id="model_select" name="model_name" style="display:none;" aria-hidden="true" tabindex="-1">
+                        <option value="">auto</option>
+                    </select>
+                    <div class="model-info" id="modelInfo" style="display:none;"></div>
+                    <div id="logitScaleInfo" style="display: none;">
+                        📊 当前模型 logit_scale: <strong id="logitScaleValue">--</strong>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <div class="slider-group">
+                        <label for="similarity_threshold">3. 相似度阈值</label>
+                        <input type="range" id="similarity_threshold" name="threshold" min="5" max="80" step="1" value="12">
+                        <span id="similarity_val">12</span>
+                    </div>
+                    <div class="slider-info">
+                        💡 CLIP系模型使用 logit_scale 计算，Qwen3-VL 使用余弦相似度×100
+                        <div id="thresholdGuidance"></div>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>4. Reranker</label>
+                    <div class="toggle-row">
+                        <input type="checkbox" id="use_reranker">
+                        <span>启动Qwen3-VL Reranker</span>
+                    </div>
+                    <div class="slider-group" style="margin-top: 12px;">
+                        <label for="rerank_top_k">Rerank Top-K</label>
+                        <input type="number" id="rerank_top_k" min="5" max="300" step="5" value="50" style="max-width: 160px;">
+                        <span>items</span>
+                    </div>
+                    <div class="slider-group">
+                        <label for="rerank_weight">Rerank Weight</label>
+                        <input type="range" id="rerank_weight" min="0" max="1" step="0.05" value="0.6" style="max-width: 160px;">
+                        <span id="rerank_weight_val">0.60</span>
+                    </div>
+                    <div class="slider-group">
+                        <label for="rerank_batch_size">Rerank Batch</label>
+                        <input type="number" id="rerank_batch_size" min="1" max="16" step="1" value="4" style="max-width: 160px;">
+                        <span>batch</span>
+                    </div>
+                    <div class="slider-group">
+                        <label for="reranker_output_resolution">Rerank分辨率</label>
+                        <input type="number" id="reranker_output_resolution" min="64" max="2048" step="1" value="384" style="max-width: 160px;">
+                        <span>px</span>
+                    </div>
+                    <input type="hidden" id="rerank_model_path" value="models/Qwen3-VL-Reranker-2B">
+                    <div class="inline-note" id="rerankInfo">使用默认路径: models/Qwen3-VL-Reranker-2B</div>
+                </div>
+                <div class="form-group">
+                    <label>5. 去重</label>
+                    <div class="toggle-row">
+                        <input type="checkbox" id="use_dedup">
+                        <span>启用跨视频去重 (OP/ED优先 + 向量相似度)</span>
+                    </div>
+                    <div class="slider-group" style="margin-top: 12px;">
+                        <label for="dedup_threshold">去重阈值</label>
+                        <input type="range" id="dedup_threshold" min="0.85" max="1" step="0.01" value="0.95">
+                        <span id="dedup_threshold_val">0.95</span>
+                    </div>
+                    <div class="inline-note" id="dedupInfo">余弦相似度超过阈值的同PKL内视频将被去重，OP/ED视频优先保留</div>
+                </div>
+                <div class="form-group">
+                    <label>6. 预设管理</label>
+                    <div class="input-group" style="margin-bottom: 8px;">
+                        <input type="text" id="preset_name" placeholder="输入预设名称">
+                        <button type="button" class="browse-btn" id="savePresetBtn">💾 保存</button>
+                    </div>
+                    <div class="toggle-row" style="margin: 6px 0 10px 0;">
+                        <input type="checkbox" id="preset_set_default_on_save">
+                        <span>保存时设为默认预设</span>
+                    </div>
+                    <div class="input-group" style="margin-bottom: 8px;">
+                        <select id="preset_select">
+                            <option value="">-- 无 --</option>
+                        </select>
+                        <button type="button" class="browse-btn" id="loadPresetBtn">📂 加载</button>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                        <button type="button" class="browse-btn" id="setDefaultPresetBtn">⭐ 设为默认</button>
+                        <span class="inline-note" id="presetDefaultInfo">默认预设：未设置</span>
+                    </div>
+                </div>
+            </form>
+        </div>
+        <div class="results-panel" id="resultsPanel">
+            <div class="results-header">
+                <h3>"<span id="queryDisplay"></span>" 的搜索结果 (<span id="resultsCount">0</span>)</h3>
+                <div class="sort-buttons">
+                    <button class="sort-btn active" id="sortBySimilarity">🔍 相似度 ⬇️</button>
+                    <button class="sort-btn" id="sortByTime">⏰ 时间 ⬆️</button>
+                    <button class="sort-btn" id="sortByDuration">⏱️ 时长 ⬇️</button>
+                </div>
+            </div>
+            <div class="export-controls">
+                <div class="select-all-container">
+                    <input type="checkbox" id="selectAllCheckbox">
+                    <label for="selectAllCheckbox">全选</label>
+                </div>
+                <span class="selected-count" id="selectedCount">已选择: 0</span>
+                <button class="export-btn" id="exportBtn" disabled>📤 导出选中片段</button>
+            </div>
+            <hr>
+            <div id="resultsGrid"></div>
+            <button id="loadMoreBtn" style="display: none;">加载更多</button>
+        </div>
+    </div>
+    <button id="candidateToggleBtn" class="candidate-toggle-btn" type="button" title="展开候选片段">
+        候选
+        <span class="candidate-toggle-badge" id="candidateCountBadge">0</span>
+    </button>
+    <div id="candidateDrawerBackdrop" class="candidate-drawer-backdrop"></div>
+    <aside id="candidateDrawer" class="candidate-drawer" aria-hidden="true">
+        <div class="candidate-header">
+            <div>
+                <h4 class="candidate-title">候选片段</h4>
+                <div class="candidate-summary" id="candidateSummary">0 个候选片段</div>
+            </div>
+            <div class="candidate-header-actions">
+                <button type="button" id="candidateClearBtn" class="candidate-clear-btn">清空</button>
+                <button type="button" id="candidateCloseBtn" class="candidate-close-btn">关闭</button>
+            </div>
+        </div>
+        <div id="candidateGrid" class="candidate-grid"></div>
+    </aside>
+    
+    <!-- 导出模式选择对话框 -->
+    <div id="exportModal" class="export-modal-overlay">
+        <div class="export-modal-content">
+            <div class="export-modal-header">
+                <h4>📤 导出视频片段</h4>
+            </div>
+            <div class="export-modal-body">
+                <p style="margin-bottom: 15px;">选择导出模式：</p>
+                <label class="export-option" id="exportOptionCopy">
+                    <input type="radio" name="exportMode" value="copy" checked>
+                    <div class="export-option-info">
+                        <div class="export-option-title">⚡ Copy 模式（快速）</div>
+                        <div class="export-option-desc">直接复制视频流，速度极快，但可能存在几帧的偏移。适合快速预览或对精度要求不高的场景。</div>
+                    </div>
+                </label>
+                <label class="export-option" id="exportOptionPrecision">
+                    <input type="radio" name="exportMode" value="precision">
+                    <div class="export-option-info">
+                        <div class="export-option-title">🎯 精确切割模式</div>
+                        <div class="export-option-desc">先 Copy 再精确编码切割，解决帧偏移问题。速度较慢但帧精确，适合需要精确时间点的场景。</div>
+                    </div>
+                </label>
+                
+                <!-- 帧偏移参数设置 -->
+                <div class="export-frame-offset" style="margin-top: 15px; padding: 12px; background: #f8f9fa; border-radius: 6px; border: 1px solid #e9ecef;">
+                    <div style="font-weight: 600; margin-bottom: 10px; color: #495057;">⚙️ 帧偏移参数</div>
+                    <div style="display: flex; gap: 15px; align-items: flex-start;">
+                        <div style="width: 120px;">
+                            <label for="startFrameOffset" style="font-size: 0.85em; color: #666; display: block; margin-bottom: 5px;">起始帧偏移</label>
+                            <input type="number" id="startFrameOffset" value="-2" disabled style="width: 100%; padding: 6px; border: 1px solid #ccc; border-radius: 4px; opacity: 0.5; background-color: #f0f0f0;">
+                        </div>
+                        <div style="width: 120px;">
+                            <label for="endFrameOffset" style="font-size: 0.85em; color: #666; display: block; margin-bottom: 5px;">结束帧偏移</label>
+                            <input type="number" id="endFrameOffset" value="2" style="width: 100%; padding: 6px; border: 1px solid #ccc; border-radius: 4px;">
+                        </div>
+                    </div>
+                    <div style="font-size: 0.8em; color: #17a2b8; margin-top: 8px;">💡 Copy模式只使用结束帧偏移；精确模式使用两个偏移参数</div>
+                </div>
+                <!-- FFmpeg 编码参数 -->
+                <div id="ffmpegParamsSection" style="margin-top: 15px; padding: 12px; background: #f8f9fa; border-radius: 6px; border: 1px solid #e9ecef;">
+                    <div style="font-weight: 600; margin-bottom: 10px; color: #495057; display: flex; align-items: center; justify-content: space-between;">
+                        <span>🎬 FFmpeg 编码参数</span>
+                        <label style="font-size: 0.8em; font-weight: normal; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                            <input type="checkbox" id="ffmpegParamsToggle">
+                            <span>展开</span>
+                        </label>
+                    </div>
+                    <!-- 开关选项：保留音频、强力清理（不受折叠影响） -->
+                    <div class="ffmpeg-toggle-row" style="margin-bottom: 10px;">
+                        <label style="font-size: 0.85em; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                            <input type="checkbox" id="ffmpeg_copy_keep_audio">
+                            <span>保留音频</span>
+                        </label>
+                        <label style="font-size: 0.85em; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                            <input type="checkbox" id="ffmpeg_force_clean" checked>
+                            <span>启用强力清理</span>
+                        </label>
+                    </div>
+                    <div id="ffmpegParamsBody" style="display: none;">
+                        <!-- 第一行：编码器、硬件加速、Preset -->
+                        <div class="ffmpeg-grid-row" style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 10px;">
+                            <div>
+                                <label for="ffmpeg_video_codec" style="font-size: 0.85em; color: #666; display: block; margin-bottom: 5px;">视频编码</label>
+                                <select id="ffmpeg_video_codec" style="width: 100%; padding: 6px; border: 1px solid #ccc; border-radius: 4px; font-size: 0.85em;">
+                                    <optgroup label="H.264 / AVC">
+                                        <option value="libx264">libx264</option>
+                                        <option value="h264_nvenc">h264_nvenc</option>
+                                    </optgroup>
+                                    <optgroup label="H.265 / HEVC">
+                                        <option value="libx265">libx265</option>
+                                        <option value="hevc_nvenc">hevc_nvenc</option>
+                                    </optgroup>
+                                    <optgroup label="AV1">
+                                        <option value="libsvtav1">libsvtav1</option>
+                                        <option value="libaom-av1">libaom-av1</option>
+                                        <option value="av1_nvenc">av1_nvenc</option>
+                                    </optgroup>
+                                    <optgroup label="VP9 / VP8">
+                                        <option value="libvpx-vp9">libvpx-vp9</option>
+                                        <option value="libvpx">libvpx</option>
+                                    </optgroup>
+                                    <optgroup label="其他">
+                                        <option value="mpeg4">mpeg4</option>
+                                        <option value="mpeg2video">mpeg2video</option>
+                                        <option value="prores_ks">prores_ks</option>
+                                        <option value="dnxhd">dnxhd</option>
+                                        <option value="ffv1">ffv1</option>
+                                        <option value="huffyuv">huffyuv</option>
+                                    </optgroup>
+                                </select>
+                            </div>
+                            <div>
+                                <label for="ffmpeg_hwaccel" style="font-size: 0.85em; color: #666; display: block; margin-bottom: 5px;">硬件加速</label>
+                                <select id="ffmpeg_hwaccel" style="width: 100%; padding: 6px; border: 1px solid #ccc; border-radius: 4px; font-size: 0.85em;">
+                                    <option value="cuda">cuda（NVIDIA）</option>
+                                    <option value="none">none（CPU）</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label for="ffmpeg_preset" style="font-size: 0.85em; color: #666; display: block; margin-bottom: 5px;">Preset</label>
+                                <select id="ffmpeg_preset" style="width: 100%; padding: 6px; border: 1px solid #ccc; border-radius: 4px; font-size: 0.85em;">
+                                    <optgroup label="x264/x265 CPU">
+                                        <option value="ultrafast">ultrafast</option>
+                                        <option value="superfast">superfast</option>
+                                        <option value="veryfast">veryfast</option>
+                                        <option value="faster">faster</option>
+                                        <option value="fast">fast</option>
+                                        <option value="medium" selected>medium</option>
+                                        <option value="slow">slow</option>
+                                        <option value="slower">slower</option>
+                                        <option value="veryslow">veryslow</option>
+                                        <option value="placebo">placebo</option>
+                                    </optgroup>
+                                    <optgroup label="NVENC p1~p7">
+                                        <option value="p1">p1</option>
+                                        <option value="p2">p2</option>
+                                        <option value="p3">p3</option>
+                                        <option value="p4">p4</option>
+                                        <option value="p5">p5</option>
+                                        <option value="p6">p6</option>
+                                        <option value="p7">p7</option>
+                                    </optgroup>
+                                    <optgroup label="NVENC 旧预设">
+                                        <option value="hp">hp</option>
+                                        <option value="hq">hq</option>
+                                        <option value="bd">bd</option>
+                                        <option value="ll">ll</option>
+                                        <option value="llhp">llhp</option>
+                                        <option value="llhq">llhq</option>
+                                        <option value="lossless">lossless</option>
+                                        <option value="losslesshp">losslesshp</option>
+                                    </optgroup>
+                                    <optgroup label="SVT-AV1">
+                                        <option value="0">0</option>
+                                        <option value="2">2</option>
+                                        <option value="4">4</option>
+                                        <option value="6">6</option>
+                                        <option value="8">8</option>
+                                        <option value="10">10</option>
+                                        <option value="12">12</option>
+                                        <option value="13">13</option>
+                                    </optgroup>
+                                </select>
+                            </div>
+                        </div>
+                        <!-- 第二行：CRF、音频编码、音频码率 -->
+                        <div class="ffmpeg-grid-row" style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 10px;">
+                            <div>
+                                <label for="ffmpeg_crf" style="font-size: 0.85em; color: #666; display: block; margin-bottom: 5px;">CRF</label>
+                                <input type="number" id="ffmpeg_crf" value="18" min="0" max="51" style="width: 100%; padding: 6px; border: 1px solid #ccc; border-radius: 4px;">
+                            </div>
+                            <div>
+                                <label for="ffmpeg_audio_codec" style="font-size: 0.85em; color: #666; display: block; margin-bottom: 5px;">音频编码</label>
+                                <select id="ffmpeg_audio_codec" style="width: 100%; padding: 6px; border: 1px solid #ccc; border-radius: 4px; font-size: 0.85em;">
+                                    <optgroup label="AAC">
+                                        <option value="aac">aac</option>
+                                        <option value="libfdk_aac">libfdk_aac</option>
+                                    </optgroup>
+                                    <optgroup label="MP3">
+                                        <option value="libmp3lame">libmp3lame</option>
+                                        <option value="mp3">mp3</option>
+                                    </optgroup>
+                                    <optgroup label="Dolby / DTS">
+                                        <option value="ac3">ac3</option>
+                                        <option value="eac3">eac3</option>
+                                        <option value="truehd">truehd</option>
+                                        <option value="dts">dts</option>
+                                    </optgroup>
+                                    <optgroup label="Opus / Vorbis">
+                                        <option value="libopus">libopus</option>
+                                        <option value="opus">opus</option>
+                                        <option value="libvorbis">libvorbis</option>
+                                        <option value="vorbis">vorbis</option>
+                                    </optgroup>
+                                    <optgroup label="无损 / PCM">
+                                        <option value="flac">flac</option>
+                                        <option value="alac">alac</option>
+                                        <option value="pcm_s16le">pcm_s16le</option>
+                                        <option value="pcm_s24le">pcm_s24le</option>
+                                        <option value="pcm_s32le">pcm_s32le</option>
+                                        <option value="pcm_f32le">pcm_f32le</option>
+                                    </optgroup>
+                                    <optgroup label="其他">
+                                        <option value="wmav2">wmav2</option>
+                                    </optgroup>
+                                </select>
+                            </div>
+                            <div>
+                                <label for="ffmpeg_audio_bitrate" style="font-size: 0.85em; color: #666; display: block; margin-bottom: 5px;">音频码率</label>
+                                <input type="text" id="ffmpeg_audio_bitrate" value="192k" list="ffmpeg_audio_bitrate_list" style="width: 100%; padding: 6px; border: 1px solid #ccc; border-radius: 4px;">
+                                <datalist id="ffmpeg_audio_bitrate_list">
+                                    <option value="32k"></option>
+                                    <option value="48k"></option>
+                                    <option value="64k"></option>
+                                    <option value="96k"></option>
+                                    <option value="128k"></option>
+                                    <option value="160k"></option>
+                                    <option value="192k"></option>
+                                    <option value="224k"></option>
+                                    <option value="256k"></option>
+                                    <option value="320k"></option>
+                                    <option value="384k"></option>
+                                    <option value="448k"></option>
+                                    <option value="512k"></option>
+                                </datalist>
+                            </div>
+                        </div>
+                        <!-- 第三行：像素格式、movflags、GPU设备 -->
+                        <div class="ffmpeg-grid-row" style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 10px;">
+                            <div>
+                                <label for="ffmpeg_pixel_format" style="font-size: 0.85em; color: #666; display: block; margin-bottom: 5px;">像素格式</label>
+                                <input type="text" id="ffmpeg_pixel_format" value="yuv420p" list="ffmpeg_pixel_format_list" style="width: 100%; padding: 6px; border: 1px solid #ccc; border-radius: 4px;">
+                                <datalist id="ffmpeg_pixel_format_list">
+                                    <option value="yuv420p"></option>
+                                    <option value="yuv422p"></option>
+                                    <option value="yuv444p"></option>
+                                    <option value="yuv420p10le"></option>
+                                    <option value="yuv422p10le"></option>
+                                    <option value="yuv444p10le"></option>
+                                    <option value="p010le"></option>
+                                    <option value="nv12"></option>
+                                    <option value="nv21"></option>
+                                    <option value="yuvj420p"></option>
+                                    <option value="yuvj422p"></option>
+                                    <option value="yuvj444p"></option>
+                                    <option value="rgb24"></option>
+                                    <option value="bgr24"></option>
+                                    <option value="rgba"></option>
+                                    <option value="gray"></option>
+                                </datalist>
+                            </div>
+                            <div>
+                                <label for="ffmpeg_movflags" style="font-size: 0.85em; color: #666; display: block; margin-bottom: 5px;">movflags</label>
+                                <input type="text" id="ffmpeg_movflags" value="+faststart" list="ffmpeg_movflags_list" style="width: 100%; padding: 6px; border: 1px solid #ccc; border-radius: 4px;">
+                                <datalist id="ffmpeg_movflags_list">
+                                    <option value="+faststart"></option>
+                                    <option value="faststart"></option>
+                                    <option value="+frag_keyframe+empty_moov"></option>
+                                    <option value="+faststart+frag_keyframe+empty_moov"></option>
+                                    <option value="+frag_custom+dash"></option>
+                                    <option value="+delay_moov"></option>
+                                    <option value="+negative_cts_offsets"></option>
+                                    <option value="+faststart+negative_cts_offsets"></option>
+                                </datalist>
+                            </div>
+                            <div>
+                                <label for="ffmpeg_gpu_device" style="font-size: 0.85em; color: #666; display: block; margin-bottom: 5px;">GPU 设备</label>
+                                <input type="number" id="ffmpeg_gpu_device" value="0" min="0" max="7" style="width: 100%; padding: 6px; border: 1px solid #ccc; border-radius: 4px;">
+                            </div>
+                        </div>
+                        <!-- NVENC 高级参数 -->
+                        <div style="margin-top: 8px; padding: 8px; background: #eef; border-radius: 4px; border: 1px solid #dde;">
+                            <div style="font-size: 0.85em; font-weight: 600; margin-bottom: 8px; color: #495057;">NVENC 高级参数</div>
+                            <div class="ffmpeg-grid-row" style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 8px;">
+                                <div>
+                                    <label for="nvenc_rc_mode" style="font-size: 0.85em; color: #666; display: block; margin-bottom: 5px;">RC 模式</label>
+                                    <select id="nvenc_rc_mode" style="width: 100%; padding: 6px; border: 1px solid #ccc; border-radius: 4px; font-size: 0.85em;">
+                                        <option value="vbr" selected>vbr</option>
+                                        <option value="cbr">cbr</option>
+                                        <option value="constqp">constqp</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label for="nvenc_rc_lookahead" style="font-size: 0.85em; color: #666; display: block; margin-bottom: 5px;">RC Lookahead</label>
+                                    <input type="number" id="nvenc_rc_lookahead" value="20" min="0" max="64" style="width: 100%; padding: 6px; border: 1px solid #ccc; border-radius: 4px;">
+                                </div>
+                                <div>
+                                    <label style="font-size: 0.85em; color: #666; display: block; margin-bottom: 5px;">QMin / QMax 偏移</label>
+                                    <div style="display: flex; gap: 6px;">
+                                        <input type="number" id="nvenc_qmin_offset" value="0" min="-10" max="10" style="width: 50%; padding: 6px; border: 1px solid #ccc; border-radius: 4px;" title="QMin偏移">
+                                        <input type="number" id="nvenc_qmax_offset" value="2" min="-10" max="20" style="width: 50%; padding: 6px; border: 1px solid #ccc; border-radius: 4px;" title="QMax偏移">
+                                    </div>
+                                </div>
+                            </div>
+                            <div style="display: flex; gap: 15px;">
+                                <label style="font-size: 0.85em; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                                    <input type="checkbox" id="nvenc_spatial_aq" checked>
+                                    <span>Spatial AQ</span>
+                                </label>
+                                <label style="font-size: 0.85em; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                                    <input type="checkbox" id="nvenc_temporal_aq" checked>
+                                    <span>Temporal AQ</span>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="export-output-dir">
+                    <label for="exportOutputDir">输出目录：</label>
+                    <div class="input-group">
+                        <input type="text" id="exportOutputDir" placeholder="留空则使用默认目录 ({{ default_export_hint if default_export_hint else 'output/' }})">
+                        <button type="button" class="browse-btn" id="browseExportDirBtn">📁</button>
+                    </div>
+                </div>
+                <div class="export-progress" id="exportProgress">
+                    <div class="export-progress-bar">
+                        <div class="export-progress-fill" id="exportProgressFill"></div>
+                    </div>
+                    <div class="export-progress-text" id="exportProgressText">准备导出...</div>
+                </div>
+            </div>
+            <div class="export-modal-footer">
+                <button class="export-cancel-btn" id="exportCancelBtn">取消</button>
+                <button class="export-confirm-btn" id="exportConfirmBtn">开始导出</button>
+            </div>
+        </div>
+    </div>
+    
+    <div id="fileBrowserModal" class="modal-overlay">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h4 id="modalTitle">选择文件</h4>
+                <button id="closeModalBtn" class="modal-close">&times;</button>
+            </div>
+            <div class="modal-path-container">
+                <input type="text" id="modalPathInput" class="modal-path-input">
+                <button id="modalGoBtn" class="browse-btn" style="height: 30px; padding: 0 10px;">转到</button>
+            </div>
+            <div class="modal-body">
+                <ul id="fileList" class="file-list"></ul>
+            </div>
+            <div class="modal-footer">
+                <button id="selectCurrentFolderBtn" class="browse-btn" style="display:none;">选择当前文件夹</button>
+            </div>
+        </div>
+    </div>
+    <script id="defaultExportBrowsePathData" type="application/json">{{ (default_export_dir if default_export_dir else 'output/') | tojson }}</script>
+    <script>
+        const searchForm = document.getElementById('search-form');
+        const defaultExportBrowsePath = JSON.parse(document.getElementById('defaultExportBrowsePathData').textContent);
+        const statusDiv = document.getElementById('status');
+        const resultsPanel = document.getElementById('resultsPanel');
+        const resultsGrid = document.getElementById('resultsGrid');
+        const queryDisplay = document.getElementById('queryDisplay');
+        const resultsCountSpan = document.getElementById('resultsCount');
+        const loadMoreBtn = document.getElementById('loadMoreBtn');
+        const thresholdSlider = document.getElementById('similarity_threshold');
+        const thresholdValueSpan = document.getElementById('similarity_val');
+        const modelSelect = document.getElementById('model_select');
+        const modelInfo = document.getElementById('modelInfo');
+        const searchBtn = document.getElementById('searchBtn');
+        const indexSelect = document.getElementById('index_select');
+        const indexInfo = document.getElementById('indexInfo');
+        const indexFullPath = document.getElementById('index_full_path');
+        const useReranker = document.getElementById('use_reranker');
+        const rerankTopKInput = document.getElementById('rerank_top_k');
+        const rerankWeightInput = document.getElementById('rerank_weight');
+        const rerankWeightVal = document.getElementById('rerank_weight_val');
+        const rerankBatchInput = document.getElementById('rerank_batch_size');
+        const rerankOutputResolutionInput = document.getElementById('reranker_output_resolution');
+        const rerankInfo = document.getElementById('rerankInfo');
+        const clearCacheBtn = document.getElementById('clearCacheBtn');
+        const useDedup = document.getElementById('use_dedup');
+        const dedupThresholdInput = document.getElementById('dedup_threshold');
+        const dedupThresholdVal = document.getElementById('dedup_threshold_val');
+        const presetNameInput = document.getElementById('preset_name');
+        const presetSelect = document.getElementById('preset_select');
+        const savePresetBtn = document.getElementById('savePresetBtn');
+        const loadPresetBtn = document.getElementById('loadPresetBtn');
+        const setDefaultPresetBtn = document.getElementById('setDefaultPresetBtn');
+        const presetDefaultInfo = document.getElementById('presetDefaultInfo');
+        const presetSetDefaultOnSave = document.getElementById('preset_set_default_on_save');
+        // 去重阈值滑块事件
+        if (dedupThresholdInput && dedupThresholdVal) {
+            dedupThresholdVal.textContent = Number(dedupThresholdInput.value).toFixed(2);
+            dedupThresholdInput.addEventListener('input', () => {
+                dedupThresholdVal.textContent = Number(dedupThresholdInput.value).toFixed(2);
+            });
+        }
+        // 清理缓存按钮事件
+        if (clearCacheBtn) {
+            clearCacheBtn.addEventListener('click', async () => {
+                if (!confirm('确定要清理所有缓存并释放显存吗？\n这将清除预览图、视频片段和Rerank缓存。')) {
+                    return;
+                }
+                
+                clearCacheBtn.disabled = true;
+                clearCacheBtn.textContent = '🔄 正在清理...';
+                statusDiv.textContent = '正在清理缓存...';
+                
+                try {
+                    const response = await fetch('/clear_cache', { method: 'POST' });
+                    const data = await response.json();
+                    
+                    if (data.success) {
+                        statusDiv.textContent = `✅ ${data.message}`;
+                        // 清空当前显示的结果（因为视频片段缓存已清理）
+                        resultsGrid.innerHTML = '';
+                        resultsPanel.style.display = 'none';
+                        allMatches = [];
+                        currentlyDisplayedCount = 0;
+                        updateSelectionUI();
+                    } else {
+                        statusDiv.textContent = `❌ 清理失败: ${data.error}`;
+                    }
+                } catch (error) {
+                    statusDiv.textContent = `❌ 清理失败: ${error.message}`;
+                } finally {
+                    clearCacheBtn.disabled = false;
+                    clearCacheBtn.textContent = '🗑️ 清理缓存并释放显存';
+                }
+            });
+        }
+        if (rerankWeightInput && rerankWeightVal) {
+            rerankWeightVal.textContent = Number(rerankWeightInput.value).toFixed(2);
+            rerankWeightInput.addEventListener('input', () => {
+                rerankWeightVal.textContent = Number(rerankWeightInput.value).toFixed(2);
+            });
+        }
+        let allMatches = [];
+        let currentlyDisplayedCount = 0;
+        const CHUNK_SIZE = 50;
+        let currentSortMode = 'similarity_desc';
+        let availableModels = [];
+        let availableIndexes = [];
+        let currentIndexDir = 'indexes/';  // 当前索引目录
+        let lockedSearchPrompt = '';  // 最近一次成功搜索的 prompt（勾选时使用）
+        let currentlyPlayingCard = null;  // 当前正在播放的卡片
+        let selectedCards = new Set();  // 选中的卡片唯一ID (video_path|start_frame|end_frame)
+        function getSelectedIndexPaths() {
+            return Array.from(indexSelect.selectedOptions).map(opt => opt.value).filter(v => v);
+        }
+        function setToggleVisualState(element, enabled) {
+            if (!element) return;
+            element.disabled = !enabled;
+            element.style.opacity = enabled ? '' : '0.6';
+        }
+        function updateCopyAudioConflictControls(isCopyMode) {
+            const copyKeepAudioEl = document.getElementById('ffmpeg_copy_keep_audio');
+            const forceCleanEl = document.getElementById('ffmpeg_force_clean');
+            if (!copyKeepAudioEl || !forceCleanEl) return;
+            if (!isCopyMode) {
+                setToggleVisualState(copyKeepAudioEl, false);
+                setToggleVisualState(forceCleanEl, true);
+                return;
+            }
+            if (copyKeepAudioEl.checked && forceCleanEl.checked) {
+                copyKeepAudioEl.checked = false;
+            }
+            if (forceCleanEl.checked) {
+                setToggleVisualState(forceCleanEl, true);
+                setToggleVisualState(copyKeepAudioEl, false);
+                return;
+            }
+            if (copyKeepAudioEl.checked) {
+                setToggleVisualState(copyKeepAudioEl, true);
+                setToggleVisualState(forceCleanEl, false);
+                return;
+            }
+            setToggleVisualState(copyKeepAudioEl, true);
+            setToggleVisualState(forceCleanEl, true);
+        }
+        function isNvencCodec(codec) {
+            return String(codec || '').toLowerCase().includes('nvenc');
+        }
+        function updateHwaccelVideoCodecConstraint(isCopyMode) {
+            const hwaccelEl = document.getElementById('ffmpeg_hwaccel');
+            const videoCodecEl = document.getElementById('ffmpeg_video_codec');
+            if (!hwaccelEl || !videoCodecEl) return;
+            const cpuOnlyMode = hwaccelEl.value === 'none';
+            const codecOptions = Array.from(videoCodecEl.querySelectorAll('option'));
+            codecOptions.forEach(option => {
+                option.disabled = cpuOnlyMode ? isNvencCodec(option.value) : false;
+            });
+            if (!isCopyMode && videoCodecEl.value) {
+                if (isNvencCodec(videoCodecEl.value)) {
+                    videoCodecEl.dataset.lastGpuCodec = videoCodecEl.value;
+                } else {
+                    videoCodecEl.dataset.lastCpuCodec = videoCodecEl.value;
+                }
+            }
+            if (cpuOnlyMode && isNvencCodec(videoCodecEl.value)) {
+                const preferredCpuCodec = videoCodecEl.dataset.lastCpuCodec || 'libx265';
+                const preferredOption = videoCodecEl.querySelector(`option[value="${preferredCpuCodec}"]:not([disabled])`);
+                if (preferredOption) {
+                    videoCodecEl.value = preferredCpuCodec;
+                } else {
+                    const firstCpuOption = codecOptions.find(option => !option.disabled && !isNvencCodec(option.value));
+                    if (firstCpuOption) {
+                        videoCodecEl.value = firstCpuOption.value;
+                    }
+                }
+            }
+        }
+        function updateExportModeControls() {
+            const exportModeRadio = document.querySelector('input[name="exportMode"]:checked');
+            const exportMode = exportModeRadio ? exportModeRadio.value : 'precision';
+            const isCopyMode = exportMode === 'copy';
+            const videoCodecEl = document.getElementById('ffmpeg_video_codec');
+            const audioCodecEl = document.getElementById('ffmpeg_audio_codec');
+            const audioBitrateEl = document.getElementById('ffmpeg_audio_bitrate');
+            if (videoCodecEl) {
+                if (!videoCodecEl.value || !videoCodecEl.querySelector(`option[value="${videoCodecEl.value}"]`)) {
+                    const fallbackCodec = videoCodecEl.dataset.lastEncodeCodec || 'libx265';
+                    const fallbackOption = videoCodecEl.querySelector(`option[value="${fallbackCodec}"]`);
+                    videoCodecEl.value = fallbackOption ? fallbackCodec : 'libx265';
+                }
+                if (videoCodecEl.value) {
+                    videoCodecEl.dataset.lastEncodeCodec = videoCodecEl.value;
+                }
+            }
+            updateHwaccelVideoCodecConstraint(isCopyMode);
+            const encodingFieldIds = [
+                'ffmpeg_video_codec',
+                'ffmpeg_hwaccel',
+                'ffmpeg_gpu_device',
+                'ffmpeg_crf',
+                'ffmpeg_preset',
+                'ffmpeg_audio_codec',
+                'ffmpeg_audio_bitrate',
+                'ffmpeg_pixel_format',
+                'ffmpeg_movflags',
+                'nvenc_rc_mode',
+                'nvenc_rc_lookahead',
+                'nvenc_qmin_offset',
+                'nvenc_qmax_offset',
+                'nvenc_spatial_aq',
+                'nvenc_temporal_aq'
+            ];
+            encodingFieldIds.forEach(id => {
+                const el = document.getElementById(id);
+                if (!el) return;
+                el.disabled = isCopyMode;
+                el.style.opacity = isCopyMode ? '0.6' : '';
+                if (el.tagName === 'INPUT' || el.tagName === 'SELECT') {
+                    el.style.backgroundColor = isCopyMode ? '#f0f0f0' : '';
+                }
+            });
+            if (audioCodecEl) {
+                if (audioCodecEl.value) {
+                    audioCodecEl.dataset.lastEncodeAudioCodec = audioCodecEl.value;
+                }
+                audioCodecEl.disabled = isCopyMode;
+                audioCodecEl.style.opacity = isCopyMode ? '0.6' : '';
+                audioCodecEl.style.backgroundColor = isCopyMode ? '#f0f0f0' : '';
+            }
+            if (audioBitrateEl) {
+                audioBitrateEl.disabled = isCopyMode;
+                audioBitrateEl.style.opacity = isCopyMode ? '0.6' : '';
+                audioBitrateEl.style.backgroundColor = isCopyMode ? '#f0f0f0' : '';
+            }
+            updateCopyAudioConflictControls(isCopyMode);
+            // Copy模式禁用起始帧偏移
+            const startOffsetEl = document.getElementById('startFrameOffset');
+            if (startOffsetEl) {
+                startOffsetEl.disabled = isCopyMode;
+                startOffsetEl.style.opacity = isCopyMode ? '0.5' : '';
+                startOffsetEl.style.backgroundColor = isCopyMode ? '#f0f0f0' : '';
+            }
+            // Copy模式自动折叠FFmpeg参数框，精确切割模式自动展开
+            const ffmpegToggle = document.getElementById('ffmpegParamsToggle');
+            const ffmpegBody = document.getElementById('ffmpegParamsBody');
+            if (ffmpegToggle && ffmpegBody) {
+                ffmpegToggle.checked = !isCopyMode;
+                ffmpegBody.style.display = isCopyMode ? 'none' : 'block';
+            }
+        }
+        function collectFfmpegConfig() {
+            return {
+                video_output: {
+                    copy_mode: (document.querySelector('input[name="exportMode"]:checked')?.value || 'copy') === 'copy',
+                    video_codec: document.getElementById('ffmpeg_video_codec').value,
+                    hwaccel: document.getElementById('ffmpeg_hwaccel').value,
+                    gpu_device: parseInt(document.getElementById('ffmpeg_gpu_device').value) || 0,
+                    crf: parseInt(document.getElementById('ffmpeg_crf').value) || 18,
+                    preset: document.getElementById('ffmpeg_preset').value,
+                    audio_codec: document.getElementById('ffmpeg_copy_keep_audio').checked ? 'copy' : document.getElementById('ffmpeg_audio_codec').value,
+                    audio_bitrate: document.getElementById('ffmpeg_audio_bitrate').value,
+                    force_clean: document.getElementById('ffmpeg_force_clean').checked,
+                    pixel_format: document.getElementById('ffmpeg_pixel_format').value,
+                    movflags: document.getElementById('ffmpeg_movflags').value,
+                    nvenc: {
+                        rc_mode: document.getElementById('nvenc_rc_mode').value,
+                        spatial_aq: document.getElementById('nvenc_spatial_aq').checked,
+                        temporal_aq: document.getElementById('nvenc_temporal_aq').checked,
+                        rc_lookahead: parseInt(document.getElementById('nvenc_rc_lookahead').value) || 20,
+                        qmin_offset: parseInt(document.getElementById('nvenc_qmin_offset').value) || 0,
+                        qmax_offset: parseInt(document.getElementById('nvenc_qmax_offset').value) || 2
+                    }
+                }
+            };
+        }
+        async function saveFfmpegConfig() {
+            const payload = collectFfmpegConfig();
+            const response = await fetch('/save_ffmpeg_config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await response.json();
+            if (!response.ok || !data.success) {
+                throw new Error(data.message || data.error || '写入 FFmpeg 参数失败');
+            }
+        }
+        async function loadFfmpegConfig() {
+            try {
+                const response = await fetch('/load_ffmpeg_config');
+                const data = await response.json();
+                if (!data.success) return;
+                applyFfmpegConfig(data.video_output || {});
+            } catch (e) {
+                console.error('加载 FFmpeg 配置失败:', e);
+            }
+        }
+        function applyFfmpegConfig(vo) {
+            if (!vo || typeof vo !== 'object') return;
+            const setVal = (id, val) => { const el = document.getElementById(id); if (el && val !== undefined && val !== null) { if (el.type === 'checkbox') el.checked = Boolean(val); else el.value = String(val); } };
+            setVal('ffmpeg_video_codec', vo.video_codec);
+            setVal('ffmpeg_hwaccel', vo.hwaccel);
+            setVal('ffmpeg_gpu_device', vo.gpu_device);
+            setVal('ffmpeg_crf', vo.crf);
+            setVal('ffmpeg_preset', vo.preset);
+            if (vo.audio_codec === 'copy') {
+                setVal('ffmpeg_copy_keep_audio', true);
+            } else {
+                setVal('ffmpeg_copy_keep_audio', false);
+                setVal('ffmpeg_audio_codec', vo.audio_codec);
+            }
+            setVal('ffmpeg_audio_bitrate', vo.audio_bitrate);
+            setVal('ffmpeg_force_clean', vo.force_clean);
+            setVal('ffmpeg_pixel_format', vo.pixel_format);
+            setVal('ffmpeg_movflags', vo.movflags);
+            if (vo.copy_mode !== undefined) {
+                const radio = document.querySelector(`input[name="exportMode"][value="${vo.copy_mode ? 'copy' : 'precision'}"]`);
+                if (radio) {
+                    radio.checked = true;
+                    document.querySelectorAll('.export-option').forEach(o => o.classList.remove('selected'));
+                    const label = radio.closest('.export-option');
+                    if (label) label.classList.add('selected');
+                }
+            }
+            const nvenc = vo.nvenc || {};
+            setVal('nvenc_rc_mode', nvenc.rc_mode);
+            setVal('nvenc_spatial_aq', nvenc.spatial_aq);
+            setVal('nvenc_temporal_aq', nvenc.temporal_aq);
+            setVal('nvenc_rc_lookahead', nvenc.rc_lookahead);
+            setVal('nvenc_qmin_offset', nvenc.qmin_offset);
+            setVal('nvenc_qmax_offset', nvenc.qmax_offset);
+            updateExportModeControls();
+        }
+        function collectPresetData() {
+            const exportMode = document.querySelector('input[name="exportMode"]:checked')?.value || 'copy';
+            return {
+                text_query: document.getElementById('text_query').value || '',
+                current_index_dir: currentIndexDir || '',
+                selected_indices: getSelectedIndexPaths(),
+                threshold: parseFloat(thresholdSlider.value),
+                use_reranker: useReranker ? useReranker.checked : false,
+                rerank_top_k: rerankTopKInput ? parseInt(rerankTopKInput.value, 10) : 50,
+                rerank_weight: rerankWeightInput ? parseFloat(rerankWeightInput.value) : 0.6,
+                rerank_batch_size: rerankBatchInput ? parseInt(rerankBatchInput.value, 10) : 4,
+                reranker_output_resolution: rerankOutputResolutionInput ? rerankOutputResolutionInput.value : '384',
+                use_dedup: useDedup ? useDedup.checked : false,
+                dedup_threshold: dedupThresholdInput ? parseFloat(dedupThresholdInput.value) : 0.95,
+                export_mode: exportMode,
+                start_frame_offset: parseInt(document.getElementById('startFrameOffset').value, 10) || -2,
+                end_frame_offset: parseInt(document.getElementById('endFrameOffset').value, 10) || 2,
+                export_output_dir: exportOutputDirInput ? exportOutputDirInput.value : '',
+                ffmpeg_config: collectFfmpegConfig()
+            };
+        }
+        function applySelectedIndices(indexPaths) {
+            const selectedPaths = Array.isArray(indexPaths) ? indexPaths.filter(Boolean) : [];
+            Array.from(indexSelect.options).forEach(opt => { opt.selected = false; });
+            selectedPaths.forEach(path => {
+                let option = Array.from(indexSelect.options).find(opt => opt.value === path);
+                if (!option) {
+                    option = document.createElement('option');
+                    option.value = path;
+                    const fileName = path.split(/[/\\]/).pop() || path;
+                    option.textContent = `${fileName} (预设)`;
+                    indexSelect.appendChild(option);
+                }
+                option.selected = true;
+            });
+            indexFullPath.value = selectedPaths.join('\n');
+            if (selectedPaths.length > 0) {
+                autoSelectModelFromPkl(selectedPaths[0]);
+            }
+            indexSelect.dispatchEvent(new Event('change'));
+        }
+        async function applyPresetData(presetData) {
+            if (!presetData || typeof presetData !== 'object') return;
+            if (presetData.text_query !== undefined) {
+                document.getElementById('text_query').value = presetData.text_query ?? '';
+            }
+            const presetIndexDir = (presetData.current_index_dir || '').trim();
+            if (presetIndexDir) {
+                await loadIndexList(presetIndexDir);
+            }
+            if (Array.isArray(presetData.selected_indices)) {
+                applySelectedIndices(presetData.selected_indices);
+            }
+            if (presetData.threshold !== undefined && presetData.threshold !== null) {
+                thresholdSlider.value = String(presetData.threshold);
+                thresholdValueSpan.textContent = parseInt(thresholdSlider.value, 10);
+            }
+            if (useReranker && presetData.use_reranker !== undefined) {
+                useReranker.checked = Boolean(presetData.use_reranker);
+            }
+            if (rerankTopKInput && presetData.rerank_top_k !== undefined) {
+                rerankTopKInput.value = String(presetData.rerank_top_k);
+            }
+            if (rerankWeightInput && presetData.rerank_weight !== undefined) {
+                rerankWeightInput.value = String(presetData.rerank_weight);
+                rerankWeightVal.textContent = Number(rerankWeightInput.value).toFixed(2);
+            }
+            if (rerankBatchInput && presetData.rerank_batch_size !== undefined) {
+                rerankBatchInput.value = String(presetData.rerank_batch_size);
+            }
+            if (rerankOutputResolutionInput && presetData.reranker_output_resolution !== undefined) {
+                rerankOutputResolutionInput.value = String(presetData.reranker_output_resolution);
+            }
+            if (useDedup && presetData.use_dedup !== undefined) {
+                useDedup.checked = Boolean(presetData.use_dedup);
+            }
+            if (dedupThresholdInput && presetData.dedup_threshold !== undefined) {
+                dedupThresholdInput.value = String(presetData.dedup_threshold);
+                dedupThresholdVal.textContent = Number(dedupThresholdInput.value).toFixed(2);
+            }
+            if (presetData.export_mode) {
+                const exportModeRadio = document.querySelector(`input[name="exportMode"][value="${presetData.export_mode}"]`);
+                if (exportModeRadio) {
+                    exportModeRadio.checked = true;
+                    document.querySelectorAll('.export-option').forEach(o => o.classList.remove('selected'));
+                    const optionLabel = exportModeRadio.closest('.export-option');
+                    if (optionLabel) {
+                        optionLabel.classList.add('selected');
+                    }
+                }
+            }
+            if (presetData.start_frame_offset !== undefined) {
+                document.getElementById('startFrameOffset').value = String(presetData.start_frame_offset);
+            }
+            if (presetData.end_frame_offset !== undefined) {
+                document.getElementById('endFrameOffset').value = String(presetData.end_frame_offset);
+            }
+            if (exportOutputDirInput && presetData.export_output_dir !== undefined) {
+                exportOutputDirInput.value = String(presetData.export_output_dir ?? '');
+            }
+            // 恢复 FFmpeg 配置
+            if (presetData.ffmpeg_config && presetData.ffmpeg_config.video_output) {
+                applyFfmpegConfig(presetData.ffmpeg_config.video_output);
+            }
+            updateExportModeControls();
+        }
+        function updateDefaultPresetInfo(defaultPresetName) {
+            presetDefaultInfo.textContent = defaultPresetName
+                ? `默认预设：${defaultPresetName}`
+                : '默认预设：未设置';
+        }
+        function renderPresetOptions(presets, selectedName = '') {
+            presetSelect.innerHTML = '<option value="">-- 无 --</option>';
+            presets.forEach(name => {
+                const option = document.createElement('option');
+                option.value = name;
+                option.textContent = name;
+                presetSelect.appendChild(option);
+            });
+            if (selectedName && presets.includes(selectedName)) {
+                presetSelect.value = selectedName;
+            }
+            if (presetSelect.value) {
+                presetNameInput.value = presetSelect.value;
+            }
+        }
+        async function refreshPresetList(preferredName = '') {
+            const response = await fetch('/list_presets');
+            const data = await response.json();
+            if (!response.ok || !data.success) {
+                throw new Error(data.message || data.error || '读取预设列表失败');
+            }
+            renderPresetOptions(data.presets || [], preferredName || data.default_preset || '');
+            updateDefaultPresetInfo(data.default_preset);
+            return data;
+        }
+        async function loadPresetByName(name, silent = false) {
+            if (!name) {
+                throw new Error('请先选择预设');
+            }
+            const response = await fetch(`/load_preset?name=${encodeURIComponent(name)}`);
+            const data = await response.json();
+            if (!response.ok || !data.success) {
+                throw new Error(data.message || data.error || '加载预设失败');
+            }
+            await applyPresetData(data.data || {});
+            presetSelect.value = data.name || name;
+            presetNameInput.value = data.name || name;
+            if (!silent) {
+                statusDiv.textContent = `✅ 已加载预设: ${data.name || name}`;
+            }
+        }
+        async function savePreset() {
+            const presetName = (presetNameInput.value || presetSelect.value || '').trim();
+            if (!presetName) {
+                statusDiv.textContent = '❌ 请先输入预设名称';
+                return;
+            }
+            const payload = {
+                name: presetName,
+                data: collectPresetData(),
+                set_as_default: Boolean(presetSetDefaultOnSave && presetSetDefaultOnSave.checked)
+            };
+            const response = await fetch('/save_preset', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await response.json();
+            if (!response.ok || !data.success) {
+                throw new Error(data.message || data.error || '保存预设失败');
+            }
+            const savedName = data.name || presetName;
+            await refreshPresetList(savedName);
+            presetSelect.value = savedName;
+            presetNameInput.value = savedName;
+            if (payload.set_as_default) {
+                statusDiv.textContent = `✅ 预设已保存并设为默认: ${savedName}`;
+            } else {
+                statusDiv.textContent = `✅ 预设已保存: ${savedName}`;
+            }
+        }
+        async function loadSelectedPreset() {
+            const name = (presetSelect.value || '').trim();
+            await loadPresetByName(name);
+        }
+        async function setDefaultPreset() {
+            const name = (presetSelect.value || presetNameInput.value || '').trim();
+            if (!name) {
+                statusDiv.textContent = '❌ 请先选择或输入预设名称';
+                return;
+            }
+            const response = await fetch('/set_default_preset', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name })
+            });
+            const data = await response.json();
+            if (!response.ok || !data.success) {
+                throw new Error(data.message || data.error || '设置默认预设失败');
+            }
+            await refreshPresetList(data.default_preset || name);
+            presetSelect.value = data.default_preset || name;
+            presetNameInput.value = data.default_preset || name;
+            statusDiv.textContent = `✅ 默认预设已设置: ${data.default_preset || name}`;
+        }
+        async function initPresets() {
+            const data = await refreshPresetList();
+            if (data.default_preset) {
+                await loadPresetByName(data.default_preset, true);
+                statusDiv.textContent = `🧩 已加载默认预设: ${data.default_preset}`;
+            }
+        }
+        
+        // ============ 导出功能相关 ============
+        const selectAllCheckbox = document.getElementById('selectAllCheckbox');
+        const selectedCountSpan = document.getElementById('selectedCount');
+        const exportBtn = document.getElementById('exportBtn');
+        const exportModal = document.getElementById('exportModal');
+        const exportCancelBtn = document.getElementById('exportCancelBtn');
+        const exportConfirmBtn = document.getElementById('exportConfirmBtn');
+        const exportProgress = document.getElementById('exportProgress');
+        const exportProgressFill = document.getElementById('exportProgressFill');
+        const exportProgressText = document.getElementById('exportProgressText');
+        const exportOutputDirInput = document.getElementById('exportOutputDir');
+        const browseExportDirBtn = document.getElementById('browseExportDirBtn');
+        const candidateToggleBtn = document.getElementById('candidateToggleBtn');
+        const candidateCountBadge = document.getElementById('candidateCountBadge');
+        const candidateDrawer = document.getElementById('candidateDrawer');
+        const candidateDrawerBackdrop = document.getElementById('candidateDrawerBackdrop');
+        const candidateGrid = document.getElementById('candidateGrid');
+        const candidateSummary = document.getElementById('candidateSummary');
+        const candidateCloseBtn = document.getElementById('candidateCloseBtn');
+        const candidateClearBtn = document.getElementById('candidateClearBtn');
+        const candidateClips = new Map();  // clip_id -> { match, prompt_tags:Set, added_at, updated_at }
+
+        function getClipId(match) {
+            return `${match.video_path}|${match.start_frame}|${match.end_frame}`;
+        }
+
+        function escapeHtml(text) {
+            return String(text ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function escapeAttr(text) {
+            return escapeHtml(text).replace(/`/g, '&#96;');
+        }
+
+        function formatTime(seconds) {
+            if (isNaN(seconds) || !isFinite(seconds)) return '0:00';
+            const mins = Math.floor(seconds / 60);
+            const secs = Math.floor(seconds % 60);
+            return `${mins}:${secs.toString().padStart(2, '0')}`;
+        }
+
+        function normalizePromptTag(promptText) {
+            const cleaned = String(promptText || '').trim();
+            return cleaned || '空提示词';
+        }
+
+        function getCurrentPromptText() {
+            const locked = String(lockedSearchPrompt || '').trim();
+            if (locked) {
+                return locked;
+            }
+            const promptInput = document.getElementById('text_query');
+            return promptInput ? promptInput.value : '';
+        }
+
+        function getCandidatePromptList(clipId) {
+            const candidate = candidateClips.get(clipId);
+            return candidate ? Array.from(candidate.prompt_tags) : [];
+        }
+
+        function upsertCandidate(match, promptText) {
+            if (!match) return null;
+            const clipId = getClipId(match);
+            const now = Date.now();
+            const promptTag = normalizePromptTag(promptText);
+            let candidate = candidateClips.get(clipId);
+            if (!candidate) {
+                candidate = {
+                    clip_id: clipId,
+                    match: { ...match },
+                    prompt_tags: new Set(),
+                    added_at: now,
+                    updated_at: now
+                };
+                candidateClips.set(clipId, candidate);
+            } else {
+                const existingSimilarity = Number(candidate.match?.similarity ?? -Infinity);
+                const incomingSimilarity = Number(match.similarity ?? -Infinity);
+                candidate.match = incomingSimilarity >= existingSimilarity
+                    ? { ...candidate.match, ...match }
+                    : { ...match, ...candidate.match };
+                candidate.updated_at = now;
+            }
+            candidate.prompt_tags.add(promptTag);
+            selectedCards.add(clipId);
+            return clipId;
+        }
+
+        function removeCandidate(clipId) {
+            if (!clipId) return;
+            const selectorId = (window.CSS && typeof window.CSS.escape === 'function')
+                ? window.CSS.escape(clipId)
+                : clipId.replace(/(["\\])/g, '\\$1');
+            const cards = document.querySelectorAll(`.result-card[data-clip-id="${selectorId}"]`);
+            cards.forEach(card => {
+                const video = card.querySelector('video');
+                if (video) {
+                    video.pause();
+                }
+                if (currentlyPlayingCard === card) {
+                    currentlyPlayingCard = null;
+                }
+            });
+            selectedCards.delete(clipId);
+            candidateClips.delete(clipId);
+        }
+
+        function getCurrentResultsSelectedCount() {
+            let count = 0;
+            allMatches.forEach(match => {
+                if (selectedCards.has(getClipId(match))) {
+                    count += 1;
+                }
+            });
+            return count;
+        }
+
+        function updateSelectionUI() {
+            const totalCandidateCount = selectedCards.size;
+            selectedCountSpan.textContent = `已选择: ${totalCandidateCount}`;
+            exportBtn.disabled = totalCandidateCount === 0;
+
+            const currentSelectedCount = getCurrentResultsSelectedCount();
+            if (allMatches.length > 0) {
+                selectAllCheckbox.checked = currentSelectedCount > 0 && currentSelectedCount === allMatches.length;
+                selectAllCheckbox.indeterminate = currentSelectedCount > 0 && currentSelectedCount < allMatches.length;
+            } else {
+                selectAllCheckbox.checked = false;
+                selectAllCheckbox.indeterminate = false;
+            }
+
+            if (candidateCountBadge) {
+                candidateCountBadge.textContent = String(totalCandidateCount);
+            }
+            if (candidateSummary) {
+                candidateSummary.textContent = `${totalCandidateCount} 个候选片段`;
+            }
+        }
+
+        function refreshVisibleCardSelectionState() {
+            const allVisibleCards = document.querySelectorAll('.result-card');
+            allVisibleCards.forEach(card => {
+                const clipId = card.dataset.clipId;
+                const isSelected = selectedCards.has(clipId);
+                card.classList.toggle('selected', isSelected);
+                const checkbox = card.querySelector('.card-checkbox');
+                if (checkbox) {
+                    checkbox.checked = isSelected;
+                }
+                const candidateMark = card.querySelector('.candidate-mark');
+                if (candidateMark) {
+                    if (isSelected) {
+                        const promptList = getCandidatePromptList(clipId);
+                        candidateMark.textContent = promptList.length > 1 ? `候选×${promptList.length}` : '候选';
+                        candidateMark.style.display = '';
+                    } else {
+                        candidateMark.style.display = 'none';
+                    }
+                }
+            });
+        }
+
+        function closeCandidateDrawer() {
+            if (!candidateDrawer || !candidateDrawerBackdrop) return;
+            candidateDrawer.classList.remove('open');
+            candidateDrawer.setAttribute('aria-hidden', 'true');
+            candidateDrawerBackdrop.classList.remove('open');
+        }
+
+        function openCandidateDrawer() {
+            if (!candidateDrawer || !candidateDrawerBackdrop) return;
+            renderCandidateDrawer();
+            candidateDrawer.classList.add('open');
+            candidateDrawer.setAttribute('aria-hidden', 'false');
+            candidateDrawerBackdrop.classList.add('open');
+        }
+
+        function stopCurrentlyPlaying(exceptCard = null) {
+            if (!currentlyPlayingCard || currentlyPlayingCard === exceptCard) return;
+            const prevVideo = currentlyPlayingCard.querySelector('video');
+            const prevPlayBtn = currentlyPlayingCard.querySelector('.play-btn');
+            if (prevVideo) {
+                prevVideo.pause();
+            }
+            currentlyPlayingCard.classList.remove('playing');
+            if (prevPlayBtn) {
+                prevPlayBtn.style.display = '';
+                prevPlayBtn.classList.remove('loading');
+                prevPlayBtn.innerHTML = '▶';
+            }
+            currentlyPlayingCard = null;
+        }
+
+        function createResultCard(match, options = {}) {
+            const { isCandidateView = false } = options;
+            const clipId = getClipId(match);
+            const selected = selectedCards.has(clipId);
+            const promptList = getCandidatePromptList(clipId);
+            const midFrame = Math.floor((match.start_frame + match.end_frame) / 2);
+            const previewUrl = `/get_preview?video_path=${encodeURIComponent(match.video_path)}&frame=${midFrame}`;
+            const clipUrl = `/get_clip?video_path=${encodeURIComponent(match.video_path)}&start_frame=${match.start_frame}&end_frame=${match.end_frame}`;
+            const baseSimilarity = match.base_similarity;
+            const rerankScore = match.rerank_score;
+            const hasExtraScore = baseSimilarity !== undefined && rerankScore !== undefined;
+            const promptTagsHtml = promptList.length > 0
+                ? `<div class="candidate-prompt-list">${promptList.map(tag => `<span class="candidate-prompt-chip" title="${escapeAttr(tag)}">${escapeHtml(tag)}</span>`).join('')}</div>`
+                : '';
+
+            const card = document.createElement('div');
+            card.className = 'result-card';
+            card.dataset.clipId = clipId;
+            if (selected) {
+                card.classList.add('selected');
+            }
+
+            const similarityNum = Number(match.similarity ?? 0);
+            const extraScoreHtml = hasExtraScore
+                ? `<span class="sub-score">base ${Number(baseSimilarity).toFixed(1)} | rerank ${Number(rerankScore).toFixed(1)}</span>`
+                : '';
+            const candidateMarkText = promptList.length > 1 ? `候选×${promptList.length}` : '候选';
+
+            card.innerHTML = `
+                <input type="checkbox" class="card-checkbox" ${selected ? 'checked' : ''} title="选择此片段">
+                ${isCandidateView ? '<button class="candidate-remove-btn" type="button" title="从候选移除">×</button>' : ''}
+                <span class="candidate-mark" style="${selected && !isCandidateView ? '' : 'display:none;'}">${candidateMarkText}</span>
+                <div class="thumbnail-container">
+                    <img src="${previewUrl}" alt="视频帧预览" loading="lazy">
+                    <video loop muted playsinline></video>
+                    <button class="play-btn" title="播放预览">▶</button>
+                    <div class="progress-container">
+                        <div class="progress-bar">
+                            <div class="progress-track"></div>
+                            <div class="progress-fill"></div>
+                            <div class="progress-handle"></div>
+                        </div>
+                        <span class="time-display">0:00 / 0:00</span>
+                    </div>
+                </div>
+                <div class="card-info">
+                    <span class="similarity">相关度: ${similarityNum.toFixed(1)}</span>
+                    <span class="duration"> | ${match.duration_display}</span>
+                    <span class="video-name" title="${escapeAttr(match.video_path)}">${escapeHtml(match.video_name)}</span>
+                    <span class="time-info">⏰ ${escapeHtml(match.start)} → ${escapeHtml(match.end)}</span>
+                    ${extraScoreHtml}
+                    ${isCandidateView ? promptTagsHtml : ''}
+                </div>
+            `;
+
+            const cardCheckbox = card.querySelector('.card-checkbox');
+            if (cardCheckbox) {
+                cardCheckbox.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    if (cardCheckbox.checked) {
+                        upsertCandidate(match, getCurrentPromptText());
+                    } else {
+                        removeCandidate(clipId);
+                    }
+                    refreshVisibleCardSelectionState();
+                    renderCandidateDrawer();
+                    updateSelectionUI();
+                });
+            }
+
+            const removeBtn = card.querySelector('.candidate-remove-btn');
+            if (removeBtn) {
+                removeBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    removeCandidate(clipId);
+                    refreshVisibleCardSelectionState();
+                    renderCandidateDrawer();
+                    updateSelectionUI();
+                });
+            }
+
+            const playBtn = card.querySelector('.play-btn');
+            const video = card.querySelector('video');
+            const progressBar = card.querySelector('.progress-bar');
+            const progressFill = card.querySelector('.progress-fill');
+            const progressHandle = card.querySelector('.progress-handle');
+            const timeDisplay = card.querySelector('.time-display');
+            const thumbnailContainer = card.querySelector('.thumbnail-container');
+
+            function updateProgress() {
+                if (video.duration) {
+                    const percent = (video.currentTime / video.duration) * 100;
+                    progressFill.style.width = percent + '%';
+                    progressHandle.style.left = percent + '%';
+                    timeDisplay.textContent = `${formatTime(video.currentTime)} / ${formatTime(video.duration)}`;
+                }
+            }
+
+            if (playBtn) {
+                playBtn.addEventListener('click', async (e) => {
+                    e.stopPropagation();
+                    if (card.classList.contains('playing')) {
+                        video.pause();
+                        card.classList.remove('playing');
+                        playBtn.style.display = '';
+                        currentlyPlayingCard = null;
+                        return;
+                    }
+                    stopCurrentlyPlaying(card);
+                    playBtn.classList.add('loading');
+                    playBtn.innerHTML = '';
+                    try {
+                        if (!video.src) {
+                            video.src = clipUrl;
+                        }
+                        await video.play();
+                        card.classList.add('playing');
+                        playBtn.style.display = '';
+                        playBtn.classList.remove('loading');
+                        playBtn.innerHTML = '▶';
+                        currentlyPlayingCard = card;
+                    } catch (err) {
+                        playBtn.classList.remove('loading');
+                        playBtn.innerHTML = '▶';
+                        alert('视频加载失败: ' + err.message);
+                    }
+                });
+            }
+
+            if (thumbnailContainer) {
+                thumbnailContainer.addEventListener('click', (e) => {
+                    if (e.target.closest('.play-btn') || e.target.closest('.progress-bar') || e.target.closest('.candidate-remove-btn')) {
+                        return;
+                    }
+                    if (card.classList.contains('playing')) {
+                        if (!video.paused) {
+                            video.pause();
+                        } else {
+                            video.play();
+                        }
+                    }
+                });
+            }
+
+            if (video) {
+                video.addEventListener('timeupdate', updateProgress);
+                video.addEventListener('loadedmetadata', () => {
+                    timeDisplay.textContent = `0:00 / ${formatTime(video.duration)}`;
+                });
+            }
+
+            let cardIsDragging = false;
+            function seekToPosition(e) {
+                const rect = progressBar.getBoundingClientRect();
+                const percent = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+                if (video.duration && !isNaN(video.duration)) {
+                    video.currentTime = percent * video.duration;
+                    updateProgress();
+                }
+            }
+
+            if (progressBar) {
+                progressBar.addEventListener('mousedown', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    cardIsDragging = true;
+                    progressBar.classList.add('dragging');
+                    seekToPosition(e);
+                    const onMouseMove = (moveEvent) => {
+                        if (cardIsDragging) {
+                            seekToPosition(moveEvent);
+                        }
+                    };
+                    const onMouseUp = () => {
+                        cardIsDragging = false;
+                        progressBar.classList.remove('dragging');
+                        document.removeEventListener('mousemove', onMouseMove);
+                        document.removeEventListener('mouseup', onMouseUp);
+                    };
+                    document.addEventListener('mousemove', onMouseMove);
+                    document.addEventListener('mouseup', onMouseUp);
+                });
+                progressBar.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    seekToPosition(e);
+                });
+            }
+
+            const infoEl = card.querySelector('.card-info');
+            if (infoEl) {
+                infoEl.addEventListener('click', () => {
+                    const info = `${match.video_path}
+开始: ${match.start} (帧${match.start_frame})
+结束: ${match.end} (帧${match.end_frame})`;
+                    navigator.clipboard.writeText(info).then(() => {
+                        const bg = card.style.backgroundColor;
+                        card.style.backgroundColor = '#dff2e7';
+                        setTimeout(() => {
+                            card.style.backgroundColor = bg;
+                        }, 320);
+                    });
+                });
+            }
+
+            return card;
+        }
+
+        function renderCandidateDrawer() {
+            if (!candidateGrid) return;
+            candidateGrid.innerHTML = '';
+            const candidateList = Array.from(candidateClips.values()).sort((a, b) => b.updated_at - a.updated_at);
+            if (candidateList.length === 0) {
+                candidateGrid.innerHTML = '<div class="candidate-empty">暂无候选片段。勾选搜索结果后会自动加入这里。</div>';
+                return;
+            }
+            candidateList.forEach(candidate => {
+                candidateGrid.appendChild(createResultCard(candidate.match, { isCandidateView: true }));
+            });
+        }
+
+        if (selectAllCheckbox) {
+            selectAllCheckbox.addEventListener('change', () => {
+                if (selectAllCheckbox.checked) {
+                    allMatches.forEach(match => upsertCandidate(match, getCurrentPromptText()));
+                } else {
+                    allMatches.forEach(match => removeCandidate(getClipId(match)));
+                }
+                refreshVisibleCardSelectionState();
+                renderCandidateDrawer();
+                updateSelectionUI();
+            });
+        }
+
+        if (candidateToggleBtn) {
+            candidateToggleBtn.addEventListener('click', openCandidateDrawer);
+        }
+        if (candidateCloseBtn) {
+            candidateCloseBtn.addEventListener('click', closeCandidateDrawer);
+        }
+        if (candidateDrawerBackdrop) {
+            candidateDrawerBackdrop.addEventListener('click', closeCandidateDrawer);
+        }
+        if (candidateClearBtn) {
+            candidateClearBtn.addEventListener('click', () => {
+                if (candidateClips.size === 0) return;
+                if (!confirm('确认清空候选片段吗？')) return;
+                stopCurrentlyPlaying();
+                selectedCards.clear();
+                candidateClips.clear();
+                refreshVisibleCardSelectionState();
+                renderCandidateDrawer();
+                updateSelectionUI();
+            });
+        }
+
+        if (exportBtn) {
+            exportBtn.addEventListener('click', () => {
+                if (selectedCards.size === 0) {
+                    alert('请先选择要导出的视频片段');
+                    return;
+                }
+                exportModal.style.display = 'flex';
+                exportProgress.style.display = 'none';
+                exportConfirmBtn.disabled = false;
+                exportCancelBtn.disabled = false;
+            });
+        }
+
+        if (exportCancelBtn) {
+            exportCancelBtn.addEventListener('click', () => {
+                exportModal.style.display = 'none';
+            });
+        }
+
+        if (exportModal) {
+            exportModal.addEventListener('click', (e) => {
+                if (e.target === exportModal) {
+                    exportModal.style.display = 'none';
+                }
+            });
+        }
+
+        document.querySelectorAll('.export-option').forEach(option => {
+            option.addEventListener('click', () => {
+                document.querySelectorAll('.export-option').forEach(o => o.classList.remove('selected'));
+                option.classList.add('selected');
+                updateExportModeControls();
+            });
+        });
+        document.querySelectorAll('input[name="exportMode"]').forEach(radio => {
+            radio.addEventListener('change', updateExportModeControls);
+        });
+        ['ffmpeg_copy_keep_audio', 'ffmpeg_force_clean'].forEach(id => {
+            const element = document.getElementById(id);
+            if (element) {
+                element.addEventListener('change', updateExportModeControls);
+            }
+        });
+        const ffmpegVideoCodecEl = document.getElementById('ffmpeg_video_codec');
+        if (ffmpegVideoCodecEl) {
+            ffmpegVideoCodecEl.addEventListener('change', () => {
+                if (ffmpegVideoCodecEl.value) {
+                    ffmpegVideoCodecEl.dataset.lastEncodeCodec = ffmpegVideoCodecEl.value;
+                }
+            });
+        }
+        const ffmpegHwaccelEl = document.getElementById('ffmpeg_hwaccel');
+        if (ffmpegHwaccelEl) {
+            ffmpegHwaccelEl.addEventListener('change', updateExportModeControls);
+        }
+        const ffmpegAudioCodecEl = document.getElementById('ffmpeg_audio_codec');
+        if (ffmpegAudioCodecEl) {
+            ffmpegAudioCodecEl.addEventListener('change', () => {
+                if (ffmpegAudioCodecEl.value) {
+                    ffmpegAudioCodecEl.dataset.lastEncodeAudioCodec = ffmpegAudioCodecEl.value;
+                }
+            });
+        }
+        const defaultExportOption = document.querySelector('input[name="exportMode"]:checked')?.closest('.export-option');
+        if (defaultExportOption) {
+            defaultExportOption.classList.add('selected');
+        }
+        updateExportModeControls();
+
+        if (browseExportDirBtn) {
+            browseExportDirBtn.addEventListener('click', () => {
+                currentTargetInputId = 'exportOutputDir';
+                currentMode = 'folder';
+                modalTitle.textContent = '选择导出目录';
+                modal.style.display = 'flex';
+                fetchAndDisplayPath(exportOutputDirInput.value || defaultExportBrowsePath);
+            });
+        }
+
+        if (exportConfirmBtn) {
+            exportConfirmBtn.addEventListener('click', async () => {
+                const exportMode = document.querySelector('input[name="exportMode"]:checked').value;
+                const outputDir = exportOutputDirInput.value.trim() || '';
+                const startFrameOffsetInput = document.getElementById('startFrameOffset');
+                const endFrameOffsetInput = document.getElementById('endFrameOffset');
+                const startFrameOffset = parseInt(startFrameOffsetInput.value, 10) || -2;
+                const endFrameOffset = parseInt(endFrameOffsetInput.value, 10) || 2;
+
+                const selectedCandidates = Array.from(candidateClips.values())
+                    .filter(candidate => selectedCards.has(candidate.clip_id))
+                    .sort((a, b) => a.added_at - b.added_at);
+
+                if (selectedCandidates.length === 0) {
+                    alert('没有选中的片段');
+                    return;
+                }
+
+                const sanitizePromptFolderName = (name) => {
+                    const safe = String(name || '')
+                        .replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')
+                        .slice(0, 80)
+                        .trim()
+                        .replace(/^[_.\s]+|[_.\s]+$/g, '');
+                    return safe || 'export';
+                };
+                const fallbackPrompt = (() => {
+                    const currentPrompt = String(lockedSearchPrompt || '').trim();
+                    return currentPrompt || 'export';
+                })();
+                const promptGroups = new Map();  // prompt -> match[]
+                selectedCandidates.forEach(candidate => {
+                    const tags = Array.from(candidate.prompt_tags || [])
+                        .map(tag => String(tag || '').trim())
+                        .filter(tag => tag && tag !== '空提示词');
+                    // 一个片段只归属一个 prompt：使用它首次加入候选时的 prompt（tags[0]）
+                    const promptName = tags.length > 0 ? tags[0] : fallbackPrompt;
+                    if (!promptGroups.has(promptName)) {
+                        promptGroups.set(promptName, []);
+                    }
+                    promptGroups.get(promptName).push(candidate.match);
+                });
+                const promptGroupEntries = Array.from(promptGroups.entries());
+
+                exportProgress.style.display = 'block';
+                exportProgressFill.style.width = '0%';
+                exportProgressText.textContent = '正在写入 FFmpeg 参数...';
+                exportConfirmBtn.disabled = true;
+                exportCancelBtn.disabled = true;
+
+                try {
+                    await saveFfmpegConfig();
+                    let totalExportedCount = 0;
+                    let totalPlannedCount = 0;
+                    const exportedDirs = [];
+                    const failedPrompts = [];
+
+                    for (let i = 0; i < promptGroupEntries.length; i += 1) {
+                        const [promptName, groupMatches] = promptGroupEntries[i];
+                        totalPlannedCount += groupMatches.length;
+                        const safePromptFolder = sanitizePromptFolderName(promptName);
+                        const groupOutputDir = outputDir
+                            ? `${outputDir.replace(/[\\/]+$/g, '')}/${safePromptFolder}`
+                            : '';
+                        const progressBase = Math.round((i / promptGroupEntries.length) * 100);
+                        exportProgressFill.style.width = `${progressBase}%`;
+                        exportProgressText.textContent = `正在导出 prompt ${i + 1}/${promptGroupEntries.length}: ${promptName} (${groupMatches.length} 个片段)...`;
+
+                        const response = await fetch('/export_clips', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                clips: groupMatches,
+                                mode: exportMode,
+                                output_dir: groupOutputDir,
+                                start_frame_offset: startFrameOffset,
+                                end_frame_offset: endFrameOffset,
+                                prompt: promptName
+                            })
+                        });
+                        const data = await response.json();
+                        if (!response.ok || !data.success) {
+                            failedPrompts.push(promptName);
+                            continue;
+                        }
+
+                        totalExportedCount += Number(data.exported_count || 0);
+                        if (data.output_dir) {
+                            exportedDirs.push(data.output_dir);
+                        }
+                    }
+
+                    exportProgressFill.style.width = '100%';
+                    if (failedPrompts.length > 0) {
+                        exportProgressText.textContent = `⚠️ 部分导出失败。成功 ${totalExportedCount}/${totalPlannedCount}，失败 prompt: ${failedPrompts.join(', ')}`;
+                    } else {
+                        const dirText = exportedDirs.length > 0 ? exportedDirs.join(' | ') : '(默认目录)';
+                        exportProgressText.textContent = `✅ 导出完成！共 ${totalExportedCount} 个片段，按 ${promptGroupEntries.length} 个 prompt 分文件夹保存: ${dirText}`;
+                    }
+                    setTimeout(() => {
+                        exportModal.style.display = 'none';
+                    }, 3000);
+                } catch (error) {
+                    exportProgressText.textContent = `❌ 导出失败: ${error.message}`;
+                } finally {
+                    exportConfirmBtn.disabled = false;
+                    exportCancelBtn.disabled = false;
+                }
+            });
+        }
+
+        updateSelectionUI();
+        renderCandidateDrawer();
+
+        // ============ 从PKL文件名提取模型名 ============
+        /**
+         * 从PKL文件名中提取模型名
+         * 支持多种格式:
+         */
+        function extractModelNameFromPkl(pklPath) {
+            const filename = pklPath.split(/[/\\]/).pop();  // 获取文件名
+            const basename = filename.replace('.pkl', '');
+            
+            let remaining = basename;
+            
+            // 尝试匹配模式后缀: _Single, _Triplet, _TripletAvg, _SceneNative, _SceneNative3f, _Video, _SceneDetect
+            const modeMatch = basename.match(/_(Single|Triplet|TripletAvg|SceneNative3f|SceneNative|SceneDetect|Video)$/);
+            if (modeMatch) {
+                // 去掉模式后缀
+                remaining = basename.slice(0, -modeMatch[0].length);
+            }
+            
+            // 匹配可选的维度后缀: _d512, _d768等
+            const dimMatch = remaining.match(/_d\d+$/);
+            if (dimMatch) {
+                remaining = remaining.slice(0, -dimMatch[0].length);
+            }
+            
+            // 剩余部分: {source}_{model_name}
+            // 找到第一个下划线后的部分作为模型名
+            const firstUnderscore = remaining.indexOf('_');
+            if (firstUnderscore === -1) return null;
+            
+            return remaining.slice(firstUnderscore + 1);
+        }
+        
+        /**
+         * 根据提取的模型名自动选择下拉框中的模型
+         */
+        function autoSelectModelFromPkl(pklPath) {
+            const extractedModel = extractModelNameFromPkl(pklPath);
+            if (!extractedModel) {
+                console.log('[AutoSelect] 无法从PKL文件名提取模型名:', pklPath);
+                return false;
+            }
+            
+            console.log('[AutoSelect] 提取的模型名:', extractedModel);
+            
+            // 在可用模型中查找匹配项
+            for (let i = 0; i < modelSelect.options.length; i++) {
+                const option = modelSelect.options[i];
+                // 精确匹配或包含匹配（处理可能的名称差异）
+                if (option.value === extractedModel || 
+                    option.value.replace(/[-_]/g, '').toLowerCase() === extractedModel.replace(/[-_]/g, '').toLowerCase()) {
+                    modelSelect.selectedIndex = i;
+                    updateModelInfo();
+                    console.log('[AutoSelect] 自动选择模型:', option.value);
+                    return true;
+                }
+            }
+            
+            console.log('[AutoSelect] 未找到匹配的模型:', extractedModel);
+            return false;
+        }
+        // ============ 索引库加载 ============
+        async function loadIndexList(dirPath = null) {
+            if (dirPath) {
+                currentIndexDir = dirPath;
+            }
+            
+            indexSelect.innerHTML = '<option value="">正在加载...</option>';
+            indexSelect.disabled = true;
+            
+            try {
+                const response = await fetch(`/browse?path=${encodeURIComponent(currentIndexDir)}`);
+                const data = await response.json();
+                
+                if (!response.ok) {
+                    throw new Error(data.error || '加载失败');
+                }
+                
+                // 过滤出.pkl文件
+                const pklFiles = data.files.filter(f => f.toLowerCase().endsWith('.pkl'));
+                availableIndexes = pklFiles.map(filename => ({
+                    name: filename,
+                    path: data.current_path + (data.current_path.endsWith('\\') || data.current_path.endsWith('/') ? '' : '/') + filename
+                }));
+                
+                indexSelect.innerHTML = '';
+                
+                if (availableIndexes.length === 0) {
+                    indexSelect.innerHTML = '<option value="">未找到索引文件</option>';
+                    indexInfo.innerHTML = `
+                        <div class="no-models">
+                            ⚠️ 在 <code>${data.current_path}</code> 中未找到 .pkl 索引文件<br>
+                            请先创建索引或点击"浏览"选择其他文件夹
+                        </div>
+                    `;
+                    return;
+                }
+                
+                // 填充索引选项（只显示文件名）
+                availableIndexes.forEach((idx, i) => {
+                    const option = document.createElement('option');
+                    option.value = idx.path;  // 值是完整路径
+                    option.textContent = idx.name;  // 显示只是文件名
+                    if (i === 0) option.selected = true;
+                    indexSelect.appendChild(option);
+                });
+                
+                indexSelect.disabled = false;
+                indexInfo.innerHTML = `📁 索引目录: <code>${data.current_path}</code>`;
+                
+                // 自动选择第一个索引对应的模型
+                if (availableIndexes.length > 0) {
+                    const selected = autoSelectModelFromPkl(availableIndexes[0].path);
+                    if (selected) {
+                        statusDiv.textContent = `✅ 已根据索引文件自动选择模型`;
+                    }
+                }
+                
+                if (data.rerank_used && data.rerank_info) {
+                    statusDiv.textContent = `${baseStatus}(rerank ${data.rerank_info.reranked}/${data.rerank_info.candidates})`;
+                }
+            } catch (error) {
+                indexSelect.innerHTML = '<option value="">加载失败</option>';
+                indexInfo.innerHTML = `<span style="color: red;">❌ 错误: ${error.message}</span>`;
+            }
+        }
+        
+        // 索引选择变化时显示选中的索引信息
+        indexSelect.addEventListener('change', () => {
+            const selectedOptions = Array.from(indexSelect.selectedOptions);
+            const selectedPaths = selectedOptions.map(opt => opt.value).filter(v => v);
+            
+            if (selectedPaths.length > 0) {
+                // 提取所有选中索引的模型名
+                const modelNames = new Set();
+                selectedPaths.forEach(path => {
+                    const modelName = extractModelNameFromPkl(path);
+                    if (modelName) modelNames.add(modelName);
+                });
+                
+                if (modelNames.size === 1) {
+                    // 只有一个模型，自动选择
+                    const modelName = Array.from(modelNames)[0];
+                    autoSelectModelFromPkl(selectedPaths[0]);
+                    statusDiv.textContent = `✅ 已选择 ${selectedPaths.length} 个索引，模型: ${modelName}`;
+                    statusDiv.style.color = '';
+                } else if (modelNames.size > 1) {
+                    // 多个模型，显示警告
+                    statusDiv.textContent = `⚠️ 已选择 ${selectedPaths.length} 个索引，但包含 ${modelNames.size} 个不同模型！多索引搜索要求相同模型`;
+                    statusDiv.style.color = '#dc3545';
+                } else {
+                    statusDiv.textContent = `📋 已选择 ${selectedPaths.length} 个索引`;
+                    statusDiv.style.color = '';
+                }
+                
+                indexFullPath.value = selectedPaths.join('\n');
+            }
+        });
+        
+        // 刷新索引列表
+        document.getElementById('refreshIndexBtn').addEventListener('click', () => loadIndexList());
+        
+        // 浏览索引文件夹
+        document.getElementById('browseIndexBtn').addEventListener('click', () => {
+            currentTargetInputId = '_index_browse_';  // 特殊标识
+            currentMode = 'folder';
+            modalTitle.textContent = '选择索引文件夹';
+            modal.style.display = 'flex';
+            fetchAndDisplayPath(currentIndexDir);
+        });
+        // ============ 模型加载 ============
+        async function loadModelList() {
+            modelSelect.innerHTML = '<option value="">正在加载...</option>';
+            modelSelect.disabled = true;
+            searchBtn.disabled = true;
+            
+            try {
+                const response = await fetch('/list_models');
+                const data = await response.json();
+                
+                if (!data.success) {
+                    throw new Error(data.error || '加载失败');
+                }
+                
+                availableModels = data.models;
+                modelSelect.innerHTML = '';
+                
+                if (availableModels.length === 0) {
+                    modelSelect.innerHTML = '<option value="">未找到模型</option>';
+                    modelInfo.innerHTML = `
+                        <div class="no-models">
+                            ⚠️ 在 <code>${data.models_dir}</code> 中未找到模型<br>
+                            请将模型文件夹放入该目录
+                        </div>
+                    `;
+                    searchBtn.disabled = true;
+                    return;
+                }
+                
+                // 填充模型选项
+                availableModels.forEach((model, index) => {
+                    const option = document.createElement('option');
+                    option.value = model.name;
+                    option.textContent = model.name;
+                    option.dataset.type = model.type;
+                    if (index === 0) option.selected = true;
+                    modelSelect.appendChild(option);
+                });
+                
+                modelSelect.disabled = false;
+                searchBtn.disabled = false;
+                updateModelInfo();
+                
+            } catch (error) {
+                modelSelect.innerHTML = '<option value="">加载失败</option>';
+                modelInfo.innerHTML = `<span style="color: red;">❌ 错误: ${error.message}</span>`;
+                searchBtn.disabled = true;
+            }
+        }
+        
+        async function updateModelInfo() {
+            const selected = modelSelect.options[modelSelect.selectedIndex];
+            if (!selected || !selected.value) {
+                modelInfo.innerHTML = '💡 请选择一个模型';
+                document.getElementById('logitScaleInfo').style.display = 'none';
+                document.getElementById('thresholdGuidance').innerHTML = '';
+                return;
+            }
+            
+            const model = availableModels.find(m => m.name === selected.value);
+            if (model) {
+                const typeClass = `type-${model.type}`;
+                const typeLabel = model.type === 'qwen_embed' ? 'QWEN_EMBED' : model.type.toUpperCase();
+                if (useReranker && rerankInfo) {
+                    const isQwenEmbed = model.type === 'qwen_embed';
+                    useReranker.disabled = isQwenEmbed;
+                    if (isQwenEmbed) {
+                        useReranker.checked = false;
+                        rerankInfo.textContent = 'Reranker disabled for Qwen3-VL-Embedding indexes.';
+                    } else {
+                        rerankInfo.textContent = 'Default: models/Qwen3-VL-Reranker-2B';
+                    }
+                }
+                modelInfo.innerHTML = `
+                    📁 <code>${model.name}</code>
+                    <span class="type-badge ${typeClass}">${typeLabel}</span>
+                `;
+                
+                // ✅ 尝试获取模型的 logit_scale 信息
+                try {
+                    const response = await fetch('/get_model_info', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ model_name: selected.value })
+                    });
+                    
+                    if (response.ok) {
+                        const data = await response.json();
+                        if (data.success && data.logit_scale !== null) {
+                            document.getElementById('logitScaleValue').textContent = data.logit_scale;
+                            document.getElementById('logitScaleInfo').style.display = 'block';
+                            
+                            // 根据模型类型给出阈值建议
+                            const guidance = document.getElementById('thresholdGuidance');
+                            if (data.model_type === 'qwen_embed') {
+                                guidance.innerHTML = '🔮 Qwen3-VL-Embedding 模型，建议阈值: 30-60（余弦相似度×100）';
+                                // 自动调整阈值滑块范围和默认值
+                                thresholdSlider.min = 10;
+                                thresholdSlider.max = 80;
+                                if (parseFloat(thresholdSlider.value) > 60) {
+                                    thresholdSlider.value = 40;
+                                    thresholdValueSpan.textContent = '40';
+                                }
+                            } else {
+                                // CLIP系模型恢复默认范围
+                                thresholdSlider.min = 5;
+                                thresholdSlider.max = 80;
+                                const logitScale = data.logit_scale;
+                                if (logitScale >= 80) {
+                                    guidance.innerHTML = '✨ 高缩放模型 (logit_scale ≥ 80)，建议阈值: 25-40';
+                                } else if (logitScale >= 50) {
+                                    guidance.innerHTML = '📊 中等缩放模型 (logit_scale ≥ 50)，建议阈值: 20-35';
+                                } else {
+                                    guidance.innerHTML = '📉 低缩放模型 (logit_scale < 50)，建议阈值: 15-25';
+                                }
+                            }
+                        } else {
+                            document.getElementById('logitScaleInfo').style.display = 'none';
+                        }
+                    }
+                } catch (e) {
+                    console.warn('获取 logit_scale 信息失败:', e);
+                    document.getElementById('logitScaleInfo').style.display = 'none';
+                }
+            }
+        }
+        
+        modelSelect.addEventListener('change', updateModelInfo);
+        document.getElementById('refreshModelsBtn').addEventListener('click', loadModelList);
+        if (savePresetBtn) {
+            savePresetBtn.addEventListener('click', async () => {
+                try {
+                    await savePreset();
+                } catch (error) {
+                    statusDiv.textContent = `❌ 保存预设失败: ${error.message}`;
+                }
+            });
+        }
+        if (loadPresetBtn) {
+            loadPresetBtn.addEventListener('click', async () => {
+                try {
+                    await loadSelectedPreset();
+                } catch (error) {
+                    statusDiv.textContent = `❌ 加载预设失败: ${error.message}`;
+                }
+            });
+        }
+        if (setDefaultPresetBtn) {
+            setDefaultPresetBtn.addEventListener('click', async () => {
+                try {
+                    await setDefaultPreset();
+                } catch (error) {
+                    statusDiv.textContent = `❌ 设置默认预设失败: ${error.message}`;
+                }
+            });
+        }
+        if (presetSelect) {
+            presetSelect.addEventListener('change', () => {
+                if (presetSelect.value) {
+                    presetNameInput.value = presetSelect.value;
+                }
+            });
+        }
+        // ============ 排序功能 ============
+        function sortResults(mode) {
+            currentSortMode = mode;
+            
+            if (mode === 'similarity_desc') {
+                allMatches.sort((a, b) => b.similarity - a.similarity);
+            } else if (mode === 'similarity_asc') {
+                allMatches.sort((a, b) => a.similarity - b.similarity);
+            } else if (mode === 'time_asc') {
+                allMatches.sort((a, b) => {
+                    const cmp = a.video_path.localeCompare(b.video_path);
+                    return cmp !== 0 ? cmp : a.start_frame - b.start_frame;
+                });
+            } else if (mode === 'time_desc') {
+                allMatches.sort((a, b) => {
+                    const cmp = b.video_path.localeCompare(a.video_path);
+                    return cmp !== 0 ? cmp : b.start_frame - a.start_frame;
+                });
+            } else if (mode === 'duration_desc') {
+                allMatches.sort((a, b) => b.duration_seconds - a.duration_seconds);
+            } else if (mode === 'duration_asc') {
+                allMatches.sort((a, b) => a.duration_seconds - b.duration_seconds);
+            }
+            
+            currentlyDisplayedCount = 0;
+            resultsGrid.innerHTML = '';
+            renderNextChunk();
+            updateSortButtons();
+        }
+        
+        function updateSortButtons() {
+            const btns = { time: document.getElementById('sortByTime'), similarity: document.getElementById('sortBySimilarity'), duration: document.getElementById('sortByDuration') };
+            Object.values(btns).forEach(btn => btn.classList.remove('active'));
+            
+            if (currentSortMode.startsWith('time')) { btns.time.classList.add('active'); btns.time.textContent = `⏰ 时间 ${currentSortMode === 'time_asc' ? '⬆️' : '⬇️'}`; }
+            else if (currentSortMode.startsWith('similarity')) { btns.similarity.classList.add('active'); btns.similarity.textContent = `🔍 相似度 ${currentSortMode === 'similarity_desc' ? '⬇️' : '⬆️'}`; }
+            else if (currentSortMode.startsWith('duration')) { btns.duration.classList.add('active'); btns.duration.textContent = `⏱️ 时长 ${currentSortMode === 'duration_desc' ? '⬇️' : '⬆️'}`; }
+        }
+        document.getElementById('sortByTime').addEventListener('click', () => sortResults(currentSortMode === 'time_asc' ? 'time_desc' : 'time_asc'));
+        document.getElementById('sortBySimilarity').addEventListener('click', () => sortResults(currentSortMode === 'similarity_desc' ? 'similarity_asc' : 'similarity_desc'));
+        document.getElementById('sortByDuration').addEventListener('click', () => sortResults(currentSortMode === 'duration_desc' ? 'duration_asc' : 'duration_desc'));
+        thresholdSlider.addEventListener('input', e => { thresholdValueSpan.textContent = parseInt(e.target.value); });
+        // ============ 搜索 ============
+        searchForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            // 获取所有选中的索引
+            const selectedOptions = Array.from(indexSelect.selectedOptions);
+            const selectedIndices = selectedOptions.map(opt => opt.value).filter(v => v);
+            
+            if (selectedIndices.length === 0) {
+                statusDiv.textContent = '❌ 请先选择至少一个索引库';
+                return;
+            }
+            
+            statusDiv.textContent = `正在进行语义分析和搜索 (${selectedIndices.length} 个索引)...`;
+            resultsPanel.style.display = 'none';
+            resultsGrid.innerHTML = '';
+            
+            const requestData = {
+                query: document.getElementById('text_query').value,
+                indices: selectedIndices.join('\n'),  // 多个索引用换行分隔
+                threshold: parseFloat(thresholdSlider.value),
+                use_reranker: useReranker ? useReranker.checked : false,
+                rerank_top_k: rerankTopKInput ? parseInt(rerankTopKInput.value, 10) : 50,
+                rerank_weight: rerankWeightInput ? parseFloat(rerankWeightInput.value) : 0.6,
+                rerank_batch_size: rerankBatchInput ? parseInt(rerankBatchInput.value, 10) : 4,
+                reranker_output_resolution: rerankOutputResolutionInput ? rerankOutputResolutionInput.value : '384',
+                use_dedup: useDedup ? useDedup.checked : false,
+                dedup_threshold: dedupThresholdInput ? parseFloat(dedupThresholdInput.value) : 0.95
+            };
+            
+            try {
+                const response = await fetch('/search', { 
+                    method: 'POST', 
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(requestData) 
+                });
+                const data = await response.json();
+                if (!data.success) throw new Error(data.error);
+                
+                let baseStatus = `搜索完成！找到 ${data.matches.length} 个结果。`;
+                allMatches = data.matches;
+                currentlyDisplayedCount = 0;
+                currentSortMode = 'similarity_desc';
+                lockedSearchPrompt = String(requestData.query || '').trim();
+                
+                queryDisplay.textContent = requestData.query;
+                resultsCountSpan.textContent = allMatches.length;
+                resultsPanel.style.display = 'block';
+                updateSortButtons();
+                renderNextChunk();
+                
+                if (data.rerank_used && data.rerank_info) {
+                    baseStatus = `搜索完成！找到 ${data.matches.length} 个结果。(rerank ${data.rerank_info.reranked}/${data.rerank_info.total})`;
+                }
+                if (data.dedup_info) {
+                    baseStatus += ` (去重: ${data.dedup_info.before} → ${data.dedup_info.after})`;
+                }
+                statusDiv.textContent = baseStatus;
+            } catch (error) {
+                statusDiv.textContent = `错误: ${error.message}`;
+            }
+        });
+        loadMoreBtn.addEventListener('click', renderNextChunk);
+        
+        function renderNextChunk() {
+            const start = currentlyDisplayedCount;
+            const end = Math.min(start + CHUNK_SIZE, allMatches.length);
+            const chunk = allMatches.slice(start, end);
+            chunk.forEach((match) => {
+                resultsGrid.appendChild(createResultCard(match, { isCandidateView: false }));
+            });
+            currentlyDisplayedCount = end;
+            const remaining = allMatches.length - currentlyDisplayedCount;
+            loadMoreBtn.textContent = `加载更多 (${Math.min(CHUNK_SIZE, remaining)})`;
+            loadMoreBtn.style.display = currentlyDisplayedCount >= allMatches.length ? 'none' : 'block';
+            refreshVisibleCardSelectionState();
+            updateSelectionUI();
+        }
+        // ============ 文件浏览器 ============
+        const modal = document.getElementById('fileBrowserModal');
+        const closeModalBtn = document.getElementById('closeModalBtn');
+        const fileList = document.getElementById('fileList');
+        const modalPathInput = document.getElementById('modalPathInput');
+        const modalGoBtn = document.getElementById('modalGoBtn');
+        const selectCurrentFolderBtn = document.getElementById('selectCurrentFolderBtn');
+        const modalTitle = document.getElementById('modalTitle');
+        let currentTargetInputId = null;
+        let currentMode = 'file';
+        const fileFilters = { pkl: ['.pkl'] };
+        function hideModal() { modal.style.display = 'none'; }
+        function selectItem(path) {
+            if (!currentTargetInputId) return;
+            
+            // ✅ 特殊处理：索引文件夹选择
+            if (currentTargetInputId === '_index_browse_') {
+                // 选择文件夹作为索引目录
+                loadIndexList(path);
+                hideModal();
+                return;
+            }
+            
+            const el = document.getElementById(currentTargetInputId);
+            if (!el) {
+                hideModal();
+                return;
+            }
+            
+            if (el.tagName.toLowerCase() === 'textarea') {
+                el.value += (el.value ? '\n' : '') + path;
+            } else {
+                el.value = path;
+            }
+            
+            hideModal();
+        }
+        async function fetchAndDisplayPath(path = '') {
+            fileList.innerHTML = '<li>正在加载...</li>';
+            try {
+                const res = await fetch(`/browse?path=${encodeURIComponent(path)}`);
+                const data = await res.json();
+                if (!res.ok) { fileList.innerHTML = `<li style="color: red;">错误: ${data.error}</li>`; return; }
+                
+                modalPathInput.value = data.current_path;
+                fileList.innerHTML = '';
+                if (data.parent_path) {
+                    const li = document.createElement('li');
+                    li.innerHTML = `<span class="icon">⬆️</span> .. (父文件夹)`;
+                    li.onclick = () => fetchAndDisplayPath(data.parent_path);
+                    fileList.appendChild(li);
+                }
+                data.dirs.forEach(dir => {
+                    const fullPath = data.current_path + (data.current_path.endsWith('\\') || data.current_path.endsWith('/') ? '' : '\\') + dir;
+                    const li = document.createElement('li');
+                    li.innerHTML = `<span class="icon">📁</span> ${dir}`;
+                    li.onclick = () => fetchAndDisplayPath(fullPath);
+                    fileList.appendChild(li);
+                });
+                const filterKey = document.querySelector(`[data-input-id="${currentTargetInputId}"]`)?.dataset.filter;
+                const filterExts = fileFilters[filterKey] || [];
+                data.files.forEach(file => {
+                    if (currentMode === 'file' && filterExts.length > 0 && !filterExts.some(ext => file.toLowerCase().endsWith(ext))) return;
+                    const fullPath = data.current_path + (data.current_path.endsWith('\\') || data.current_path.endsWith('/') ? '' : '\\') + file;
+                    const li = document.createElement('li');
+                    li.innerHTML = `<span class="icon">📄</span> ${file}`;
+                    if (currentMode === 'file' || currentMode === 'savefile') {
+                        li.onclick = () => selectItem(fullPath);
+                    } else {
+                        li.style.cursor = 'default';
+                        li.style.color = '#888';
+                    }
+                    fileList.appendChild(li);
+                });
+                selectCurrentFolderBtn.style.display = currentMode === 'folder' ? 'inline-block' : 'none';
+                selectCurrentFolderBtn.onclick = () => selectItem(data.current_path);
+            } catch (err) {
+                fileList.innerHTML = `<li style="color: red;">无法连接到后端服务。</li>`;
+            }
+        }
+        modalGoBtn.addEventListener('click', () => fetchAndDisplayPath(modalPathInput.value));
+        modalPathInput.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); fetchAndDisplayPath(modalPathInput.value); } });
+        closeModalBtn.addEventListener('click', hideModal);
+        window.addEventListener('click', e => { if (e.target === modal) hideModal(); });
+        // FFmpeg 参数折叠/展开
+        const ffmpegToggle = document.getElementById('ffmpegParamsToggle');
+        const ffmpegBody = document.getElementById('ffmpegParamsBody');
+        if (ffmpegToggle && ffmpegBody) {
+            ffmpegToggle.addEventListener('change', () => {
+                ffmpegBody.style.display = ffmpegToggle.checked ? 'block' : 'none';
+            });
+        }
+        // 页面加载时获取模型列表和索引列表
+        document.addEventListener('DOMContentLoaded', async () => {
+            thresholdValueSpan.textContent = parseInt(thresholdSlider.value);
+            await loadModelList();  // 先加载模型列表
+            await loadIndexList();  // 模型加载完成后再加载索引列表，确保自动选择模型能正常工作
+            try {
+                await initPresets();
+            } catch (error) {
+                console.error('初始化预设失败:', error);
+            }
+            // 加载 config.json 中的 FFmpeg 配置
+            await loadFfmpegConfig();
+        });
+    </script>
+</body>
+</html>
+

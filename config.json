@@ -1,0 +1,44 @@
+{
+    "model_path": "models/MiniCPM-V-4_5",
+    "default_video_dir": "videos",
+    "device": "cuda",
+    "temp_dir": "temp",
+    "prompt_file": "prompt.txt",
+    "llama_cli_path": "models/llama/llama-mtmd-cli.exe",
+    "mmproj_path": "models/llama/mmproj-model-f16.gguf",
+    "ffmpeg_path": "models/ffmpeg/bin",
+    "clip_model_path": "models/clip-vit-base-patch32",
+    "transnet_model_path": "models/transnetv2",
+    "_comment_video_output": "视频输出参数配置（用于视频编码和黑帧检测）",
+    "video_output": {
+        "copy_mode": true,
+        "video_codec": "libx264",
+        "hwaccel": "cuda",
+        "gpu_device": 0,
+        "crf": 18,
+        "preset": "medium",
+        "audio_codec": "none",
+        "audio_bitrate": "192k",
+        "enable_black_detection": true,
+        "black_threshold": 10,
+        "force_clean": false,
+        "pixel_format": "yuv420p",
+        "movflags": "+faststart",
+        "_comment_nvenc": "NVENC 硬件编码高级参数（仅 hwaccel=cuda 时生效）",
+        "nvenc": {
+            "rc_mode": "vbr",
+            "spatial_aq": true,
+            "temporal_aq": true,
+            "rc_lookahead": 20,
+            "qmin_offset": 0,
+            "qmax_offset": 2
+        }
+    },
+    "_comment_similarity_thresholds": "相似度阈值配置（用于文搜图），标签模式取15，prompt模式21",
+    "similarity_thresholds": {
+        "clip_large": 21,
+        "fgclip2": 14,
+        "reranker": 51,
+        "reranker_weight": 1
+    }
+}

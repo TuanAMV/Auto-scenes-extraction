@@ -1,0 +1,2315 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>视频处理流水线控制面板</title>
+    <style>
+        :root {
+            --bg-main: #f4f7f8;
+            --bg-soft: #ffffff;
+            --bg-strong: #0f2f36;
+            --text-main: #1b2730;
+            --text-muted: #5f7180;
+            --line: #d4dfe4;
+            --primary: #0f7c8a;
+            --primary-strong: #0a6370;
+            --success: #1f8f55;
+            --danger: #c54848;
+            --warning: #d59a23;
+            --chip: #e6f2f4;
+            --shadow-sm: 0 4px 12px rgba(16, 36, 43, 0.08);
+            --shadow-md: 0 10px 28px rgba(16, 36, 43, 0.12);
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            font-family: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+            max-width: 1280px;
+            margin: 28px auto;
+            background: radial-gradient(circle at 10% 0%, #ffffff 0%, #eef4f6 45%, #e6edf0 100%);
+            padding: 24px;
+            border-radius: 14px;
+            box-shadow: var(--shadow-md);
+            color: var(--text-main);
+        }
+
+        h1 {
+            margin-top: 0;
+            margin-bottom: 18px;
+            border-bottom: 2px solid var(--primary);
+            padding-bottom: 12px;
+            color: #123341;
+            font-size: 1.45em;
+            letter-spacing: 0.2px;
+        }
+
+        .main-container {
+            display: flex;
+            gap: 22px;
+            align-items: flex-start;
+        }
+
+        .config-panel { flex: 2; min-width: 0; }
+
+        .control-panel {
+            flex: 1;
+            min-width: 300px;
+            position: sticky;
+            top: 20px;
+            height: fit-content;
+        }
+
+        .panel-card {
+            background: linear-gradient(180deg, #fbfdfe 0%, #f3f8fa 100%);
+            border: 1px solid var(--line);
+            border-radius: 12px;
+            padding: 14px;
+            margin-bottom: 14px;
+            box-shadow: var(--shadow-sm);
+        }
+
+        .panel-card h3 {
+            margin: 0 0 12px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #d9e5ea;
+            color: #2a4451;
+            font-size: 0.98em;
+        }
+
+        .panel-card h3 .badge {
+            font-size: 0.72em;
+            padding: 2px 8px;
+            border-radius: 999px;
+            margin-left: 6px;
+            font-weight: 600;
+            border: 1px solid transparent;
+        }
+
+        .badge-indexer { background: #d8eefd; color: #0d4f70; border-color: #b8dff4; }
+        .badge-search { background: #dff2e7; color: #16663f; border-color: #bde2cd; }
+        .badge-label { background: #fff3d8; color: #7b5b12; border-color: #f0dfb5; }
+
+        .form-group { margin-bottom: 12px; }
+
+        .form-group label {
+            display: block;
+            font-weight: 600;
+            margin-bottom: 6px;
+            color: #2a4451;
+            font-size: 0.86em;
+        }
+
+        .form-group .help-text {
+            font-size: 0.76em;
+            color: var(--text-muted);
+            margin-top: 4px;
+            line-height: 1.45;
+        }
+
+        input[type="text"],
+        input[type="number"],
+        select,
+        textarea {
+            width: 100%;
+            padding: 8px 10px;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            font-size: 0.9em;
+            background: #fff;
+            color: var(--text-main);
+            transition: border-color 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        input[type="text"]:focus,
+        input[type="number"]:focus,
+        select:focus,
+        textarea:focus {
+            border-color: var(--primary);
+            outline: none;
+            box-shadow: 0 0 0 3px rgba(15, 124, 138, 0.16);
+        }
+
+        textarea {
+            resize: vertical;
+            min-height: 60px;
+            font-family: inherit;
+        }
+
+        .input-group { display: flex; gap: 8px; align-items: center; }
+        .input-group input, .input-group select { flex: 1; min-width: 0; }
+
+        button {
+            padding: 8px 14px;
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            font-size: 0.9em;
+            cursor: pointer;
+            background-color: var(--primary);
+            transition: background-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        button:hover {
+            background-color: var(--primary-strong);
+            transform: translateY(-1px);
+            box-shadow: 0 6px 16px rgba(12, 74, 85, 0.2);
+        }
+
+        button:disabled {
+            background-color: #c5d0d5;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .btn-primary { background-color: var(--primary); }
+        .btn-primary:hover { background-color: var(--primary-strong); }
+        .btn-success { background-color: var(--success); }
+        .btn-success:hover { background-color: #157645; }
+        .btn-warning { background-color: var(--warning); color: #2a210f; }
+        .btn-warning:hover { background-color: #be8618; }
+        .btn-danger { background-color: var(--danger); }
+        .btn-danger:hover { background-color: #a93d3d; }
+        .btn-secondary { background-color: #415c67; }
+        .btn-secondary:hover { background-color: #334a53; }
+
+        .btn-outline {
+            background: #fff;
+            border: 1px solid #b9ccd4;
+            color: #2a4451;
+        }
+
+        .btn-outline:hover {
+            background: var(--chip);
+            color: #1f4e5a;
+            border-color: #9ec0cb;
+        }
+
+        .browse-btn {
+            width: auto;
+            flex: 0 0 auto;
+            padding: 0 12px;
+            height: 34px;
+            border: 1px solid #b9ccd4;
+            background-color: #edf4f6;
+            border-radius: 8px;
+            cursor: pointer;
+            white-space: nowrap;
+            color: #2a4451;
+            font-size: 0.84em;
+            line-height: 1;
+            box-shadow: none;
+        }
+
+        .browse-btn:hover {
+            background-color: #e2eef2;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .toggle-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+
+        .toggle-row input[type="checkbox"],
+        .toggle-row input[type="radio"] {
+            width: 16px;
+            height: 16px;
+            cursor: pointer;
+            accent-color: var(--primary);
+        }
+
+        .toggle-row label { cursor: pointer; font-weight: 500; font-size: 0.85em; }
+
+        .slider-group {
+            display: grid;
+            grid-template-columns: 1fr auto;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .slider-group input[type="range"] { width: 100%; accent-color: var(--primary); }
+
+        .slider-group .slider-value {
+            min-width: 42px;
+            text-align: right;
+            font-weight: 600;
+            color: var(--primary);
+            font-size: 0.85em;
+        }
+
+        .collapsible-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+            padding: 8px 0;
+            border-bottom: 1px solid #d9e5ea;
+            margin-bottom: 10px;
+            color: #304d59;
+        }
+
+        .collapsible-header:hover { color: var(--primary); }
+        .collapsible-header .toggle-icon { font-size: 0.78em; transition: transform 0.2s ease; }
+        .collapsible-header.collapsed .toggle-icon { transform: rotate(-90deg); }
+        .collapsible-content { transition: all 0.25s ease; }
+        .collapsible-content.collapsed { display: none; }
+
+        .section-divider { border: none; border-top: 1px dashed #c7d6dc; margin: 14px 0; }
+
+        .status-box {
+            padding: 12px;
+            background-color: #ebf3f6;
+            border: 1px solid #dbe8ed;
+            border-radius: 8px;
+            text-align: center;
+            font-weight: 500;
+            min-height: 40px;
+            margin-top: 12px;
+            font-size: 0.86em;
+            color: #2f4d59;
+        }
+
+        .status-box.running { background-color: #fff6db; color: #74520f; border-color: #f2e2ac; }
+        .status-box.success { background-color: #dff2e7; color: #16663f; border-color: #bde2cd; }
+        .status-box.error { background-color: #f8e0e0; color: #8d2d2d; border-color: #efc4c4; }
+
+        .log-container {
+            background: #11252c;
+            color: #d4dde1;
+            border-radius: 8px;
+            padding: 10px;
+            font-family: "Consolas", "Monaco", monospace;
+            font-size: 0.8em;
+            max-height: 320px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            border: 1px solid #1e3a44;
+        }
+
+        .log-container .log-info { color: #6fcde8; }
+        .log-container .log-success { color: #8fdba8; }
+        .log-container .log-warning { color: #f2c77a; }
+        .log-container .log-error { color: #f09696; }
+        .log-container .log-time { color: #8da2ab; }
+
+        .progress-bar {
+            height: 6px;
+            background: #e4edf2;
+            border-radius: 999px;
+            overflow: hidden;
+            margin: 12px 0;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #0f7c8a, #0e5f6c);
+            transition: width 0.3s ease;
+            width: 0%;
+        }
+
+        .run-controls { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+        .run-controls button { width: 100%; padding: 10px 12px; font-size: 0.9em; }
+
+        .preset-buttons { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+        .preset-btn { padding: 6px 10px; font-size: 0.8em; }
+
+        .param-group {
+            background: #f4f8fa;
+            border: 1px solid #d9e5ea;
+            padding: 10px;
+            border-radius: 8px;
+            margin-bottom: 10px;
+        }
+
+        .param-group-title {
+            font-weight: 600;
+            color: #3c5a67;
+            margin-bottom: 8px;
+            font-size: 0.85em;
+        }
+
+        .two-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+        .three-columns { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.6);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 3200;
+        }
+
+        .modal-content {
+            background-color: #fff;
+            padding: 16px;
+            border-radius: 10px;
+            width: min(92vw, 640px);
+            max-height: 78vh;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
+            display: flex;
+            flex-direction: column;
+            border: 1px solid #d9e5ea;
+        }
+
+        .modal-header {
+            border-bottom: 1px solid #e2ebef;
+            padding-bottom: 8px;
+            margin-bottom: 10px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .modal-header h4 { margin: 0; font-size: 1em; color: #2a4451; }
+
+        .modal-close {
+            border: none;
+            background: none;
+            font-size: 1.3em;
+            cursor: pointer;
+            color: #2f4d59;
+            padding: 0 6px;
+        }
+
+        .modal-close:hover { color: var(--danger); transform: none; box-shadow: none; background: none; }
+
+        .modal-path-container { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+        .modal-path-input { flex-grow: 1; padding: 6px 10px; }
+
+        .modal-body {
+            flex-grow: 1;
+            overflow-y: auto;
+            border: 1px solid #d3e1e7;
+            border-radius: 8px;
+            padding: 8px;
+            background: #fcfefe;
+        }
+
+        .modal-footer { padding-top: 10px; margin-top: 10px; border-top: 1px solid #e2ebef; text-align: right; }
+
+        .file-list { list-style-type: none; padding: 0; margin: 0; }
+
+        .file-list li {
+            padding: 7px 9px;
+            cursor: pointer;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.9em;
+            color: #2f4d59;
+        }
+
+        .file-list li:hover { background-color: #edf5f7; }
+        .file-list .icon { width: 18px; text-align: center; }
+
+        .tab-container { margin-bottom: 10px; }
+
+        .tab-buttons {
+            display: flex;
+            gap: 6px;
+            border-bottom: 1px solid #d4dfe4;
+            margin-bottom: 12px;
+            padding-bottom: 2px;
+        }
+
+        .tab-btn {
+            padding: 8px 14px;
+            background: transparent;
+            border: 1px solid transparent;
+            border-bottom: none;
+            border-radius: 8px 8px 0 0;
+            margin-bottom: -3px;
+            font-weight: 600;
+            color: #5d7380;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            font-size: 0.9em;
+            box-shadow: none;
+        }
+
+        .tab-btn:hover {
+            color: var(--primary);
+            background: #eef6f8;
+            transform: none;
+        }
+
+        .tab-btn.active {
+            color: var(--primary);
+            background: #eef6f8;
+            border-color: #bcd2d9;
+            border-bottom-color: #eef6f8;
+        }
+
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+
+        .model-info {
+            font-size: 0.82em;
+            color: #506876;
+            margin-top: 4px;
+            padding: 7px 9px;
+            background: #f3f8fa;
+            border-radius: 8px;
+            border: 1px solid #d7e5ea;
+        }
+
+        .pipeline-config {
+            background: linear-gradient(180deg, #0f7c8a 0%, #0d6170 100%);
+            color: #fff;
+            padding: 12px;
+            border-radius: 10px;
+            margin-bottom: 10px;
+            box-shadow: 0 8px 18px rgba(8, 44, 53, 0.25);
+        }
+
+        .pipeline-config h3 {
+            color: #fff;
+            border-bottom-color: rgba(255, 255, 255, 0.3);
+            font-size: 0.92em;
+        }
+
+        .pipeline-option {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px;
+            background: rgba(255, 255, 255, 0.16);
+            border-radius: 8px;
+            margin-bottom: 6px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .pipeline-option input[type="checkbox"] { width: 16px; height: 16px; }
+        .pipeline-option label { flex: 1; font-weight: 500; font-size: 0.85em; }
+
+        .pipeline-option select {
+            background: rgba(255, 255, 255, 0.95);
+            border: none;
+            padding: 5px 8px;
+            border-radius: 6px;
+            font-size: 0.85em;
+            color: #1f3d49;
+        }
+
+        .search-mode-selector { display: flex; gap: 8px; margin-bottom: 10px; }
+
+        .search-mode-btn {
+            flex: 1;
+            padding: 10px;
+            border: 1px solid #cfdee4;
+            border-radius: 10px;
+            background: #fff;
+            cursor: pointer;
+            text-align: center;
+            transition: all 0.2s ease;
+            box-shadow: 0 2px 6px rgba(9, 41, 49, 0.06);
+        }
+
+        .search-mode-btn:hover {
+            border-color: #9ec0cb;
+            transform: translateY(-1px);
+        }
+
+        .search-mode-btn.active {
+            border-color: var(--primary);
+            background: #e6f2f4;
+            box-shadow: inset 0 0 0 1px rgba(15, 124, 138, 0.12);
+        }
+
+        .search-mode-btn .mode-icon { font-size: 1.2em; display: block; margin-bottom: 4px; }
+        .search-mode-btn .mode-name { font-weight: 600; font-size: 0.85em; color: #2b4a56; }
+
+        .disabled-section { opacity: 0.52; pointer-events: none; }
+        .disabled-section input, .disabled-section select, .disabled-section textarea { background-color: #edf2f5; }
+
+        @media (max-width: 980px) {
+            body {
+                margin: 0;
+                border-radius: 0;
+                max-width: none;
+                padding: 14px;
+            }
+
+            .main-container { flex-direction: column; }
+            .control-panel { width: auto; min-width: 0; position: static; }
+        }
+
+        @media (max-width: 860px) { .three-columns { grid-template-columns: 1fr 1fr; } }
+        @media (max-width: 680px) { .two-columns, .three-columns { grid-template-columns: 1fr; } }
+    </style>
+</head>
+<body>
+    <h1>🎬 视频处理流水线控制面板</h1>
+    
+    <div class="main-container">
+        <!-- 左侧配置面板 -->
+        <div class="config-panel">
+            <!-- Tab切换 -->
+            <div class="tab-container">
+                <div class="tab-buttons">
+                    <button class="tab-btn active" data-tab="indexer">📹 视频向量化</button>
+                    <button class="tab-btn" data-tab="search">🔍 自动提纯</button>
+                </div>
+                
+                <!-- 视频向量化 Tab -->
+                <div id="tab-indexer" class="tab-content active">
+                    <div class="panel-card">
+                        <h3>📹 视频向量化</h3>
+                        <!-- 路径配置 -->
+                        <div class="form-group">
+                            <label for="input_directory">输入目录</label>
+                            <div class="input-group">
+                                <input type="text" id="input_directory" value="" placeholder="视频文件夹">
+                                <button type="button" class="browse-btn" data-target="input_directory" data-mode="folder">📁</button>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label for="output_directory">输出目录</label>
+                            <div class="input-group">
+                                <input type="text" id="output_directory" value="indexes" placeholder="索引保存目录">
+                                <button type="button" class="browse-btn" data-target="output_directory" data-mode="folder">📁</button>
+                            </div>
+                        </div>
+                        <!-- 模型与性能参数 -->
+                        <div class="three-columns">
+                            <div class="form-group">
+                                <label for="idx_model_name">模型</label>
+                                <select id="idx_model_name">
+                                    <option value="qihoo360_fg-clip2-base">qihoo360_fg-clip2-base</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="idx_model_type">类型</label>
+                                <select id="idx_model_type">
+                                    <option value="auto">auto</option>
+                                    <option value="clip">clip</option>
+                                    <option value="fgclip2">fgclip2</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="idx_output_resolution">分辨率</label>
+                                <input type="number" id="idx_output_resolution" value="256" min="64" max="2048">
+                            </div>
+                        </div>
+                        <div class="three-columns">
+                            <div class="form-group">
+                                <label for="idx_batch_size">Batch</label>
+                                <input type="number" id="idx_batch_size" value="512" min="1" max="2048">
+                            </div>
+                            <div class="form-group">
+                                <label for="idx_workers">写入线程</label>
+                                <input type="number" id="idx_workers" value="2" min="1" max="8">
+                            </div>
+                            <div class="form-group">
+                                <label for="idx_io_workers">IO Workers</label>
+                                <input type="number" id="idx_io_workers" value="8" min="1" max="32">
+                            </div>
+                        </div>
+                        <div class="three-columns">
+                            <div class="form-group">
+                                <label for="idx_sample_interval">采样间隔</label>
+                                <input type="number" id="idx_sample_interval" value="3" min="1" max="30">
+                            </div>
+                            <div class="form-group">
+                                <label for="idx_truncate_dim">向量维度</label>
+                                <input type="text" id="idx_truncate_dim" value="" placeholder="默认">
+                            </div>
+                            <div class="form-group">
+                                <label for="idx_cosine_threshold">相似度阈值</label>
+                                <input type="number" id="idx_cosine_threshold" value="0.85" min="0.5" max="0.99" step="0.01">
+                            </div>
+                        </div>
+                        <!-- 处理模式 -->
+                        <div class="toggle-row">
+                            <input type="checkbox" id="idx_resume_processing">
+                            <label for="idx_resume_processing">增量处理</label>
+                        </div>
+                        <!-- 场景检测参数 -->
+                        <div class="three-columns">
+                            <div class="form-group">
+                                <label for="idx_brightness_threshold">亮度阈值</label>
+                                <input type="number" id="idx_brightness_threshold" value="15" min="0" max="255">
+                            </div>
+                            <div class="form-group">
+                                <label for="idx_black_pixel_ratio">黑帧比例%</label>
+                                <input type="number" id="idx_black_pixel_ratio" value="98" min="0" max="100">
+                            </div>
+                            <div class="form-group">
+                                <label for="idx_min_scene_length">最小场景帧</label>
+                                <input type="number" id="idx_min_scene_length" value="7" min="1" max="100">
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label for="idx_localmax_order">局部最大值阶数</label>
+                            <input type="number" id="idx_localmax_order" value="1" min="1" max="10">
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 自动提纯 Tab -->
+                <div id="tab-search" class="tab-content">
+                    <div class="panel-card">
+                        <h3>🔍 自动提纯</h3>
+                        <!-- 搜索模式选择 -->
+                        <div class="search-mode-selector" style="margin-bottom:10px;">
+                            <div class="search-mode-btn active" data-mode="prompt">
+                                <span class="mode-icon">🔍</span>
+                                <span class="mode-name">Prompt模式</span>
+                            </div>
+                            <div class="search-mode-btn" data-mode="label">
+                                <span class="mode-icon">🏷️</span>
+                                <span class="mode-name">标签模式</span>
+                            </div>
+                            <div class="search-mode-btn" data-mode="cloze">
+                                <span class="mode-icon">📝</span>
+                                <span class="mode-name">选词填空</span>
+                            </div>
+                        </div>
+                        <input type="hidden" id="search_entry_mode" value="prompt">
+                        <!-- 路径配置 -->
+                        <div class="two-columns">
+                            <div class="form-group">
+                                <label for="search_index_directory">索引目录</label>
+                                <div class="input-group">
+                                    <input type="text" id="search_index_directory" value="indexes">
+                                    <button type="button" class="browse-btn" data-target="search_index_directory" data-mode="folder">📁</button>
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label for="ps_video_output_directory">视频输出目录（可选）</label>
+                                <div class="input-group">
+                                    <input type="text" id="ps_video_output_directory" value="" placeholder="默认使用 output/videos">
+                                    <button type="button" class="browse-btn" data-target="ps_video_output_directory" data-mode="folder">📁</button>
+                                </div>
+                            </div>
+                        </div>
+                        <!-- Prompt模板 -->
+                        <div id="prompt-mode-section">
+                            <div class="form-group">
+                                <label for="ps_prompt_template">Prompt模板</label>
+                                <textarea id="ps_prompt_template" rows="1" style="min-height:32px;">A {情绪} photo of a {主体} {动作} in {场景}.</textarea>
+                            </div>
+                            <div class="form-group">
+                                <label for="video_name_format">命名格式</label>
+                                <input type="text" id="video_name_format" value="{情绪}_{场景}_{主体}_{动作}_{起始帧}_{视频解析名}">
+                            </div>
+                            <!-- 相似度阈值 -->
+                            <div style="display:grid; grid-template-columns:1fr 1fr 1fr 1fr; gap:8px; margin-top:2px;">
+                                <div class="form-group">
+                                    <label for="sim_clip_large">CLIP阈值</label>
+                                    <input type="number" id="sim_clip_large" value="21" min="0" max="100" step="1">
+                                </div>
+                                <div class="form-group">
+                                    <label for="sim_fgclip2">FG-CLIP2阈值</label>
+                                    <input type="number" id="sim_fgclip2" value="14" min="0" max="100" step="1">
+                                </div>
+                                <div class="form-group">
+                                    <label for="sim_reranker">Reranker阈值</label>
+                                    <input type="number" id="sim_reranker" value="51" min="0" max="100" step="1">
+                                </div>
+                                <div class="form-group">
+                                    <label for="sim_reranker_weight">Reranker权重</label>
+                                    <input type="number" id="sim_reranker_weight" value="1" min="0" max="10" step="0.1">
+                                </div>
+                            </div>
+                        </div>
+                        <!-- 标签Batch、缓存Batch、搜索Batch 一行 -->
+                        <div class="three-columns">
+                            <div class="form-group" id="label-batch-group">
+                                <label for="ls_text_batch_size">标签Batch</label>
+                                <input type="number" id="ls_text_batch_size" value="64" min="1" max="4096">
+                            </div>
+                            <div class="form-group">
+                                <label for="ps_prompt_cache_batch">缓存Batch</label>
+                                <input type="number" id="ps_prompt_cache_batch" value="1536" min="1" max="4096">
+                            </div>
+                            <div class="form-group">
+                                <label for="ps_prompt_search_batch">搜索Batch</label>
+                                <input type="number" id="ps_prompt_search_batch" value="500000" min="1000">
+                            </div>
+                        </div>
+                        <!-- 搜索模式、候选分批大小一行（与PKL参数同布局） -->
+                        <div class="three-columns">
+                            <div class="form-group">
+                                <label>搜索模式</label>
+                                <select id="search_mode_select" style="padding:6px 8px; border-radius:4px; width:100%;">
+                                    <option value="0">按PKL</option>
+                                    <option value="-1">按视频</option>
+                                    <option value="1">跨PKL</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="candidate_batch_size">候选分批大小</label>
+                                <input type="number" id="candidate_batch_size" value="1000" min="1">
+                            </div>
+                            <div class="form-group">
+                                <label for="ps_pkl_batch_size">PKL Batch</label>
+                                <input type="number" id="ps_pkl_batch_size" value="5" min="1" max="50">
+                            </div>
+                        </div>
+                        <!-- Top-K、PKL加载线程 一行 -->
+                        <div class="three-columns">
+                            <div class="form-group">
+                                <label for="ps_top_k">Top-K</label>
+                                <input type="number" id="ps_top_k" value="50" min="1" max="1000">
+                            </div>
+                            <div class="form-group">
+                                <label for="ps_pkl_load_workers">PKL加载线程</label>
+                                <input type="number" id="ps_pkl_load_workers" value="4" min="1" max="16">
+                            </div>
+                        </div>
+                        <!-- 四个勾选一行（Rerank参数上方） -->
+                        <div class="toggle-row">
+                            <input type="checkbox" id="ps_use_reranker" checked>
+                            <label for="ps_use_reranker">Reranker</label>
+                            <input type="checkbox" id="use_diskcache" checked style="margin-left:15px;">
+                            <label for="use_diskcache">磁盘缓存</label>
+                            <input type="checkbox" id="ps_use_fp16" checked style="margin-left:15px;">
+                            <label for="ps_use_fp16">FP16模型</label>
+                            <input type="checkbox" id="ps_feature_fp16" style="margin-left:15px;">
+                            <label for="ps_feature_fp16">FP16特征</label>
+                            <input type="checkbox" id="ps_use_chinese_query" style="margin-left:15px;">
+                            <label for="ps_use_chinese_query">中文查询</label>
+                            <input type="checkbox" id="debug_similarity" checked style="margin-left:15px;">
+                            <label for="debug_similarity">调试输出</label>
+                        </div>
+                        <!-- Rerank参数 一行 -->
+                        <div class="three-columns">
+                            <div class="form-group">
+                                <label for="ps_rerank_top_k">Rerank Top-K</label>
+                                <input type="number" id="ps_rerank_top_k" value="12" min="1" max="1000">
+                            </div>
+                            <div class="form-group">
+                                <label for="ps_rerank_batch_size">Rerank Batch</label>
+                                <input type="number" id="ps_rerank_batch_size" value="12" min="1" max="64">
+                            </div>
+                            <div class="form-group">
+                                <label for="ps_reranker_resolution">Rerank分辨率</label>
+                                <input type="number" id="ps_reranker_resolution" value="448" min="64" max="2048">
+                            </div>
+                        </div>
+                        <!-- LMDB写入批大小、向量去重阈值、相邻合并帧数 一行 -->
+                        <div class="three-columns">
+                            <div class="form-group">
+                                <label for="ps_lmdb_write_batch_size">LMDB写入批大小</label>
+                                <input type="number" id="ps_lmdb_write_batch_size" value="1000" min="1" max="100000">
+                            </div>
+                            <div class="form-group">
+                                <label for="ps_vector_dedup_threshold">向量去重阈值</label>
+                                <input type="text" id="ps_vector_dedup_threshold" value="" placeholder="默认不去重">
+                            </div>
+                            <div class="form-group">
+                                <label for="ps_adjacent_merge_frames">相邻合并帧数</label>
+                                <input type="text" id="ps_adjacent_merge_frames" value="" placeholder="默认不合并">
+                            </div>
+                        </div>
+                        <!-- 视频导出（末尾） -->
+                        <div class="three-columns">
+                            <div class="form-group">
+                                <label>切割模式</label>
+                                <div class="toggle-row">
+                                    <input type="radio" name="export_mode" id="export_precise" value="precise" checked>
+                                    <label for="export_precise">精确</label>
+                                    <input type="radio" name="export_mode" id="export_copy" value="copy" style="margin-left:10px;">
+                                    <label for="export_copy">Copy</label>
+                                </div>
+                                <div class="toggle-row" style="margin-top:8px;">
+                                    <input type="checkbox" id="ffmpeg_copy_keep_audio">
+                                    <label for="ffmpeg_copy_keep_audio">保留音频</label>
+                                    <input type="checkbox" id="ffmpeg_force_clean" checked>
+                                    <label for="ffmpeg_force_clean">启用强力清理</label>
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label for="start_offset">起始偏移</label>
+                                <input type="number" id="start_offset" value="" placeholder="默认" step="1">
+                            </div>
+                            <div class="form-group">
+                                <label for="end_offset">结束偏移</label>
+                                <input type="number" id="end_offset" value="" placeholder="默认" step="1">
+                            </div>
+                        </div>
+                        <div class="three-columns">
+                            <div class="form-group">
+                                <label for="ffmpeg_video_codec">FFmpeg 视频编码</label>
+                                <select id="ffmpeg_video_codec" style="padding:6px 8px; border-radius:4px; width:100%;">
+                                    <optgroup label="H.264 / AVC">
+                                        <option value="libx264">libx264（CPU）</option>
+                                        <option value="h264_nvenc">h264_nvenc（NVIDIA GPU）</option>
+                                    </optgroup>
+                                    <optgroup label="H.265 / HEVC">
+                                        <option value="libx265">libx265（CPU）</option>
+                                        <option value="hevc_nvenc">hevc_nvenc（NVIDIA GPU）</option>
+                                    </optgroup>
+                                    <optgroup label="AV1">
+                                        <option value="libsvtav1">libsvtav1（CPU SVT-AV1）</option>
+                                        <option value="libaom-av1">libaom-av1（CPU libaom）</option>
+                                        <option value="av1_nvenc">av1_nvenc（NVIDIA GPU）</option>
+                                    </optgroup>
+                                    <optgroup label="VP9 / VP8">
+                                        <option value="libvpx-vp9">libvpx-vp9（CPU VP9）</option>
+                                        <option value="libvpx">libvpx（CPU VP8）</option>
+                                    </optgroup>
+                                    <optgroup label="其他">
+                                        <option value="mpeg4">mpeg4</option>
+                                        <option value="mpeg2video">mpeg2video</option>
+                                        <option value="prores_ks">prores_ks（Apple ProRes）</option>
+                                        <option value="dnxhd">dnxhd（Avid DNxHD）</option>
+                                        <option value="ffv1">ffv1（无损）</option>
+                                        <option value="huffyuv">huffyuv（无损）</option>
+                                    </optgroup>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="ffmpeg_hwaccel">FFmpeg 硬件加速</label>
+                                <select id="ffmpeg_hwaccel" style="padding:6px 8px; border-radius:4px; width:100%;">
+                                    <option value="cuda">cuda（NVIDIA GPU）</option>
+                                    <option value="none">none（CPU）</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="ffmpeg_preset">FFmpeg Preset</label>
+                                <select id="ffmpeg_preset" style="padding:6px 8px; border-radius:4px; width:100%;">
+                                    <optgroup label="x264/x265 CPU 预设">
+                                        <option value="ultrafast">ultrafast</option>
+                                        <option value="superfast">superfast</option>
+                                        <option value="veryfast">veryfast</option>
+                                        <option value="faster">faster</option>
+                                        <option value="fast">fast</option>
+                                        <option value="medium" selected>medium</option>
+                                        <option value="slow">slow</option>
+                                        <option value="slower">slower</option>
+                                        <option value="veryslow">veryslow</option>
+                                        <option value="placebo">placebo</option>
+                                    </optgroup>
+                                    <optgroup label="NVENC 预设（p1最快 p7最慢）">
+                                        <option value="p1">p1（最快）</option>
+                                        <option value="p2">p2</option>
+                                        <option value="p3">p3</option>
+                                        <option value="p4">p4（默认）</option>
+                                        <option value="p5">p5</option>
+                                        <option value="p6">p6</option>
+                                        <option value="p7">p7（最慢/最高质量）</option>
+                                    </optgroup>
+                                    <optgroup label="NVENC 旧版预设">
+                                        <option value="hp">hp（高性能）</option>
+                                        <option value="hq">hq（高质量）</option>
+                                        <option value="bd">bd（蓝光）</option>
+                                        <option value="ll">ll（低延迟）</option>
+                                        <option value="llhp">llhp（低延迟高性能）</option>
+                                        <option value="llhq">llhq（低延迟高质量）</option>
+                                        <option value="lossless">lossless（无损）</option>
+                                        <option value="losslesshp">losslesshp（无损高性能）</option>
+                                    </optgroup>
+                                    <optgroup label="SVT-AV1 预设（0最慢 13最快）">
+                                        <option value="0">0（最慢/最高质量）</option>
+                                        <option value="2">2</option>
+                                        <option value="4">4</option>
+                                        <option value="6">6（默认）</option>
+                                        <option value="8">8</option>
+                                        <option value="10">10</option>
+                                        <option value="12">12</option>
+                                        <option value="13">13（最快）</option>
+                                    </optgroup>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="three-columns">
+                            <div class="form-group">
+                                <label for="ffmpeg_crf">FFmpeg CRF</label>
+                                <input type="number" id="ffmpeg_crf" value="18" min="0" max="51">
+                            </div>
+                            <div class="form-group">
+                                <label for="ffmpeg_gpu_device">FFmpeg GPU 设备</label>
+                                <input type="number" id="ffmpeg_gpu_device" value="0" min="0">
+                            </div>
+                            <div class="form-group">
+                                <label for="ffmpeg_audio_codec">FFmpeg 音频编码</label>
+                                <select id="ffmpeg_audio_codec" style="padding:6px 8px; border-radius:4px; width:100%;">
+                                    <optgroup label="AAC">
+                                        <option value="aac" selected>aac（FFmpeg内置）</option>
+                                        <option value="libfdk_aac">libfdk_aac（高质量AAC）</option>
+                                    </optgroup>
+                                    <optgroup label="MP3">
+                                        <option value="libmp3lame">libmp3lame（LAME MP3）</option>
+                                        <option value="mp3">mp3</option>
+                                    </optgroup>
+                                    <optgroup label="Dolby / DTS">
+                                        <option value="ac3">ac3（Dolby AC-3）</option>
+                                        <option value="eac3">eac3（Dolby E-AC-3）</option>
+                                        <option value="truehd">truehd（Dolby TrueHD）</option>
+                                        <option value="dts">dts（DTS）</option>
+                                    </optgroup>
+                                    <optgroup label="Opus / Vorbis">
+                                        <option value="libopus">libopus（Opus）</option>
+                                        <option value="opus">opus</option>
+                                        <option value="libvorbis">libvorbis（Vorbis）</option>
+                                        <option value="vorbis">vorbis</option>
+                                    </optgroup>
+                                    <optgroup label="无损">
+                                        <option value="flac">flac（FLAC无损）</option>
+                                        <option value="alac">alac（Apple无损）</option>
+                                        <option value="pcm_s16le">pcm_s16le（16位PCM）</option>
+                                        <option value="pcm_s24le">pcm_s24le（24位PCM）</option>
+                                        <option value="pcm_s32le">pcm_s32le（32位PCM）</option>
+                                        <option value="pcm_f32le">pcm_f32le（32位浮点PCM）</option>
+                                    </optgroup>
+                                    <optgroup label="其他">
+                                        <option value="wmav2">wmav2（WMA v2）</option>
+                                    </optgroup>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="three-columns">
+                            <div class="form-group">
+                                <label for="ffmpeg_audio_bitrate">FFmpeg 音频码率</label>
+                                <input type="text" id="ffmpeg_audio_bitrate" value="192k" list="ffmpeg_audio_bitrate_list">
+                                <datalist id="ffmpeg_audio_bitrate_list">
+                                    <option value="32k"></option>
+                                    <option value="48k"></option>
+                                    <option value="64k"></option>
+                                    <option value="96k"></option>
+                                    <option value="128k"></option>
+                                    <option value="160k"></option>
+                                    <option value="192k"></option>
+                                    <option value="224k"></option>
+                                    <option value="256k"></option>
+                                    <option value="320k"></option>
+                                    <option value="384k"></option>
+                                    <option value="448k"></option>
+                                    <option value="512k"></option>
+                                </datalist>
+                            </div>
+                            <div class="form-group">
+                                <label for="ffmpeg_pixel_format">FFmpeg 像素格式</label>
+                                <input type="text" id="ffmpeg_pixel_format" value="yuv420p" list="ffmpeg_pixel_format_list">
+                                <datalist id="ffmpeg_pixel_format_list">
+                                    <option value="yuv420p"></option>
+                                    <option value="yuv422p"></option>
+                                    <option value="yuv444p"></option>
+                                    <option value="yuv420p10le"></option>
+                                    <option value="yuv422p10le"></option>
+                                    <option value="yuv444p10le"></option>
+                                    <option value="p010le"></option>
+                                    <option value="nv12"></option>
+                                    <option value="nv21"></option>
+                                    <option value="yuvj420p"></option>
+                                    <option value="yuvj422p"></option>
+                                    <option value="yuvj444p"></option>
+                                    <option value="rgb24"></option>
+                                    <option value="bgr24"></option>
+                                    <option value="rgba"></option>
+                                    <option value="gray"></option>
+                                </datalist>
+                            </div>
+                            <div class="form-group">
+                                <label for="ffmpeg_movflags">FFmpeg Movflags</label>
+                                <input type="text" id="ffmpeg_movflags" value="+faststart" list="ffmpeg_movflags_list">
+                                <datalist id="ffmpeg_movflags_list">
+                                    <option value="+faststart"></option>
+                                    <option value="faststart"></option>
+                                    <option value="+frag_keyframe+empty_moov"></option>
+                                    <option value="+faststart+frag_keyframe+empty_moov"></option>
+                                    <option value="+frag_custom+dash"></option>
+                                    <option value="+delay_moov"></option>
+                                    <option value="+negative_cts_offsets"></option>
+                                    <option value="+faststart+negative_cts_offsets"></option>
+                                </datalist>
+                            </div>
+                        </div>
+                        <!-- NVENC 硬件编码高级参数 -->
+                        <div class="collapsible-header collapsed" onclick="this.classList.toggle('collapsed'); this.nextElementSibling.classList.toggle('collapsed');">
+                            <span>⚙️ NVENC 硬件编码高级参数（仅 NVIDIA GPU 编码时生效）</span>
+                            <span class="toggle-icon">▼</span>
+                        </div>
+                        <div class="collapsible-content collapsed">
+                            <div class="three-columns">
+                                <div class="form-group">
+                                    <label for="nvenc_rc_mode">码率控制模式</label>
+                                    <select id="nvenc_rc_mode" style="padding:6px 8px; border-radius:4px; width:100%;">
+                                        <option value="vbr" selected>vbr（可变码率）</option>
+                                        <option value="cbr">cbr（恒定码率）</option>
+                                        <option value="constqp">constqp（恒定QP）</option>
+                                        <option value="vbr_hq">vbr_hq（高质量VBR）</option>
+                                        <option value="cbr_hq">cbr_hq（高质量CBR）</option>
+                                        <option value="cbr_ld_hq">cbr_ld_hq（低延迟高质量CBR）</option>
+                                    </select>
+                                    <div class="help-text">NVENC -rc:v 参数，推荐 vbr</div>
+                                </div>
+                                <div class="form-group">
+                                    <label for="nvenc_rc_lookahead">RC Lookahead</label>
+                                    <input type="number" id="nvenc_rc_lookahead" value="20" min="0" max="32">
+                                    <div class="help-text">前瞻帧数，0-32，越大质量越好但延迟越高</div>
+                                </div>
+                                <div class="form-group">
+                                    <label for="nvenc_qmin_offset">QMin 偏移</label>
+                                    <input type="number" id="nvenc_qmin_offset" value="0" min="-10" max="10">
+                                    <div class="help-text">qmin = CRF + 此偏移值</div>
+                                </div>
+                            </div>
+                            <div class="three-columns">
+                                <div class="form-group">
+                                    <label for="nvenc_qmax_offset">QMax 偏移</label>
+                                    <input type="number" id="nvenc_qmax_offset" value="2" min="-10" max="20">
+                                    <div class="help-text">qmax = CRF + 此偏移值</div>
+                                </div>
+                                <div class="form-group">
+                                    <div class="toggle-row" style="margin-top: 20px;">
+                                        <input type="checkbox" id="nvenc_spatial_aq" checked>
+                                        <label for="nvenc_spatial_aq">Spatial AQ（空间自适应量化）</label>
+                                    </div>
+                                    <div class="help-text">根据画面复杂度分配码率</div>
+                                </div>
+                                <div class="form-group">
+                                    <div class="toggle-row" style="margin-top: 20px;">
+                                        <input type="checkbox" id="nvenc_temporal_aq" checked>
+                                        <label for="nvenc_temporal_aq">Temporal AQ（时间自适应量化）</label>
+                                    </div>
+                                    <div class="help-text">根据帧间变化分配码率</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 右侧控制面板 -->
+        <div class="control-panel">
+            <div class="panel-card pipeline-config">
+                <h3>🎯 流水线配置</h3>
+                <div class="pipeline-option">
+                    <input type="checkbox" id="run_indexer" checked>
+                    <label for="run_indexer">运行视频向量化</label>
+                </div>
+                <div class="pipeline-option">
+                    <input type="checkbox" id="run_search" checked>
+                    <label for="run_search">运行自动提纯</label>
+                </div>
+            </div>
+
+            <div class="panel-card">
+                <h3>🚀 运行控制</h3>
+                <div class="run-controls">
+                    <button type="button" id="runPipelineBtn" class="btn-primary">▶️ 运行</button>
+                    <button type="button" id="stopBtn" class="btn-danger" disabled>⏹️ 强制停止</button>
+                </div>
+                <div class="progress-bar" id="progressBar">
+                    <div class="progress-fill" id="progressFill"></div>
+                </div>
+                <div id="status" class="status-box">等待启动...</div>
+            </div>
+
+            <div class="panel-card">
+                <h3>📦 参数预设</h3>
+                <div class="form-group">
+                    <label for="preset_select">已保存预设</label>
+                    <select id="preset_select">
+                        <option value="">-- 无 --</option>
+                    </select>
+                    <div class="help-text" id="presetDefaultInfo">默认预设：未设置</div>
+                </div>
+                <div class="form-group">
+                    <label for="preset_name_input">预设名称</label>
+                    <div class="input-group">
+                        <input type="text" id="preset_name_input" placeholder="输入新预设名称（可中文）">
+                        <button type="button" id="savePresetBtn" class="btn-success">💾 保存</button>
+                    </div>
+                </div>
+                <div class="toggle-row">
+                    <input type="checkbox" id="preset_set_default">
+                    <label for="preset_set_default">保存时设为默认预设</label>
+                </div>
+                <div class="run-controls" style="margin-top: 8px;">
+                    <button type="button" id="loadPresetBtn" class="btn-secondary">📥 加载选中预设</button>
+                    <button type="button" id="setDefaultPresetBtn" class="btn-warning">⭐ 设为默认预设</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 文件浏览模态框 -->
+    <div id="fileBrowserModal" class="modal-overlay">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h4 id="modalTitle">选择文件夹</h4>
+                <button id="closeModalBtn" class="modal-close">&times;</button>
+            </div>
+            <div class="modal-path-container">
+                <input type="text" id="modalPathInput" class="modal-path-input">
+                <button id="modalGoBtn" class="browse-btn">转到</button>
+            </div>
+            <div class="modal-body">
+                <ul id="fileList" class="file-list"></ul>
+            </div>
+            <div class="modal-footer">
+                <button id="selectCurrentFolderBtn" class="btn-primary">选择当前文件夹</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ============ 全局变量 ============
+        let currentTargetInput = null;
+        let isRunning = false;
+        let isStopping = false;
+        let eventSource = null;
+        let sseErrorCount = 0;
+        const SSE_MAX_RETRIES = 5;
+        
+        // ============ DOM元素 ============
+        const statusDiv = document.getElementById('status');
+        const progressFill = document.getElementById('progressFill');
+        const runPipelineBtn = document.getElementById('runPipelineBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const presetSelect = document.getElementById('preset_select');
+        const presetNameInput = document.getElementById('preset_name_input');
+        const presetSetDefaultCheckbox = document.getElementById('preset_set_default');
+        const presetDefaultInfo = document.getElementById('presetDefaultInfo');
+        const savePresetBtn = document.getElementById('savePresetBtn');
+        const loadPresetBtn = document.getElementById('loadPresetBtn');
+        const setDefaultPresetBtn = document.getElementById('setDefaultPresetBtn');
+        
+        // ============ Tab切换 ============
+        document.querySelectorAll('.tab-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+                document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+                btn.classList.add('active');
+                document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+            });
+        });
+        
+        // ============ 折叠面板 ============
+        document.querySelectorAll('.collapsible-header').forEach(header => {
+            header.addEventListener('click', () => {
+                const target = document.getElementById(header.dataset.target);
+                header.classList.toggle('collapsed');
+                target.classList.toggle('collapsed');
+            });
+        });
+        
+        // ============ 搜索模式切换 ============
+        function updateSearchMode(mode) {
+            document.getElementById('search_entry_mode').value = mode;
+            
+            // Prompt模式专属元素（标签模式和选词填空模式时禁用）
+            const promptOnlyElements = [
+                'ps_prompt_template'
+            ];
+            
+            // Prompt模式和选词填空模式共用的Reranker元素（标签模式时禁用）
+            const rerankerElements = [
+                'ps_use_reranker',
+                'ps_rerank_top_k',
+                'ps_rerank_batch_size',
+                'ps_reranker_resolution'
+            ];
+            
+            // 标签模式专属元素（其他模式时禁用）
+            const labelOnlyElements = [
+                'ls_text_batch_size'
+            ];
+            
+            // 通用搜索参数（所有模式都可用）
+            const commonSearchElements = [
+                'ps_prompt_search_batch',
+                'ps_pkl_batch_size',
+                'ps_prompt_cache_batch',
+                'candidate_batch_size'
+            ];
+            
+            document.querySelectorAll('.search-mode-btn').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.mode === mode);
+            });
+            
+            // 设置元素启用/禁用状态的辅助函数
+            function setElementsEnabled(ids, enabled) {
+                ids.forEach(id => {
+                    const el = document.getElementById(id);
+                    if (el) {
+                        el.disabled = !enabled;
+                        el.style.opacity = enabled ? '' : '0.5';
+                        el.style.backgroundColor = enabled ? '' : '#f0f0f0';
+                    }
+                });
+            }
+            
+            if (mode === 'prompt') {
+                // Prompt模式：启用Prompt专属和Reranker，禁用标签专属
+                setElementsEnabled(promptOnlyElements, true);
+                setElementsEnabled(rerankerElements, true);
+                setElementsEnabled(labelOnlyElements, false);
+                setElementsEnabled(commonSearchElements, true);
+                // 启用中文查询选项
+                const chineseQueryEl = document.getElementById('ps_use_chinese_query');
+                if (chineseQueryEl) {
+                    chineseQueryEl.disabled = false;
+                    chineseQueryEl.style.opacity = '';
+                }
+            } else if (mode === 'label') {
+                // 标签模式：禁用Prompt专属和Reranker，启用标签专属
+                setElementsEnabled(promptOnlyElements, false);
+                setElementsEnabled(rerankerElements, false);
+                setElementsEnabled(labelOnlyElements, true);
+                setElementsEnabled(commonSearchElements, true);
+                // 启用中文查询选项（标签模式也使用中文标签）
+                const chineseQueryEl = document.getElementById('ps_use_chinese_query');
+                if (chineseQueryEl) {
+                    chineseQueryEl.disabled = false;
+                    chineseQueryEl.style.opacity = '';
+                }
+            } else if (mode === 'cloze') {
+                // 选词填空模式：禁用Prompt专属和标签专属，启用Reranker
+                setElementsEnabled(promptOnlyElements, false);
+                setElementsEnabled(rerankerElements, true);
+                setElementsEnabled(labelOnlyElements, false);
+                setElementsEnabled(commonSearchElements, true);
+                // 启用中文查询选项（选词填空模式使用 use_chinese）
+                const chineseQueryEl = document.getElementById('ps_use_chinese_query');
+                if (chineseQueryEl) {
+                    chineseQueryEl.disabled = false;
+                    chineseQueryEl.style.opacity = '';
+                }
+            }
+            
+            // 根据Reranker勾选状态更新参数禁用
+            updateRerankerParams();
+        }
+        
+        // ============ Reranker勾选联动 ============
+        function updateRerankerParams() {
+            const rerankerCheckbox = document.getElementById('ps_use_reranker');
+            const rerankerParamElements = [
+                'ps_rerank_top_k',
+                'ps_rerank_batch_size',
+                'ps_reranker_resolution'
+            ];
+            
+            // 只有当Reranker勾选框本身未被禁用时，才根据勾选状态控制参数
+            const isRerankerEnabled = !rerankerCheckbox.disabled;
+            const isRerankerChecked = rerankerCheckbox.checked;
+            const shouldEnableParams = isRerankerEnabled && isRerankerChecked;
+            
+            rerankerParamElements.forEach(id => {
+                const el = document.getElementById(id);
+                if (el) {
+                    el.disabled = !shouldEnableParams;
+                    el.style.opacity = shouldEnableParams ? '' : '0.5';
+                    el.style.backgroundColor = shouldEnableParams ? '' : '#f0f0f0';
+                }
+            });
+        }
+        
+        // 绑定Reranker勾选框事件
+        document.getElementById('ps_use_reranker').addEventListener('change', updateRerankerParams);
+        
+        // ============ 搜索模式下拉框联动 ============
+        function updateSearchModeSelect() {
+            const searchModeSelect = document.getElementById('search_mode_select');
+            const pklBatchEl = document.getElementById('ps_pkl_batch_size');
+
+            if (pklBatchEl) {
+                pklBatchEl.disabled = false;
+                pklBatchEl.style.opacity = '';
+                pklBatchEl.style.backgroundColor = '';
+            }
+        }
+
+        function setToggleVisualState(element, enabled) {
+            if (!element) {
+                return;
+            }
+            element.disabled = !enabled;
+            element.style.opacity = enabled ? '' : '0.6';
+        }
+
+        function updateCopyAudioConflictControls(isCopyMode) {
+            const copyKeepAudioEl = document.getElementById('ffmpeg_copy_keep_audio');
+            const forceCleanEl = document.getElementById('ffmpeg_force_clean');
+            if (!copyKeepAudioEl || !forceCleanEl) {
+                return;
+            }
+
+            if (!isCopyMode) {
+                setToggleVisualState(copyKeepAudioEl, false);
+                setToggleVisualState(forceCleanEl, true);
+                return;
+            }
+
+            if (copyKeepAudioEl.checked && forceCleanEl.checked) {
+                copyKeepAudioEl.checked = false;
+            }
+
+            if (forceCleanEl.checked) {
+                setToggleVisualState(forceCleanEl, true);
+                setToggleVisualState(copyKeepAudioEl, false);
+                return;
+            }
+
+            if (copyKeepAudioEl.checked) {
+                setToggleVisualState(copyKeepAudioEl, true);
+                setToggleVisualState(forceCleanEl, false);
+                return;
+            }
+
+            setToggleVisualState(copyKeepAudioEl, true);
+            setToggleVisualState(forceCleanEl, true);
+        }
+
+        function isNvencCodec(codec) {
+            return String(codec || '').toLowerCase().includes('nvenc');
+        }
+
+        function updateHwaccelVideoCodecConstraint(isCopyMode) {
+            const hwaccelEl = document.getElementById('ffmpeg_hwaccel');
+            const videoCodecEl = document.getElementById('ffmpeg_video_codec');
+            if (!hwaccelEl || !videoCodecEl) {
+                return;
+            }
+
+            const cpuOnlyMode = hwaccelEl.value === 'none';
+            const codecOptions = Array.from(videoCodecEl.querySelectorAll('option'));
+
+            codecOptions.forEach(option => {
+                const gpuCodec = isNvencCodec(option.value);
+                option.disabled = cpuOnlyMode ? gpuCodec : false;
+            });
+
+            if (!isCopyMode && videoCodecEl.value) {
+                if (isNvencCodec(videoCodecEl.value)) {
+                    videoCodecEl.dataset.lastGpuCodec = videoCodecEl.value;
+                } else {
+                    videoCodecEl.dataset.lastCpuCodec = videoCodecEl.value;
+                }
+            }
+
+            if (cpuOnlyMode && isNvencCodec(videoCodecEl.value)) {
+                const preferredCpuCodec = videoCodecEl.dataset.lastCpuCodec || 'libx265';
+                const preferredOption = videoCodecEl.querySelector(`option[value="${preferredCpuCodec}"]:not([disabled])`);
+                if (preferredOption) {
+                    videoCodecEl.value = preferredCpuCodec;
+                } else {
+                    const firstCpuOption = codecOptions.find(option => !option.disabled && !isNvencCodec(option.value));
+                    if (firstCpuOption) {
+                        videoCodecEl.value = firstCpuOption.value;
+                    }
+                }
+            }
+        }
+
+        function updateExportModeControls() {
+            const exportModeRadio = document.querySelector('input[name="export_mode"]:checked');
+            const exportMode = exportModeRadio ? exportModeRadio.value : 'precise';
+            const isCopyMode = exportMode === 'copy';
+
+            const videoCodecEl = document.getElementById('ffmpeg_video_codec');
+            if (!videoCodecEl) {
+                return;
+            }
+            const audioCodecEl = document.getElementById('ffmpeg_audio_codec');
+            const audioBitrateEl = document.getElementById('ffmpeg_audio_bitrate');
+
+            if (!videoCodecEl.value || !videoCodecEl.querySelector(`option[value="${videoCodecEl.value}"]`)) {
+                const fallbackCodec = videoCodecEl.dataset.lastEncodeCodec || 'libx265';
+                const fallbackOption = videoCodecEl.querySelector(`option[value="${fallbackCodec}"]`);
+                videoCodecEl.value = fallbackOption ? fallbackCodec : 'libx265';
+            }
+
+            if (videoCodecEl.value) {
+                videoCodecEl.dataset.lastEncodeCodec = videoCodecEl.value;
+            }
+            updateHwaccelVideoCodecConstraint(isCopyMode);
+
+            const encodingFieldIds = [
+                'ffmpeg_video_codec',
+                'ffmpeg_hwaccel',
+                'ffmpeg_gpu_device',
+                'ffmpeg_crf',
+                'ffmpeg_preset',
+                'ffmpeg_audio_codec',
+                'ffmpeg_audio_bitrate',
+                'ffmpeg_pixel_format',
+                'ffmpeg_movflags',
+                'nvenc_rc_mode',
+                'nvenc_rc_lookahead',
+                'nvenc_qmin_offset',
+                'nvenc_qmax_offset',
+                'nvenc_spatial_aq',
+                'nvenc_temporal_aq'
+            ];
+
+            encodingFieldIds.forEach(id => {
+                const el = document.getElementById(id);
+                if (!el) {
+                    return;
+                }
+                el.disabled = isCopyMode;
+                el.style.opacity = isCopyMode ? '0.6' : '';
+                if (el.tagName === 'INPUT' || el.tagName === 'SELECT') {
+                    el.style.backgroundColor = isCopyMode ? '#f0f0f0' : '';
+                }
+            });
+
+            if (audioCodecEl) {
+                if (!isCopyMode) {
+                    if (audioCodecEl.value === 'copy') {
+                        const fallbackAudioCodec = audioCodecEl.dataset.lastEncodeAudioCodec || 'aac';
+                        const fallbackAudioOption = audioCodecEl.querySelector(`option[value="${fallbackAudioCodec}"]`);
+                        audioCodecEl.value = fallbackAudioOption ? fallbackAudioCodec : 'aac';
+                    }
+                    if (audioCodecEl.value && audioCodecEl.value !== 'copy') {
+                        audioCodecEl.dataset.lastEncodeAudioCodec = audioCodecEl.value;
+                    }
+                }
+                audioCodecEl.disabled = isCopyMode;
+                audioCodecEl.style.opacity = isCopyMode ? '0.6' : '';
+                audioCodecEl.style.backgroundColor = isCopyMode ? '#f0f0f0' : '';
+            }
+            if (audioBitrateEl) {
+                audioBitrateEl.disabled = isCopyMode;
+                audioBitrateEl.style.opacity = isCopyMode ? '0.6' : '';
+                audioBitrateEl.style.backgroundColor = isCopyMode ? '#f0f0f0' : '';
+            }
+            updateCopyAudioConflictControls(isCopyMode);
+
+            // Copy模式下禁用起始帧偏移
+            const startOffsetEl = document.getElementById('start_offset');
+            if (startOffsetEl) {
+                startOffsetEl.disabled = isCopyMode;
+                startOffsetEl.style.opacity = isCopyMode ? '0.6' : '';
+                startOffsetEl.style.backgroundColor = isCopyMode ? '#f0f0f0' : '';
+            }
+        }
+
+        // ???????????
+        document.getElementById('search_mode_select').addEventListener('change', updateSearchModeSelect);
+
+        document.querySelectorAll('input[name="export_mode"]').forEach(radio => {
+            radio.addEventListener('change', updateExportModeControls);
+        });
+        ['ffmpeg_copy_keep_audio', 'ffmpeg_force_clean'].forEach(id => {
+            const element = document.getElementById(id);
+            if (element) {
+                element.addEventListener('change', updateExportModeControls);
+            }
+        });
+
+        const ffmpegVideoCodecEl = document.getElementById('ffmpeg_video_codec');
+        if (ffmpegVideoCodecEl) {
+            ffmpegVideoCodecEl.addEventListener('change', () => {
+                if (ffmpegVideoCodecEl.value !== 'copy') {
+                    ffmpegVideoCodecEl.dataset.lastEncodeCodec = ffmpegVideoCodecEl.value;
+                }
+            });
+        }
+        const ffmpegHwaccelEl = document.getElementById('ffmpeg_hwaccel');
+        if (ffmpegHwaccelEl) {
+            ffmpegHwaccelEl.addEventListener('change', updateExportModeControls);
+        }
+        const ffmpegAudioCodecEl = document.getElementById('ffmpeg_audio_codec');
+        if (ffmpegAudioCodecEl) {
+            ffmpegAudioCodecEl.addEventListener('change', () => {
+                if (ffmpegAudioCodecEl.value !== 'copy') {
+                    ffmpegAudioCodecEl.dataset.lastEncodeAudioCodec = ffmpegAudioCodecEl.value;
+                }
+            });
+        }
+
+        document.querySelectorAll('.search-mode-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                updateSearchMode(btn.dataset.mode);
+            });
+        });
+        
+        // ============ 滑块值更新 ============
+        document.querySelectorAll('input[type="range"]').forEach(slider => {
+            const valSpan = document.getElementById(slider.id + '_val');
+            if (valSpan) {
+                slider.addEventListener('input', () => {
+                    valSpan.textContent = slider.value;
+                });
+            }
+        });
+        
+        // ============ 文件浏览器 ============
+        const modal = document.getElementById('fileBrowserModal');
+        const closeModalBtn = document.getElementById('closeModalBtn');
+        const fileList = document.getElementById('fileList');
+        const modalPathInput = document.getElementById('modalPathInput');
+        const modalGoBtn = document.getElementById('modalGoBtn');
+        const selectCurrentFolderBtn = document.getElementById('selectCurrentFolderBtn');
+        
+        document.querySelectorAll('.browse-btn[data-target]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                currentTargetInput = document.getElementById(btn.dataset.target);
+                modal.style.display = 'flex';
+                const initialPath = currentTargetInput.value || '';
+                fetchAndDisplayPath(initialPath);
+            });
+        });
+        
+        function hideModal() { modal.style.display = 'none'; }
+        closeModalBtn.addEventListener('click', hideModal);
+        window.addEventListener('click', e => { if (e.target === modal) hideModal(); });
+        
+        async function fetchAndDisplayPath(path = '') {
+            fileList.innerHTML = '<li>正在加载...</li>';
+            try {
+                const res = await fetch(`/browse?path=${encodeURIComponent(path)}`);
+                const data = await res.json();
+                if (!res.ok) { fileList.innerHTML = `<li style="color: red;">错误: ${data.error}</li>`; return; }
+                
+                modalPathInput.value = data.current_path;
+                fileList.innerHTML = '';
+                
+                if (data.parent_path) {
+                    const li = document.createElement('li');
+                    li.innerHTML = `<span class="icon">⬆️</span> .. (父文件夹)`;
+                    li.onclick = () => fetchAndDisplayPath(data.parent_path);
+                    fileList.appendChild(li);
+                }
+                
+                data.dirs.forEach(dir => {
+                    const fullPath = data.current_path + (data.current_path.endsWith('\\') || data.current_path.endsWith('/') ? '' : '\\') + dir;
+                    const li = document.createElement('li');
+                    li.innerHTML = `<span class="icon">📁</span> ${dir}`;
+                    li.onclick = () => fetchAndDisplayPath(fullPath);
+                    fileList.appendChild(li);
+                });
+                
+                data.files.forEach(file => {
+                    const li = document.createElement('li');
+                    li.innerHTML = `<span class="icon">📄</span> ${file}`;
+                    li.style.color = '#888';
+                    fileList.appendChild(li);
+                });
+                
+                selectCurrentFolderBtn.onclick = () => {
+                    if (currentTargetInput) currentTargetInput.value = data.current_path;
+                    hideModal();
+                };
+            } catch (err) {
+                fileList.innerHTML = `<li style="color: red;">无法连接到后端。</li>`;
+            }
+        }
+        
+        modalGoBtn.addEventListener('click', () => fetchAndDisplayPath(modalPathInput.value));
+        modalPathInput.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); fetchAndDisplayPath(modalPathInput.value); } });
+        
+        // ============ 收集配置参数 ============
+        function collectConfig() {
+            const getOptionalIntegerString = (inputId) => {
+                const raw = document.getElementById(inputId).value;
+                const normalized = raw == null ? '' : String(raw).trim();
+                if (normalized === '') {
+                    return null;
+                }
+                const parsed = Number.parseInt(normalized, 10);
+                if (Number.isNaN(parsed)) {
+                    return null;
+                }
+                // 保持与后端现有 truthy 判定兼容：0 需要作为字符串传递
+                return String(parsed);
+            };
+
+            const exportMode = document.querySelector('input[name="export_mode"]:checked').value;
+            const searchEntryMode = document.getElementById('search_entry_mode').value;
+            const searchModeSelectValue = parseInt(document.getElementById('search_mode_select').value);
+            const selectedPklBatchSize = parseInt(document.getElementById('ps_pkl_batch_size').value);
+            const selectedCandidateBatchSize = parseInt(document.getElementById('candidate_batch_size').value);
+            const startFrameOffset = getOptionalIntegerString('start_offset');
+            const endFrameOffset = getOptionalIntegerString('end_offset');
+            
+            return {
+                // 流水线控制
+                run_indexer: document.getElementById('run_indexer').checked,
+                run_search: document.getElementById('run_search').checked,
+                search_entry_mode: searchEntryMode,
+                
+                // 索引配置
+                indexer: {
+                    input_directory: document.getElementById('input_directory').value,
+                    output_directory: document.getElementById('output_directory').value,
+                    model_name: document.getElementById('idx_model_name').value,
+                    model_type: document.getElementById('idx_model_type').value,
+                    truncate_dim: document.getElementById('idx_truncate_dim').value || null,
+                    output_resolution: document.getElementById('idx_output_resolution').value,
+                    batch_size: parseInt(document.getElementById('idx_batch_size').value),
+                    workers: parseInt(document.getElementById('idx_workers').value),
+                    io_workers: parseInt(document.getElementById('idx_io_workers').value),
+                    cosine_similarity_threshold: parseFloat(document.getElementById('idx_cosine_threshold').value),
+                    brightness_threshold: parseInt(document.getElementById('idx_brightness_threshold').value),
+                    black_pixel_ratio: parseInt(document.getElementById('idx_black_pixel_ratio').value),
+                    sample_interval: parseInt(document.getElementById('idx_sample_interval').value),
+                    min_scene_length: parseInt(document.getElementById('idx_min_scene_length').value),
+                    localmax_order: parseInt(document.getElementById('idx_localmax_order').value),
+                    resume_processing: document.getElementById('idx_resume_processing').checked,
+                },
+                
+                // Prompt搜索配置
+                prompt_search: {
+                    index_directory: document.getElementById('search_index_directory').value,
+                    video_output_directory: document.getElementById('ps_video_output_directory').value || null,
+                    use_fp16: document.getElementById('ps_use_fp16').checked,
+                    feature_fp16: document.getElementById('ps_feature_fp16').checked,
+                    use_reranker: document.getElementById('ps_use_reranker').checked,
+                    use_chinese: document.getElementById('ps_use_chinese_query').checked,
+                    rerank_top_k: parseInt(document.getElementById('ps_rerank_top_k').value),
+                    rerank_batch_size: parseInt(document.getElementById('ps_rerank_batch_size').value),
+                    reranker_output_resolution: document.getElementById('ps_reranker_resolution').value,
+                    prompt_template: document.getElementById('ps_prompt_template').value,
+                    video_copy_mode: exportMode === 'copy',
+                    video_name_format: document.getElementById('video_name_format').value,
+                    start_frame_offset: startFrameOffset,
+                    end_frame_offset: endFrameOffset,
+                    prompt_search_batch_size: parseInt(document.getElementById('ps_prompt_search_batch').value),
+                    pkl_batch_size: selectedPklBatchSize,
+                    use_diskcache: document.getElementById('use_diskcache').checked,
+                    debug_similarity: document.getElementById('debug_similarity').checked,
+                    search_mode: searchModeSelectValue,
+                    top_k: parseInt(document.getElementById('ps_top_k').value),
+                    candidate_batch_size: selectedCandidateBatchSize,
+                    prompt_cache_batch_size: parseInt(document.getElementById('ps_prompt_cache_batch').value),
+                    pkl_load_workers: parseInt(document.getElementById('ps_pkl_load_workers').value),
+                    lmdb_write_batch_size: parseInt(document.getElementById('ps_lmdb_write_batch_size').value),
+                    vector_dedup_threshold: document.getElementById('ps_vector_dedup_threshold').value ? parseFloat(document.getElementById('ps_vector_dedup_threshold').value) : null,
+                    adjacent_merge_frames: document.getElementById('ps_adjacent_merge_frames').value ? parseInt(document.getElementById('ps_adjacent_merge_frames').value) : null,
+                },
+                
+                // 标签搜索配置
+                label_search: {
+                    index_directory: document.getElementById('search_index_directory').value,
+                    video_output_directory: document.getElementById('ps_video_output_directory').value || null,
+                    prompt_search_batch_size: parseInt(document.getElementById('ls_text_batch_size').value),
+                    video_copy_mode: exportMode === 'copy',
+                    video_name_format: document.getElementById('video_name_format').value,
+                    debug_similarity: document.getElementById('debug_similarity').checked,
+                    start_frame_offset: startFrameOffset,
+                    end_frame_offset: endFrameOffset,
+                    search_mode: searchModeSelectValue,
+                    top_k: parseInt(document.getElementById('ps_top_k').value),
+                    candidate_batch_size: selectedCandidateBatchSize,
+                    use_diskcache: document.getElementById('use_diskcache').checked,
+                    use_chinese_labels: document.getElementById('ps_use_chinese_query').checked,
+                    pkl_load_workers: parseInt(document.getElementById('ps_pkl_load_workers').value),
+                    lmdb_write_batch_size: parseInt(document.getElementById('ps_lmdb_write_batch_size').value),
+                    label_cache_batch_size: parseInt(document.getElementById('ps_prompt_cache_batch').value),
+                    pkl_batch_size: selectedPklBatchSize,
+                    vector_dedup_threshold: document.getElementById('ps_vector_dedup_threshold').value ? parseFloat(document.getElementById('ps_vector_dedup_threshold').value) : null,
+                    adjacent_merge_frames: document.getElementById('ps_adjacent_merge_frames').value ? parseInt(document.getElementById('ps_adjacent_merge_frames').value) : null,
+                },
+                
+                // 选词填空搜索配置
+                cloze_search: {
+                    index_directory: document.getElementById('search_index_directory').value,
+                    video_output_directory: document.getElementById('ps_video_output_directory').value || null,
+                    use_reranker: document.getElementById('ps_use_reranker').checked,
+                    use_chinese: document.getElementById('ps_use_chinese_query').checked,
+                    rerank_top_k: parseInt(document.getElementById('ps_rerank_top_k').value),
+                    rerank_batch_size: parseInt(document.getElementById('ps_rerank_batch_size').value),
+                    reranker_output_resolution: document.getElementById('ps_reranker_resolution').value,
+                    video_copy_mode: exportMode === 'copy',
+                    video_name_format: document.getElementById('video_name_format').value,
+                    start_frame_offset: startFrameOffset,
+                    end_frame_offset: endFrameOffset,
+                    prompt_search_batch_size: parseInt(document.getElementById('ps_prompt_search_batch').value),
+                    pkl_batch_size: selectedPklBatchSize,
+                    use_diskcache: document.getElementById('use_diskcache').checked,
+                    debug_similarity: document.getElementById('debug_similarity').checked,
+                    search_mode: searchModeSelectValue,
+                    top_k: parseInt(document.getElementById('ps_top_k').value),
+                    candidate_batch_size: selectedCandidateBatchSize,
+                    prompt_cache_batch_size: parseInt(document.getElementById('ps_prompt_cache_batch').value),
+                    pkl_load_workers: parseInt(document.getElementById('ps_pkl_load_workers').value),
+                    lmdb_write_batch_size: parseInt(document.getElementById('ps_lmdb_write_batch_size').value),
+                    vector_dedup_threshold: document.getElementById('ps_vector_dedup_threshold').value ? parseFloat(document.getElementById('ps_vector_dedup_threshold').value) : null,
+                    adjacent_merge_frames: document.getElementById('ps_adjacent_merge_frames').value ? parseInt(document.getElementById('ps_adjacent_merge_frames').value) : null,
+                }
+            };
+        }
+
+        function collectFfmpegConfig() {
+            const exportMode = document.querySelector('input[name="export_mode"]:checked').value;
+            const copyKeepAudio = document.getElementById('ffmpeg_copy_keep_audio').checked;
+            const isCopyMode = exportMode === 'copy';
+            return {
+                video_output: {
+                    copy_mode: isCopyMode,
+                    video_codec: document.getElementById('ffmpeg_video_codec').value,
+                    hwaccel: document.getElementById('ffmpeg_hwaccel').value,
+                    gpu_device: parseInt(document.getElementById('ffmpeg_gpu_device').value),
+                    crf: parseInt(document.getElementById('ffmpeg_crf').value),
+                    preset: document.getElementById('ffmpeg_preset').value,
+                    audio_codec: isCopyMode
+                        ? (copyKeepAudio ? 'copy' : 'none')
+                        : document.getElementById('ffmpeg_audio_codec').value,
+                    audio_bitrate: document.getElementById('ffmpeg_audio_bitrate').value,
+                    force_clean: document.getElementById('ffmpeg_force_clean').checked,
+                    pixel_format: document.getElementById('ffmpeg_pixel_format').value,
+                    movflags: document.getElementById('ffmpeg_movflags').value,
+                    nvenc: {
+                        rc_mode: document.getElementById('nvenc_rc_mode').value,
+                        spatial_aq: document.getElementById('nvenc_spatial_aq').checked,
+                        temporal_aq: document.getElementById('nvenc_temporal_aq').checked,
+                        rc_lookahead: parseInt(document.getElementById('nvenc_rc_lookahead').value),
+                        qmin_offset: parseInt(document.getElementById('nvenc_qmin_offset').value),
+                        qmax_offset: parseInt(document.getElementById('nvenc_qmax_offset').value)
+                    }
+                }
+            };
+        }
+
+        async function saveFfmpegConfig() {
+            const ffmpegConfig = collectFfmpegConfig();
+            const response = await fetch('/save_ffmpeg_config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(ffmpegConfig)
+            });
+            const data = await response.json();
+            if (!response.ok || !data.success) {
+                throw new Error(data.message || data.error || '写入 FFmpeg 参数失败');
+            }
+        }
+
+        async function saveSimilarityConfig() {
+            const payload = {
+                similarity_thresholds: {
+                    clip_large: parseFloat(document.getElementById('sim_clip_large').value),
+                    fgclip2: parseFloat(document.getElementById('sim_fgclip2').value),
+                    reranker: parseFloat(document.getElementById('sim_reranker').value),
+                    reranker_weight: parseFloat(document.getElementById('sim_reranker_weight').value)
+                }
+            };
+            const response = await fetch('/save_similarity_config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await response.json();
+            if (!response.ok || !data.success) {
+                throw new Error(data.message || data.error || '写入相似度阈值失败');
+            }
+        }
+
+        function pickDefined(...values) {
+            for (const value of values) {
+                if (value !== undefined && value !== null) {
+                    return value;
+                }
+            }
+            return undefined;
+        }
+
+        function setInputValue(id, value) {
+            const element = document.getElementById(id);
+            if (!element || value === undefined) {
+                return;
+            }
+            if (element.type === 'checkbox') {
+                element.checked = Boolean(value);
+            } else {
+                element.value = value === null ? '' : String(value);
+            }
+        }
+
+        function updateDefaultPresetInfo(defaultPresetName) {
+            presetDefaultInfo.textContent = defaultPresetName
+                ? `默认预设：${defaultPresetName}`
+                : '默认预设：未设置';
+        }
+
+        function renderPresetOptions(presets, selectedName = '') {
+            presetSelect.innerHTML = '<option value="">-- 无 --</option>';
+            presets.forEach(name => {
+                const option = document.createElement('option');
+                option.value = name;
+                option.textContent = name;
+                presetSelect.appendChild(option);
+            });
+            if (selectedName && presets.includes(selectedName)) {
+                presetSelect.value = selectedName;
+            }
+        }
+
+        function collectPresetData() {
+            return {
+                version: 1,
+                pipeline_config: collectConfig(),
+                ffmpeg_config: collectFfmpegConfig(),
+                similarity_thresholds: {
+                    clip_large: parseFloat(document.getElementById('sim_clip_large').value),
+                    fgclip2: parseFloat(document.getElementById('sim_fgclip2').value),
+                    reranker: parseFloat(document.getElementById('sim_reranker').value),
+                    reranker_weight: parseFloat(document.getElementById('sim_reranker_weight').value)
+                }
+            };
+        }
+
+        function applyPresetData(presetData) {
+            if (!presetData || typeof presetData !== 'object') {
+                return;
+            }
+
+            const config = presetData.pipeline_config || presetData.config || {};
+            const indexerConfig = config.indexer || {};
+            const promptConfig = config.prompt_search || {};
+            const labelConfig = config.label_search || {};
+            const clozeConfig = config.cloze_search || {};
+
+            setInputValue('run_indexer', config.run_indexer);
+            setInputValue('run_search', config.run_search);
+
+            setInputValue('input_directory', indexerConfig.input_directory);
+            setInputValue('output_directory', indexerConfig.output_directory);
+            setInputValue('idx_model_name', indexerConfig.model_name);
+            setInputValue('idx_model_type', indexerConfig.model_type);
+            setInputValue('idx_truncate_dim', indexerConfig.truncate_dim);
+            setInputValue('idx_output_resolution', indexerConfig.output_resolution);
+            setInputValue('idx_batch_size', indexerConfig.batch_size);
+            setInputValue('idx_workers', indexerConfig.workers);
+            setInputValue('idx_io_workers', indexerConfig.io_workers);
+            setInputValue('idx_cosine_threshold', indexerConfig.cosine_similarity_threshold);
+            setInputValue('idx_brightness_threshold', indexerConfig.brightness_threshold);
+            setInputValue('idx_black_pixel_ratio', indexerConfig.black_pixel_ratio);
+            setInputValue('idx_sample_interval', indexerConfig.sample_interval);
+            setInputValue('idx_min_scene_length', indexerConfig.min_scene_length);
+            setInputValue('idx_localmax_order', indexerConfig.localmax_order);
+            setInputValue('idx_resume_processing', indexerConfig.resume_processing);
+
+            const searchEntryMode = pickDefined(config.search_entry_mode, 'prompt');
+            updateSearchMode(searchEntryMode);
+
+            setInputValue('search_index_directory', pickDefined(
+                promptConfig.index_directory,
+                labelConfig.index_directory,
+                clozeConfig.index_directory
+            ));
+            setInputValue('ps_video_output_directory', pickDefined(
+                promptConfig.video_output_directory,
+                labelConfig.video_output_directory,
+                clozeConfig.video_output_directory
+            ));
+            setInputValue('ps_prompt_template', promptConfig.prompt_template);
+            setInputValue('video_name_format', pickDefined(
+                promptConfig.video_name_format,
+                labelConfig.video_name_format,
+                clozeConfig.video_name_format
+            ));
+            setInputValue('start_offset', pickDefined(
+                promptConfig.start_frame_offset,
+                labelConfig.start_frame_offset,
+                clozeConfig.start_frame_offset
+            ));
+            setInputValue('end_offset', pickDefined(
+                promptConfig.end_frame_offset,
+                labelConfig.end_frame_offset,
+                clozeConfig.end_frame_offset
+            ));
+            setInputValue('ps_prompt_search_batch', pickDefined(
+                promptConfig.prompt_search_batch_size,
+                clozeConfig.prompt_search_batch_size
+            ));
+            setInputValue('ls_text_batch_size', labelConfig.prompt_search_batch_size);
+            setInputValue('search_mode_select', pickDefined(
+                promptConfig.search_mode,
+                labelConfig.search_mode,
+                clozeConfig.search_mode
+            ));
+            setInputValue('candidate_batch_size', pickDefined(
+                promptConfig.candidate_batch_size,
+                labelConfig.candidate_batch_size,
+                clozeConfig.candidate_batch_size
+            ));
+            setInputValue('ps_pkl_batch_size', pickDefined(
+                promptConfig.pkl_batch_size,
+                labelConfig.pkl_batch_size,
+                clozeConfig.pkl_batch_size
+            ));
+            setInputValue('ps_top_k', pickDefined(
+                promptConfig.top_k,
+                labelConfig.top_k,
+                clozeConfig.top_k
+            ));
+            setInputValue('ps_pkl_load_workers', pickDefined(
+                promptConfig.pkl_load_workers,
+                labelConfig.pkl_load_workers,
+                clozeConfig.pkl_load_workers
+            ));
+            setInputValue('ps_prompt_cache_batch', pickDefined(
+                promptConfig.prompt_cache_batch_size,
+                labelConfig.label_cache_batch_size,
+                clozeConfig.prompt_cache_batch_size
+            ));
+            setInputValue('ps_lmdb_write_batch_size', pickDefined(
+                promptConfig.lmdb_write_batch_size,
+                labelConfig.lmdb_write_batch_size,
+                clozeConfig.lmdb_write_batch_size
+            ));
+            setInputValue('ps_vector_dedup_threshold', pickDefined(
+                promptConfig.vector_dedup_threshold,
+                labelConfig.vector_dedup_threshold,
+                clozeConfig.vector_dedup_threshold
+            ));
+            setInputValue('ps_adjacent_merge_frames', pickDefined(
+                promptConfig.adjacent_merge_frames,
+                labelConfig.adjacent_merge_frames,
+                clozeConfig.adjacent_merge_frames
+            ));
+
+            setInputValue('ps_use_reranker', pickDefined(promptConfig.use_reranker, clozeConfig.use_reranker));
+            setInputValue('use_diskcache', pickDefined(promptConfig.use_diskcache, labelConfig.use_diskcache, clozeConfig.use_diskcache));
+            setInputValue('ps_use_fp16', promptConfig.use_fp16);
+            setInputValue('ps_feature_fp16', promptConfig.feature_fp16);
+            setInputValue('ps_use_chinese_query', pickDefined(promptConfig.use_chinese, labelConfig.use_chinese_labels, clozeConfig.use_chinese));
+            setInputValue('debug_similarity', pickDefined(promptConfig.debug_similarity, labelConfig.debug_similarity, clozeConfig.debug_similarity));
+            setInputValue('ps_rerank_top_k', pickDefined(promptConfig.rerank_top_k, clozeConfig.rerank_top_k));
+            setInputValue('ps_rerank_batch_size', pickDefined(promptConfig.rerank_batch_size, clozeConfig.rerank_batch_size));
+            setInputValue('ps_reranker_resolution', pickDefined(promptConfig.reranker_output_resolution, clozeConfig.reranker_output_resolution));
+
+            const copyMode = pickDefined(promptConfig.video_copy_mode, labelConfig.video_copy_mode, clozeConfig.video_copy_mode);
+            if (copyMode !== undefined) {
+                document.getElementById(copyMode ? 'export_copy' : 'export_precise').checked = true;
+            }
+
+            const ffmpegConfig = presetData.ffmpeg_config || {};
+            const videoOutputConfig = ffmpegConfig.video_output || {};
+            setInputValue('ffmpeg_video_codec', videoOutputConfig.video_codec);
+            setInputValue('ffmpeg_hwaccel', videoOutputConfig.hwaccel);
+            setInputValue('ffmpeg_gpu_device', videoOutputConfig.gpu_device);
+            setInputValue('ffmpeg_crf', videoOutputConfig.crf);
+            setInputValue('ffmpeg_preset', videoOutputConfig.preset);
+            const audioCodecValue = pickDefined(videoOutputConfig.audio_codec, '');
+            const ffmpegAudioCodecEl = document.getElementById('ffmpeg_audio_codec');
+            if (ffmpegAudioCodecEl && audioCodecValue && videoOutputConfig.copy_mode !== true && audioCodecValue !== 'copy'
+                && ffmpegAudioCodecEl.querySelector(`option[value="${audioCodecValue}"]`)) {
+                setInputValue('ffmpeg_audio_codec', audioCodecValue);
+            }
+            const ffmpegCopyKeepAudioEl = document.getElementById('ffmpeg_copy_keep_audio');
+            if (ffmpegCopyKeepAudioEl && videoOutputConfig.copy_mode === true && audioCodecValue) {
+                ffmpegCopyKeepAudioEl.checked = (audioCodecValue === 'copy');
+            }
+            setInputValue('ffmpeg_audio_bitrate', videoOutputConfig.audio_bitrate);
+            setInputValue('ffmpeg_force_clean', videoOutputConfig.force_clean);
+            setInputValue('ffmpeg_pixel_format', videoOutputConfig.pixel_format);
+            setInputValue('ffmpeg_movflags', videoOutputConfig.movflags);
+            // NVENC 高级参数
+            const nvencConfig = videoOutputConfig.nvenc || {};
+            setInputValue('nvenc_rc_mode', nvencConfig.rc_mode);
+            setInputValue('nvenc_spatial_aq', nvencConfig.spatial_aq);
+            setInputValue('nvenc_temporal_aq', nvencConfig.temporal_aq);
+            setInputValue('nvenc_rc_lookahead', nvencConfig.rc_lookahead);
+            setInputValue('nvenc_qmin_offset', nvencConfig.qmin_offset);
+            setInputValue('nvenc_qmax_offset', nvencConfig.qmax_offset);
+            if (videoOutputConfig.copy_mode !== undefined) {
+                document.getElementById(videoOutputConfig.copy_mode ? 'export_copy' : 'export_precise').checked = true;
+            }
+
+            // 相似度阈值
+            const simConfig = presetData.similarity_thresholds || {};
+            setInputValue('sim_clip_large', simConfig.clip_large);
+            setInputValue('sim_fgclip2', simConfig.fgclip2);
+            setInputValue('sim_reranker', simConfig.reranker);
+            setInputValue('sim_reranker_weight', simConfig.reranker_weight);
+
+            updateSearchModeSelect();
+            updateRerankerParams();
+            updateExportModeControls();
+        }
+
+        async function refreshPresetList(preferredName = '') {
+            const response = await fetch('/list_presets');
+            const data = await response.json();
+            if (!response.ok || !data.success) {
+                throw new Error(data.message || data.error || '读取预设列表失败');
+            }
+            renderPresetOptions(data.presets || [], preferredName || data.default_preset || '');
+            updateDefaultPresetInfo(data.default_preset);
+            return data;
+        }
+
+        async function loadPresetByName(name, silent = false) {
+            if (!name) {
+                throw new Error('请先选择预设');
+            }
+            const response = await fetch(`/load_preset?name=${encodeURIComponent(name)}`);
+            const data = await response.json();
+            if (!response.ok || !data.success) {
+                throw new Error(data.message || data.error || '加载预设失败');
+            }
+            applyPresetData(data.data || {});
+            presetSelect.value = data.name || name;
+            presetNameInput.value = data.name || name;
+            if (!silent) {
+                statusDiv.className = 'status-box success';
+                statusDiv.textContent = `✅ 已加载预设: ${data.name || name}`;
+            }
+        }
+
+        async function savePreset() {
+            const presetName = (presetNameInput.value || presetSelect.value || '').trim();
+            if (!presetName) {
+                statusDiv.className = 'status-box error';
+                statusDiv.textContent = '❌ 请先输入预设名称';
+                return;
+            }
+            try {
+                const response = await fetch('/save_preset', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        name: presetName,
+                        data: collectPresetData(),
+                        set_as_default: presetSetDefaultCheckbox.checked
+                    })
+                });
+                const data = await response.json();
+                if (!response.ok || !data.success) {
+                    throw new Error(data.message || data.error || '保存预设失败');
+                }
+                const savedName = data.name || presetName;
+                await refreshPresetList(savedName);
+                presetNameInput.value = savedName;
+                statusDiv.className = 'status-box success';
+                statusDiv.textContent = `✅ 预设已保存: ${savedName}`;
+            } catch (error) {
+                statusDiv.className = 'status-box error';
+                statusDiv.textContent = '❌ 保存预设失败: ' + error.message;
+            }
+        }
+
+        async function loadSelectedPreset() {
+            try {
+                await loadPresetByName(presetSelect.value);
+            } catch (error) {
+                statusDiv.className = 'status-box error';
+                statusDiv.textContent = '❌ 加载预设失败: ' + error.message;
+            }
+        }
+
+        async function setDefaultPreset() {
+            const presetName = presetSelect.value;
+            if (!presetName) {
+                return;
+            }
+            try {
+                const response = await fetch('/set_default_preset', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: presetName })
+                });
+                const data = await response.json();
+                if (!response.ok || !data.success) {
+                    throw new Error(data.message || data.error || '设置默认预设失败');
+                }
+                updateDefaultPresetInfo(data.default_preset);
+                statusDiv.className = 'status-box success';
+                statusDiv.textContent = `✅ 默认预设已设置为: ${presetName}`;
+            } catch (error) {
+                statusDiv.className = 'status-box error';
+                statusDiv.textContent = '❌ 设置默认预设失败: ' + error.message;
+            }
+        }
+
+        async function initPresets() {
+            const data = await refreshPresetList();
+            if (data.default_preset) {
+                await loadPresetByName(data.default_preset, true);
+                statusDiv.className = 'status-box';
+                statusDiv.textContent = `🧩 已加载默认预设: ${data.default_preset}`;
+            }
+        }
+        
+        // ============ 更新UI状态 ============
+        async function loadModelList() {
+            try {
+                const response = await fetch('/list_models');
+                const data = await response.json();
+                if (data.success && data.models.length > 0) {
+                    const select = document.getElementById('idx_model_name');
+                    const currentValue = select.value;
+                    select.innerHTML = '';
+                    data.models.forEach(model => {
+                        const option = document.createElement('option');
+                        option.value = model.name;
+                        option.textContent = `${model.name} (${model.type})`;
+                        select.appendChild(option);
+                    });
+                    if (currentValue) {
+                        select.value = currentValue;
+                    }
+                }
+            } catch (error) {
+                console.error('加载模型列表失败:', error);
+            }
+        }
+        
+        // ============ 事件绑定 ============
+        // ============ 运行状态（覆盖乱码版本） ============
+        // ============ Runtime Controls ============
+        function setRunningState(running) {
+            isRunning = running;
+            runPipelineBtn.disabled = running;
+            stopBtn.disabled = !running;
+            if (running) {
+                statusDiv.className = 'status-box running';
+                statusDiv.textContent = 'Running...';
+            }
+        }
+
+        async function runPipeline() {
+            if (isRunning) return;
+            const config = collectConfig();
+
+            if (!config.run_indexer && !config.run_search) {
+                statusDiv.className = 'status-box error';
+                statusDiv.textContent = 'ERROR: Please select at least one step (index/search).';
+                return;
+            }
+
+            try {
+                statusDiv.className = 'status-box running';
+                if (config.run_search) {
+                    statusDiv.textContent = 'Saving FFmpeg config...';
+                    await saveFfmpegConfig();
+                    statusDiv.textContent = 'Saving similarity config...';
+                    await saveSimilarityConfig();
+                } else {
+                    statusDiv.textContent = 'Preparing (index only)...';
+                }
+
+                isStopping = false;
+                sseErrorCount = 0;
+                if (eventSource) {
+                    try { eventSource.close(); } catch (e) {}
+                    eventSource = null;
+                }
+
+                setRunningState(true);
+                progressFill.style.width = '0%';
+                eventSource = new EventSource(`/run_pipeline_stream?config=${encodeURIComponent(JSON.stringify(config))}`);
+
+                eventSource.onmessage = function(event) {
+                    const data = JSON.parse(event.data);
+                    if (data.type === 'heartbeat') {
+                        // 心跳消息，重置错误计数
+                        sseErrorCount = 0;
+                        return;
+                    } else if (data.type === 'progress') {
+                        sseErrorCount = 0;
+                        progressFill.style.width = data.percent + '%';
+                    } else if (data.type === 'status') {
+                        sseErrorCount = 0;
+                        statusDiv.textContent = data.message;
+                    } else if (data.type === 'complete') {
+                        isStopping = false;
+                        setRunningState(false);
+                        if (data.success) {
+                            statusDiv.className = 'status-box success';
+                            statusDiv.textContent = 'SUCCESS: ' + data.message;
+                            progressFill.style.width = '100%';
+                        } else {
+                            statusDiv.className = 'status-box error';
+                            statusDiv.textContent = 'ERROR: ' + data.message;
+                        }
+                        if (eventSource) {
+                            eventSource.close();
+                            eventSource = null;
+                        }
+                    }
+                };
+
+                eventSource.onerror = function() {
+                    if (isStopping) return;
+                    sseErrorCount++;
+                    console.warn(`SSE connection error (${sseErrorCount}/${SSE_MAX_RETRIES})`);
+                    
+                    // 未达到重试上限时，让 EventSource 自动重连
+                    if (sseErrorCount < SSE_MAX_RETRIES) {
+                        statusDiv.textContent = `连接波动，正在重连 (${sseErrorCount}/${SSE_MAX_RETRIES})...`;
+                        return;
+                    }
+                    
+                    // 达到上限，真正断开
+                    isStopping = false;
+                    setRunningState(false);
+                    statusDiv.className = 'status-box error';
+                    statusDiv.textContent = 'ERROR: Connection lost after multiple retries.';
+                    if (eventSource) {
+                        eventSource.close();
+                        eventSource = null;
+                    }
+                };
+            } catch (error) {
+                isStopping = false;
+                setRunningState(false);
+                statusDiv.className = 'status-box error';
+                statusDiv.textContent = 'ERROR: Run failed - ' + error.message;
+            }
+        }
+
+        async function stopPipeline() {
+            if (!isRunning && !eventSource) return;
+
+            isStopping = true;
+            setRunningState(false);
+            statusDiv.className = 'status-box running';
+            statusDiv.textContent = 'Stop request sent...';
+
+            if (eventSource) {
+                eventSource.onmessage = null;
+                eventSource.onerror = null;
+                eventSource.close();
+                eventSource = null;
+            }
+
+            try {
+                await fetch('/stop_pipeline', { method: 'POST' });
+                statusDiv.className = 'status-box success';
+                statusDiv.textContent = 'Stopped. Ready to run again.';
+            } catch (error) {
+                statusDiv.className = 'status-box error';
+                statusDiv.textContent = 'ERROR: Force stop failed - ' + error.message;
+            } finally {
+                setRunningState(false);
+                isStopping = false;
+            }
+        }
+
+        runPipelineBtn.addEventListener('click', () => runPipeline());
+        stopBtn.addEventListener('click', stopPipeline);
+        savePresetBtn.addEventListener('click', savePreset);
+        loadPresetBtn.addEventListener('click', loadSelectedPreset);
+        setDefaultPresetBtn.addEventListener('click', setDefaultPreset);
+        presetSelect.addEventListener('change', () => {
+            if (presetSelect.value) {
+                presetNameInput.value = presetSelect.value;
+            }
+        });
+        
+        // ============ 页面加载时获取模型列表 ============
+        document.addEventListener('DOMContentLoaded', async () => {
+            // 初始化搜索模式（默认prompt模式，禁用标签Batch）
+            updateSearchMode('prompt');
+            // 初始化搜索模式下拉框联动
+            updateSearchModeSelect();
+            updateExportModeControls();
+            
+            try {
+                await loadModelList();
+                await initPresets();
+            } catch (error) {
+                console.error('初始化页面配置失败:', error);
+            }
+        });
+    </script>
+</body>
+</html>

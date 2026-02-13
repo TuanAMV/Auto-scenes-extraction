@@ -1,0 +1,87 @@
+{"PL标签":{
+  "主体": {
+    "生物": {
+      "男人": "man", "女人": "woman", "人群": "crowd", "怪物": "monster","机甲": "robot",
+      "动物_狼": "wolf", "动物_鸟": "bird","动物_鱼": "fish", "昆虫": "insect", "动物_老虎": "tiger", "动物_猫": "cat"
+    },
+    "载具": {
+      "汽车": "car", "摩托车": "motorcycle",
+      "列车": "train", "飞船": "spaceship", "卫星": "satellite", 
+      "潜艇": "submarine", "直升机": "helicopter"
+    },
+    "武器": {
+      "武器": "weapon", "枪械": "gun", "刀剑": "sword", "盾牌": "shield", 
+      "大炮": "cannon", "激光": "laser emitter", "弓箭": "bow and arrow"
+    },
+    "器官": {
+      "眼睛": "eye", "手": "hand", "器官": "organ", "心脏": "heart","脚":"leg",
+      "大脑": "brain", "翅膀": "wings", "义体": "cybernetic limb"
+    },
+    "物体": {
+      "大树": "tree", "鲜花": "flower", "建筑": "building","收音机":"radio","唱片机":"record player",
+      "残骸": "wreckage", "电视机": "vintage television", "时钟": "melting clock","耳机":"headset","DNA":"DNA","剪影": "silhouette","神像":"idol"
+    }
+  },
+  "动作": {
+    "生物行为": {
+      "奔跑": "running", "战斗": "fighting", "哭泣": "crying", "笑脸": "smile", "跳舞": "dancing",
+      "尖叫": "screaming", "进食": "eating", "行走": "walking", "祈祷": "praying",
+      "下跪": "kneeling", "拥抱": "embracing","躺下": "lie down","亲吻":"kissing","唱歌":"singing"
+    },
+    "运动状态": {
+      "疾驰": "speeding", "冲撞": "crashing", "飞翔": "flying", 
+      "下坠": "falling", "静止": "stationary", "旋转": "spinning"
+    },
+    "物理状态": {
+      "燃烧": "burning", "破碎": "shattered", "发光": "glowing", "爆炸": "exploding",
+      "融化": "melting", "扭曲": "distorted", "液化": "liquified", "生锈": "rusty",
+      "发芽": "sprouting", "结晶": "crystallizing", "解体": "disintegrating"
+    }
+  },
+  "场景": {
+    "所有场景": {
+      "城市": "city", "森林": "forest", "海洋": "ocean", "星空": "starfield", "荒野": "wasteland",
+      "室内": "the room", "赛博空间": "cyberspace", "战争": "war",
+      "实验室": "laboratory", "云朵": "above the clouds","废墟": "ruins"
+    }
+  },
+  "情绪": {
+    "所有情绪": {
+      "恐怖": "horror", "浪漫": "romantic", "悲伤": "sad",
+      "快乐": "happy", "愤怒": "anger", "迷幻":"psychedelic",
+      "性感": "sexy"
+    }
+  },
+  "分配规则": {
+    "_说明": "定义大类之间的子类对应关系，格式: {源大类: {目标大类: {源子类: [目标子类列表]}}}。例如 主体->动作 表示不同主体子类可以使用哪些动作子类",
+    "主体": {
+      "动作": {
+        "生物": ["生物行为", "运动状态", "物理状态"],
+        "器官": ["生物行为", "运动状态", "物理状态"],
+        "载具": ["运动状态", "物理状态"],
+        "武器": ["运动状态", "物理状态"],
+        "物体": ["运动状态", "物理状态"]
+      }
+    }
+  }},
+  "选词填空规则":{
+    "_说明":"对应标签填入分配规则prompt里的{}组成新prompt,键值，键名都要填入",
+    "生物":{
+      "男孩":"boy","女孩":"girl"
+    },
+    "物体":{
+      "眼泪":"tears","武器":"weapon"
+    },
+    "情绪":{
+      "悲伤":"sad","开心":"happy"
+    },
+    "动作":{
+      "微笑":"smile","杀人":"kill"
+    },
+    "分配规则":{
+      "{生物}孤独的呆在房间里，他{情绪}得流着{物体}":"The {生物} was alone in the room, and he was so {情绪} that he was in {物体}",
+      "{生物}含情脉脉得{动作}":"The {生物} {动作} with a tender and affectionate gaze"
+    }
+  }
+}
+

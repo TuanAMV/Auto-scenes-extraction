@@ -1,0 +1,22 @@
+Auto-scenes-extraction
+Copyright 2026 @TuanAMV and contributors.
+
+This product includes third-party software and model artifacts.
+Notable bundled components include:
+
+Primary upstream projects:
+- https://github.com/openai/CLIP
+- https://github.com/QwenLM/Qwen3-VL-Embedding
+- https://github.com/360CVGroup/FG-CLIP
+- https://github.com/FFmpeg/FFmpeg
+
+1) FFmpeg static build in models/ffmpeg
+   - Declared license: GPLv3
+   - See: models/ffmpeg/README.txt and models/ffmpeg/LICENSE
+
+2) Model artifacts under models/
+   - FG-CLIP2: see models/qihoo360_fg-clip2-base/README.md
+   - Qwen3-VL-Reranker-2B: see models/Qwen3-VL-Reranker-2B/README.md
+   - openai/clip-vit-large-patch14: see models/openai-clip-vit-large-patch14/README.md
+
+For a consolidated list, see THIRD_PARTY_LICENSES.md.
