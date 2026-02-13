@@ -5,6 +5,12 @@
 ![License](https://img.shields.io/badge/License-Apache%202.0-green)
 ![Search](https://img.shields.io/badge/Scene%20Search-CLIP%20%2B%20Reranker-orange)
 
+## Runtime Versions
+
+- Python: `3.11.2`
+- torch: `2.9.1+cu130` (embedded Python)
+- transformers: `4.57.1` (embedded Python)
+
 🌐 **Language / 语言**: 中文 | English
 
 ---
