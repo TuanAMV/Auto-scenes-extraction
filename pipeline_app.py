@@ -1,4 +1,6 @@
-﻿# pipeline_app.py
+# -*- coding: utf-8 -*-
+# 本文件使用 UTF-8 编码，请勿使用 GBK 或其他编码打开/保存
+# pipeline_app.py
 # 视频处理流水线 - Flask Web界面版
 # 支持通过网页可视化配置参数并运行流水线
 # 顺序执行: indexer_app (视频索引) -> prompt_output_app (场景搜索)
@@ -9,6 +11,7 @@ import json
 import multiprocessing as mp
 import queue
 import re
+import threading
 from urllib.parse import unquote
 
 from flask import Flask, render_template, request, jsonify, Response
@@ -39,6 +42,8 @@ _running = False
 _stop_requested = mp.Value('b', False)  # 跨进程共享的停止标志
 _log_queue = queue.Queue()
 _pipeline_process = None
+_stream_lock = threading.Lock()
+_stream_active = False
 
 # ============================================================================
 # 导入索引模块
@@ -131,6 +136,22 @@ def is_pipeline_running() -> bool:
     return _pipeline_process is not None and _pipeline_process.is_alive()
 
 
+def _try_acquire_stream_slot() -> bool:
+    """Queue-based SSE logs support one active consumer at a time."""
+    global _stream_active
+    with _stream_lock:
+        if _stream_active:
+            return False
+        _stream_active = True
+        return True
+
+
+def _release_stream_slot():
+    global _stream_active
+    with _stream_lock:
+        _stream_active = False
+
+
 def _run_pipeline_in_process(config, log_queue, stop_flag):
     """子进程入口：绑定日志队列和停止标志并执行流水线"""
     global _log_queue, _stop_requested
@@ -169,6 +190,12 @@ def detect_model_type(model_path: str) -> str:
     return 'auto'
 
 
+def _is_clip_model_name(model_name: str) -> bool:
+    """仅允许名称中包含 clip 的模型。"""
+    normalized = str(model_name).strip().lower()
+    return bool(normalized and 'clip' in normalized)
+
+
 def _load_project_config():
     """读取项目 config.json"""
     with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
@@ -192,6 +219,66 @@ def _resolve_diskcache_dir(custom_dir: str = None) -> str:
     cache_dir = resolve_path(cache_dir)
     os.makedirs(cache_dir, exist_ok=True)
     return cache_dir
+
+
+def _normalize_top_k(value):
+    """
+    Normalize top_k from web payload:
+    - None-like / non-positive -> None (unlimited)
+    - positive integer -> int
+    """
+    top_k = _normalize_optional_int(value, field_name='top_k')
+    if top_k is None:
+        return None
+    return top_k if top_k > 0 else None
+
+
+def _normalize_optional_int(value, field_name: str = 'value'):
+    """Normalize optional integer. None-like values map to None."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in ('', 'none', 'null', 'unlimited', 'default', 'auto', '默认', '不限'):
+            return None
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"invalid {field_name} value: {value!r}") from exc
+
+
+def _normalize_optional_positive_int(value, field_name: str = 'value'):
+    """Normalize optional positive integer. None-like/<=0 values map to None."""
+    normalized = _normalize_optional_int(value, field_name=field_name)
+    if normalized is None:
+        return None
+    return normalized if normalized > 0 else None
+
+
+def _validate_lance_index_directory(index_directory: str):
+    """Validate Lance-only index directory used by L/C modes."""
+    try:
+        if not os.path.exists(index_directory):
+            return False, f"索引目录不存在: {index_directory}"
+        if not os.path.isdir(index_directory):
+            return False, f"索引路径不是目录: {index_directory}"
+
+        has_lance = False
+        first_pkl = None
+        for file_name in os.listdir(index_directory):
+            file_path = os.path.join(index_directory, file_name)
+            if os.path.isdir(file_path) and file_name.endswith('.lance'):
+                has_lance = True
+            elif file_name.endswith('.pkl'):
+                first_pkl = file_path
+
+        if first_pkl is not None:
+            return False, f"检测到不支持的 .pkl 索引，请先转换为 .lance: {first_pkl}"
+        if not has_lance:
+            return False, f"索引目录中没有 .lance 索引: {index_directory}"
+        return True, ''
+    except Exception as e:
+        return False, f"检查索引目录失败: {e}"
 
 
 def _ensure_preset_dir():
@@ -262,29 +349,30 @@ def run_indexer_with_config(config):
     log_message("=" * 50, 'info')
     
     idx_config = config.get('indexer', {})
+
+    selected_model_name = str(idx_config.get('model_name', '')).strip() or 'qihoo360_fg-clip2-base'
+    if not _is_clip_model_name(selected_model_name):
+        log_message(f"错误: 仅允许使用名称包含 clip 的模型，当前模型为: {selected_model_name}", 'error')
+        return False
     
     # 解析路径
     input_dir = resolve_path(idx_config.get('input_directory', ''))
     output_dir = resolve_path(idx_config.get('output_directory', _path_resolver.join_str('indexes')))
     
-    # 构建参数
+    # 构建参数 - 只传预设中明确存在的参数，未设置的让下游函数使用自己的默认值
     parameters = {
-        'model_name': idx_config.get('model_name', 'qihoo360_fg-clip2-base'),
-        'model_type': idx_config.get('model_type', 'fgclip2'),
-        'truncate_dim': int(idx_config['truncate_dim']) if idx_config.get('truncate_dim') else None,
-        'output_resolution': idx_config.get('output_resolution', '256'),
-        'batch_size': idx_config.get('batch_size', 128),
-        'workers': idx_config.get('workers', None),
-        'io_workers': idx_config.get('io_workers', 8),
-        'cosine_similarity_threshold': idx_config.get('cosine_similarity_threshold'),
-        'brightness_threshold': idx_config.get('brightness_threshold', 32),
-        'black_pixel_ratio': idx_config.get('black_pixel_ratio', 98),
-        'sample_interval': idx_config.get('sample_interval', 5),
-        'min_scene_length': idx_config.get('min_scene_length', 7),
-        'localmax_order': idx_config.get('localmax_order', 2),
-        'resume_processing': idx_config.get('resume_processing', True),
-        'use_fp16': idx_config.get('use_fp16', True),
+        'model_name': selected_model_name,
+        'model_type': 'auto',
     }
+    if idx_config.get('truncate_dim') is not None:
+        parameters['truncate_dim'] = int(idx_config['truncate_dim'])
+    # 直通参数：仅在预设中存在且非 None 时才传递，None 让下游函数使用自己的默认值
+    for key in ('output_resolution', 'batch_size', 'workers', 'io_workers',
+                'cosine_similarity_threshold', 'brightness_threshold', 'black_pixel_ratio',
+                'sample_interval', 'min_scene_length', 'localmax_order',
+                'resume_processing', 'use_fp16'):
+        if key in idx_config and idx_config[key] is not None:
+            parameters[key] = idx_config[key]
     
     log_message(f"输入目录: {input_dir}", 'info')
     log_message(f"输出目录: {output_dir}", 'info')
@@ -369,61 +457,84 @@ def run_prompt_search_with_config(config):
     time_start = time.time()
     log_progress(55)
 
-    prompt_search_mode = int(ps_config.get('search_mode', 0))
-    pkl_batch_size = ps_config.get('pkl_batch_size', 5)
     diskcache_dir = _resolve_diskcache_dir(ps_config.get('diskcache_dir'))
-    
+
     try:
-        search_results = run_interactive_search(
-            # 路径配置
-            index_directory=resolve_path(ps_config.get('index_directory', _path_resolver.join_str('indexes'))),
-            output_directory=resolve_path(ps_config.get('output_directory', _path_resolver.join_str('output'))),
-            # 基础配置
-            use_fp16=ps_config.get('use_fp16', True),
-            # Reranker 配置
-            use_reranker=ps_config.get('use_reranker', False),
-            rerank_top_k=ps_config.get('rerank_top_k', 50),
-            rerank_batch_size=ps_config.get('rerank_batch_size', 4),
-            reranker_output_resolution=str(ps_config.get('reranker_output_resolution', '384')),
-            candidate_batch_size=ps_config.get('candidate_batch_size', 1000),
-            # 组合限制
-            # 保存配置
-            # 视频导出配置
-            video_output_directory=ps_config.get('video_output_directory'),
-            video_copy_mode=ps_config.get('video_copy_mode', True),
-            start_frame_offset=int(ps_config['start_frame_offset']) if ps_config.get('start_frame_offset') else None,
-            end_frame_offset=int(ps_config['end_frame_offset']) if ps_config.get('end_frame_offset') else None,
-            # 优化模式配置
-            prompt_search_batch_size=ps_config.get('prompt_search_batch_size', 1024),
-            feature_fp16=ps_config.get('feature_fp16', False),
-            pkl_batch_size=pkl_batch_size,
-            # 磁盘缓存配置
-            use_diskcache=ps_config.get('use_diskcache', True),
-            diskcache_dir=diskcache_dir,
-            # Prompt模板配置
-            prompt_template=ps_config.get('prompt_template'),
-            video_name_format=ps_config.get('video_name_format'),
-            # 调试配置
-            debug_similarity=ps_config.get('debug_similarity', False),
-            # 搜索模式配置
-            search_mode=prompt_search_mode,
-            top_k=ps_config.get('top_k', 50),
-            # Prompt向量缓存配置
-            prompt_cache_batch_size=ps_config.get('prompt_cache_batch_size', 512),
-            # 中文模式配置
-            use_chinese=ps_config.get('use_chinese', False),
-            # 线程配置
-            pkl_load_workers=ps_config.get('pkl_load_workers', 4),
-            lmdb_write_batch_size=ps_config.get('lmdb_write_batch_size', 1000),
-            # 向量去重配置
-            vector_dedup_threshold=ps_config.get('vector_dedup_threshold'),
-            # 相邻片段合并配置
-            adjacent_merge_frames=ps_config.get('adjacent_merge_frames'),
-        )
-        
+        # 只传预设中明确存在的参数，未设置的让下游函数使用自己的默认值
+        kwargs = {}
+        # 路径配置（有默认回退）
+        if 'index_directory' in ps_config:
+            kwargs['index_directory'] = resolve_path(ps_config['index_directory'])
+        if 'output_directory' in ps_config:
+            kwargs['output_directory'] = resolve_path(ps_config['output_directory'])
+        # 需要类型转换的参数
+        if 'search_mode' in ps_config:
+            normalized_search_mode = _normalize_optional_int(ps_config.get('search_mode'), field_name='prompt_search.search_mode')
+            if normalized_search_mode is not None:
+                kwargs['search_mode'] = normalized_search_mode
+        if 'top_k' in ps_config:
+            normalized_top_k = _normalize_top_k(ps_config.get('top_k'))
+            kwargs['top_k'] = normalized_top_k
+        normalized_start_offset = _normalize_optional_int(ps_config.get('start_frame_offset'), field_name='prompt_search.start_frame_offset')
+        if normalized_start_offset is not None:
+            kwargs['start_frame_offset'] = normalized_start_offset
+        normalized_end_offset = _normalize_optional_int(ps_config.get('end_frame_offset'), field_name='prompt_search.end_frame_offset')
+        if normalized_end_offset is not None:
+            kwargs['end_frame_offset'] = normalized_end_offset
+        if 'reranker_output_resolution' in ps_config:
+            normalized_reranker_resolution = _normalize_optional_positive_int(
+                ps_config.get('reranker_output_resolution'),
+                field_name='prompt_search.reranker_output_resolution'
+            )
+            if normalized_reranker_resolution is not None:
+                kwargs['reranker_output_resolution'] = str(normalized_reranker_resolution)
+        # diskcache_dir 经过特殊解析
+        if diskcache_dir is not None:
+            kwargs['diskcache_dir'] = diskcache_dir
+        # 直通参数：仅在预设中存在且非 None 时才传递
+        for key in ('use_fp16', 'use_reranker',
+                     'video_output_directory', 'video_copy_mode',
+                     'feature_fp16',
+                     'use_diskcache', 'prompt_template', 'video_name_format',
+                     'debug_similarity',
+                     'use_chinese',
+                     'vector_dedup_threshold', 'adjacent_merge_frames'):
+            if key in ps_config and ps_config[key] is not None:
+                kwargs[key] = ps_config[key]
+        for key in ('rerank_top_k', 'rerank_batch_size', 'candidate_batch_size',
+                    'prompt_search_batch_size', 'lance_batch_size',
+                    'prompt_cache_batch_size', 'lance_load_workers',
+                    'lmdb_write_batch_size'):
+            if key not in ps_config:
+                continue
+            normalized = _normalize_optional_positive_int(ps_config.get(key), field_name=f'prompt_search.{key}')
+            # 字段存在即透传；显式 None/0 表示"不限制/自动"，不能回退为后端固定值
+            kwargs[key] = normalized
+
+        index_dir_for_check = kwargs.get('index_directory', _path_resolver.join_str('indexes'))
+        valid_idx, idx_msg = _validate_lance_index_directory(index_dir_for_check)
+        if not valid_idx:
+            log_message(f"Prompt search failed: {idx_msg}", 'error')
+            return False
+
+        search_results = run_interactive_search(**kwargs)
+
         if not isinstance(search_results, dict):
             log_message("Prompt搜索返回异常结果类型，判定为失败", 'error')
             return False
+        if not search_results.get('success', False):
+            log_message(f"Prompt搜索失败: {search_results.get('error', 'unknown error')}", 'error')
+            return False
+
+        result_count = int(search_results.get('result_count', 0) or 0)
+        merged_count = int(search_results.get('merged_result_count', result_count) or 0)
+        export_stats = search_results.get('export_stats') or {}
+        log_message(f"Prompt搜索结果: 初始 {result_count}，导出前 {merged_count}", 'info')
+        if export_stats:
+            log_message(
+                f"视频导出统计: 成功 {export_stats.get('success', 0)}，失败 {export_stats.get('failed', 0)}，跳过 {export_stats.get('skipped', 0)}",
+                'info'
+            )
 
         time_end = time.time()
         log_message(f"搜索耗时: {time_end - time_start:.2f} 秒", 'success')
@@ -463,49 +574,69 @@ def run_label_search_with_config(config):
     diskcache_dir = _resolve_diskcache_dir(ls_config.get('diskcache_dir'))
     
     try:
-        results = run_label_traverse_search(
-            # 路径配置
-            index_directory=resolve_path(ls_config.get('index_directory', _path_resolver.join_str('indexes'))),
-            output_directory=resolve_path(ls_config.get('output_directory', _path_resolver.join_str('output'))),
-            # 视频导出配置
-            video_output_directory=ls_config.get('video_output_directory'),
-            video_copy_mode=ls_config.get('video_copy_mode', False),
-            video_name_format=ls_config.get('video_name_format'),
-            debug_similarity=ls_config.get('debug_similarity', False),
-            # 优化参数
-            prompt_search_batch_size=ls_config.get('prompt_search_batch_size', 1024),
-            pkl_batch_size=ls_config.get('pkl_batch_size'),
-            # 搜索模式参数
-            search_mode=ls_config.get('search_mode', 0),
-            top_k=ls_config.get('top_k', 50),
-            scene_chunk_size=ls_config.get('scene_chunk_size', 1000),
-            # 视频帧偏移参数
-            start_frame_offset=int(ls_config['start_frame_offset']) if ls_config.get('start_frame_offset') else None,
-            end_frame_offset=int(ls_config['end_frame_offset']) if ls_config.get('end_frame_offset') else None,
-            # LMDB 缓存参数
-            use_diskcache=ls_config.get('use_diskcache', True),
-            diskcache_dir=diskcache_dir,
-            # 中文标签模式
-            use_chinese_labels=ls_config.get('use_chinese_labels', False),
-            # 线程配置参数
-            pkl_load_workers=ls_config.get('pkl_load_workers', 4),
-            lmdb_write_batch_size=ls_config.get('lmdb_write_batch_size', 1000),
-            # 标签缓存批处理大小
-            label_cache_batch_size=ls_config.get('label_cache_batch_size', 512),
-            # 向量去重参数
-            vector_dedup_threshold=ls_config.get('vector_dedup_threshold'),
-            # 相邻片段合并参数
-            adjacent_merge_frames=ls_config.get('adjacent_merge_frames'),
-            # 计算与特征精度
-            use_fp16=ls_config.get('use_fp16', True),
-            feature_fp16=ls_config.get('feature_fp16', None),
-        )
-        
+        # 只传预设中明确存在的参数，未设置的让下游函数使用自己的默认值
+        kwargs = {}
+        # 路径配置（有默认回退）
+        if 'index_directory' in ls_config:
+            kwargs['index_directory'] = resolve_path(ls_config['index_directory'])
+        if 'output_directory' in ls_config:
+            kwargs['output_directory'] = resolve_path(ls_config['output_directory'])
+        # 需要类型转换的参数
+        normalized_start_offset = _normalize_optional_int(ls_config.get('start_frame_offset'), field_name='label_search.start_frame_offset')
+        if normalized_start_offset is not None:
+            kwargs['start_frame_offset'] = normalized_start_offset
+        normalized_end_offset = _normalize_optional_int(ls_config.get('end_frame_offset'), field_name='label_search.end_frame_offset')
+        if normalized_end_offset is not None:
+            kwargs['end_frame_offset'] = normalized_end_offset
+        if 'search_mode' in ls_config:
+            normalized_search_mode = _normalize_optional_int(ls_config.get('search_mode'), field_name='label_search.search_mode')
+            if normalized_search_mode is not None:
+                kwargs['search_mode'] = normalized_search_mode
+        if 'top_k' in ls_config:
+            normalized_top_k = _normalize_top_k(ls_config.get('top_k'))
+            kwargs['top_k'] = normalized_top_k
+        if 'candidate_batch_size' in ls_config:
+            normalized_candidate_batch_size = _normalize_optional_positive_int(
+                ls_config.get('candidate_batch_size'),
+                field_name='label_search.candidate_batch_size'
+            )
+            # 字段存在即透传；显式 None/0 保留为 None
+            kwargs['candidate_batch_size'] = normalized_candidate_batch_size
+        # diskcache_dir 经过特殊解析
+        if diskcache_dir is not None:
+            kwargs['diskcache_dir'] = diskcache_dir
+        # 直通参数：仅在预设中存在且非 None 时才传递
+        for key in ('video_output_directory', 'video_copy_mode', 'video_name_format',
+                     'debug_similarity',
+                     'use_diskcache', 'use_chinese',
+                     'vector_dedup_threshold',
+                     'adjacent_merge_frames', 'use_fp16', 'feature_fp16'):
+            if key in ls_config and ls_config[key] is not None:
+                kwargs[key] = ls_config[key]
+        for key in ('prompt_search_batch_size', 'lance_batch_size', 'scene_chunk_size',
+                    'lance_load_workers', 'lmdb_write_batch_size', 'label_cache_batch_size'):
+            if key not in ls_config:
+                continue
+            normalized = _normalize_optional_positive_int(ls_config.get(key), field_name=f'label_search.{key}')
+            # 字段存在即透传；显式 None/0 表示“不限制/自动”
+            kwargs[key] = normalized
+
+        index_dir_for_check = kwargs.get('index_directory', _path_resolver.join_str('indexes'))
+        valid_idx, idx_msg = _validate_lance_index_directory(index_dir_for_check)
+        if not valid_idx:
+            log_message(f"Label search failed: {idx_msg}", 'error')
+            return False
+
+        results = run_label_traverse_search(**kwargs)
+        if not isinstance(results, list):
+            log_message("Label search returned invalid result type; mark as failed", 'error')
+            return False
+
         time_end = time.time()
-        log_message(f"遍历模式完成，共 {len(results) if results else 0} 个有效场景", 'success')
-        log_message(f"搜索耗时: {time_end - time_start:.2f} 秒", 'success')
+        log_message(f"Label traverse done, {len(results)} valid scenes", 'success')
+        log_message(f"Search elapsed: {time_end - time_start:.2f} s", 'success')
         log_progress(100)
-        
+
         return True
         
     except Exception as e:
@@ -540,54 +671,72 @@ def run_cloze_search_with_config(config):
     diskcache_dir = _resolve_diskcache_dir(cs_config.get('diskcache_dir'))
     
     try:
-        results = run_cloze_fill_search(
-            # 路径配置
-            index_directory=resolve_path(cs_config.get('index_directory', _path_resolver.join_str('indexes'))),
-            output_directory=resolve_path(cs_config.get('output_directory', _path_resolver.join_str('output'))),
-            # 视频导出配置
-            video_output_directory=cs_config.get('video_output_directory'),
-            video_copy_mode=cs_config.get('video_copy_mode', False),
-            video_name_format=cs_config.get('video_name_format'),
-            debug_similarity=cs_config.get('debug_similarity', False),
-            # 优化参数
-            prompt_search_batch_size=cs_config.get('prompt_search_batch_size', 1024),
-            pkl_batch_size=cs_config.get('pkl_batch_size'),
-            # 搜索模式参数
-            search_mode=cs_config.get('search_mode', 0),
-            top_k=cs_config.get('top_k', 50),
-            # 视频帧偏移参数
-            start_frame_offset=int(cs_config['start_frame_offset']) if cs_config.get('start_frame_offset') else None,
-            end_frame_offset=int(cs_config['end_frame_offset']) if cs_config.get('end_frame_offset') else None,
-            # LMDB 缓存参数
-            use_diskcache=cs_config.get('use_diskcache', True),
-            diskcache_dir=diskcache_dir,
-            # 中英文模式
-            use_chinese=cs_config.get('use_chinese', False),
-            # Reranker 参数
-            use_reranker=cs_config.get('use_reranker', False),
-            rerank_top_k=cs_config.get('rerank_top_k', 7),
-            rerank_batch_size=cs_config.get('rerank_batch_size', 7),
-            reranker_output_resolution=str(cs_config.get('reranker_output_resolution', '448')),
-            candidate_batch_size=cs_config.get('candidate_batch_size', 1000),
-            # 缓存批处理大小
-            prompt_cache_batch_size=cs_config.get('prompt_cache_batch_size', 512),
-            # 线程配置参数
-            pkl_load_workers=cs_config.get('pkl_load_workers', 4),
-            lmdb_write_batch_size=cs_config.get('lmdb_write_batch_size', 1000),
-            # 向量去重参数
-            vector_dedup_threshold=cs_config.get('vector_dedup_threshold'),
-            # 相邻片段合并参数
-            adjacent_merge_frames=cs_config.get('adjacent_merge_frames'),
-            # 计算与特征精度
-            use_fp16=cs_config.get('use_fp16', True),
-            feature_fp16=cs_config.get('feature_fp16', None),
-        )
-        
+        # 只传预设中明确存在的参数，未设置的让下游函数使用自己的默认值
+        kwargs = {}
+        # 路径配置（有默认回退）
+        if 'index_directory' in cs_config:
+            kwargs['index_directory'] = resolve_path(cs_config['index_directory'])
+        if 'output_directory' in cs_config:
+            kwargs['output_directory'] = resolve_path(cs_config['output_directory'])
+        # 需要类型转换的参数
+        normalized_start_offset = _normalize_optional_int(cs_config.get('start_frame_offset'), field_name='cloze_search.start_frame_offset')
+        if normalized_start_offset is not None:
+            kwargs['start_frame_offset'] = normalized_start_offset
+        normalized_end_offset = _normalize_optional_int(cs_config.get('end_frame_offset'), field_name='cloze_search.end_frame_offset')
+        if normalized_end_offset is not None:
+            kwargs['end_frame_offset'] = normalized_end_offset
+        if 'search_mode' in cs_config:
+            normalized_search_mode = _normalize_optional_int(cs_config.get('search_mode'), field_name='cloze_search.search_mode')
+            if normalized_search_mode is not None:
+                kwargs['search_mode'] = normalized_search_mode
+        if 'top_k' in cs_config:
+            normalized_top_k = _normalize_top_k(cs_config.get('top_k'))
+            kwargs['top_k'] = normalized_top_k
+        if 'reranker_output_resolution' in cs_config:
+            normalized_reranker_resolution = _normalize_optional_positive_int(
+                cs_config.get('reranker_output_resolution'),
+                field_name='cloze_search.reranker_output_resolution'
+            )
+            if normalized_reranker_resolution is not None:
+                kwargs['reranker_output_resolution'] = str(normalized_reranker_resolution)
+        # diskcache_dir 经过特殊解析
+        if diskcache_dir is not None:
+            kwargs['diskcache_dir'] = diskcache_dir
+        # 直通参数：仅在预设中存在且非 None 时才传递
+        for key in ('video_output_directory', 'video_copy_mode', 'video_name_format',
+                     'debug_similarity',
+                     'use_diskcache', 'use_chinese',
+                     'use_reranker',
+                     'vector_dedup_threshold', 'adjacent_merge_frames',
+                     'use_fp16', 'feature_fp16'):
+            if key in cs_config and cs_config[key] is not None:
+                kwargs[key] = cs_config[key]
+        for key in ('prompt_search_batch_size', 'lance_batch_size',
+                    'rerank_top_k', 'rerank_batch_size', 'candidate_batch_size',
+                    'prompt_cache_batch_size', 'lance_load_workers',
+                    'lmdb_write_batch_size'):
+            if key not in cs_config:
+                continue
+            normalized = _normalize_optional_positive_int(cs_config.get(key), field_name=f'cloze_search.{key}')
+            # 字段存在即透传；显式 None/0 表示“不限制/自动”
+            kwargs[key] = normalized
+
+        index_dir_for_check = kwargs.get('index_directory', _path_resolver.join_str('indexes'))
+        valid_idx, idx_msg = _validate_lance_index_directory(index_dir_for_check)
+        if not valid_idx:
+            log_message(f"Cloze search failed: {idx_msg}", 'error')
+            return False
+
+        results = run_cloze_fill_search(**kwargs)
+        if not isinstance(results, dict):
+            log_message("Cloze search returned invalid result type; mark as failed", 'error')
+            return False
+
         time_end = time.time()
-        log_message(f"选词填空模式完成，共 {len(results) if results else 0} 个有效场景", 'success')
-        log_message(f"搜索耗时: {time_end - time_start:.2f} 秒", 'success')
+        log_message(f"Cloze mode done, {len(results)} valid scenes", 'success')
+        log_message(f"Search elapsed: {time_end - time_start:.2f} s", 'success')
         log_progress(100)
-        
+
         return True
         
     except Exception as e:
@@ -609,12 +758,6 @@ def run_pipeline_thread(config):
     total_time_start = time.time()
     
     try:
-        log_message("🎬 视频处理流水线启动", 'info')
-        log_message(f"索引模块: {'✓ 可用' if _INDEXER_AVAILABLE else '✗ 不可用'}", 'info')
-        log_message(f"Prompt搜索模块: {'✓ 可用' if _PROMPT_SEARCH_AVAILABLE else '✗ 不可用'}", 'info')
-        log_message(f"标签搜索模块: {'✓ 可用' if _LABEL_SEARCH_AVAILABLE else '✗ 不可用'}", 'info')
-        log_message(f"选词填空模块: {'✓ 可用' if _CLOZE_SEARCH_AVAILABLE else '✗ 不可用'}", 'info')
-        
         run_indexer = config.get('run_indexer', True)
         run_search = config.get('run_search', True)
         search_entry_mode = config.get('search_entry_mode', 'prompt')
@@ -637,6 +780,17 @@ def run_pipeline_thread(config):
             log_complete(False, "用户取消运行")
             return
         
+        # 流水线串联：如果索引步骤运行了且搜索步骤未显式指定 index_directory，
+        # 自动将索引器的 output_directory 传递给搜索步骤
+        if run_indexer and run_search:
+            idx_config = config.get('indexer', {})
+            indexer_output = resolve_path(idx_config.get('output_directory', _path_resolver.join_str('indexes')))
+            search_key = {'prompt': 'prompt_search', 'label': 'label_search', 'cloze': 'cloze_search'}.get(search_entry_mode, 'prompt_search')
+            search_cfg = config.setdefault(search_key, {})
+            if 'index_directory' not in search_cfg or not search_cfg['index_directory']:
+                search_cfg['index_directory'] = indexer_output
+                log_message(f"流水线串联: 搜索步骤自动使用索引输出目录 {indexer_output}", 'info')
+
         # 步骤2: 场景搜索
         if run_search:
             log_status("正在运行搜索...")
@@ -733,6 +887,9 @@ def list_models():
                     files = os.listdir(item_path)
                     is_valid = any(f.endswith(('.bin', '.pt', '.pth', '.safetensors', '.json')) for f in files)
                     if is_valid:
+                        # clip-only model list for index page
+                        if not _is_clip_model_name(item):
+                            continue
                         model_type = detect_model_type(item_path)
                         if model_type == 'reranker':
                             continue
@@ -950,80 +1107,109 @@ def save_similarity_config():
 
 @app.route('/run_pipeline_stream')
 def run_pipeline_stream():
-    """通过 SSE 流式返回运行日志，支持 EventSource 自动重连"""
+    """Stream logs via SSE; supports EventSource reconnect."""
     global _running, _log_queue, _pipeline_process
-    
-    # 如果 pipeline 已在运行，直接接入现有队列继续推送（支持断线自动重连）
+
+    def _busy_stream():
+        busy_msg = {
+            'type': 'complete',
+            'success': False,
+            'message': 'Another client is already consuming logs; retry later'
+        }
+        yield f"data: {json.dumps(busy_msg, ensure_ascii=False)}\n\n"
+
+    # If pipeline is running, allow reconnect to the same log stream.
     if is_pipeline_running() and _log_queue is not None:
+        if not _try_acquire_stream_slot():
+            return Response(_busy_stream(), mimetype='text/event-stream', headers={
+                'Cache-Control': 'no-cache',
+                'Connection': 'keep-alive',
+                'X-Accel-Buffering': 'no',
+            })
+
         def generate_reconnect():
             completed_received = False
-            while True:
-                try:
-                    msg = _log_queue.get(timeout=1)
-                    yield f"data: {json.dumps(msg, ensure_ascii=False)}\n\n"
-                    if msg.get('type') == 'complete':
-                        completed_received = True
-                        break
-                except queue.Empty:
-                    yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
-                    if not is_pipeline_running():
-                        if not completed_received:
-                            fallback_msg = {
-                                'type': 'complete',
-                                'success': False,
-                                'message': '用户强制停止运行' if _stop_requested.value else '流水线进程已退出'
-                            }
-                            yield f"data: {json.dumps(fallback_msg, ensure_ascii=False)}\n\n"
-                        break
-            _cleanup_pipeline_process()
+            try:
+                while True:
+                    try:
+                        msg = _log_queue.get(timeout=1)
+                        yield f"data: {json.dumps(msg, ensure_ascii=False)}\n\n"
+                        if msg.get('type') == 'complete':
+                            completed_received = True
+                            break
+                    except queue.Empty:
+                        yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
+                        if not is_pipeline_running():
+                            if not completed_received:
+                                fallback_msg = {
+                                    'type': 'complete',
+                                    'success': False,
+                                    'message': 'Stopped by user' if _stop_requested.value else 'Pipeline process exited'
+                                }
+                                yield f"data: {json.dumps(fallback_msg, ensure_ascii=False)}\n\n"
+                            break
+            finally:
+                _cleanup_pipeline_process()
+                _release_stream_slot()
+
         return Response(generate_reconnect(), mimetype='text/event-stream', headers={
             'Cache-Control': 'no-cache',
             'Connection': 'keep-alive',
             'X-Accel-Buffering': 'no',
         })
-    
+
     config_str = request.args.get('config', '{}')
     try:
         config = json.loads(config_str)
     except json.JSONDecodeError:
-        return jsonify({"error": "无效的配置JSON"}), 400
-    
-    _cleanup_pipeline_process()
-    _log_queue = mp.Queue()
-    _stop_requested.value = False
-    _pipeline_process = mp.Process(target=_run_pipeline_in_process, args=(config, _log_queue, _stop_requested))
-    _pipeline_process.daemon = True
-    _pipeline_process.start()
-    _running = True
-    
+        return jsonify({'error': 'Invalid config JSON'}), 400
+
+    if not _try_acquire_stream_slot():
+        return Response(_busy_stream(), mimetype='text/event-stream', headers={
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+            'X-Accel-Buffering': 'no',
+        })
+
+    try:
+        _cleanup_pipeline_process()
+        _log_queue = mp.Queue()
+        _stop_requested.value = False
+        _pipeline_process = mp.Process(target=_run_pipeline_in_process, args=(config, _log_queue, _stop_requested))
+        _pipeline_process.daemon = True
+        _pipeline_process.start()
+        _running = True
+    except Exception:
+        _release_stream_slot()
+        raise
+
     def generate():
         completed_received = False
-        while True:
-            try:
-                # 等待日志消息，超时1秒
-                msg = _log_queue.get(timeout=1)
-                yield f"data: {json.dumps(msg, ensure_ascii=False)}\n\n"
-                
-                # 如果是完成消息，结束流
-                if msg.get('type') == 'complete':
-                    completed_received = True
-                    break
-            except queue.Empty:
-                # 发送心跳
-                yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
-                
-                # 检查子进程是否还在运行
-                if not is_pipeline_running():
-                    if not completed_received:
-                        fallback_msg = {
-                            'type': 'complete',
-                            'success': False,
-                            'message': '用户强制停止运行' if _stop_requested.value else '流水线进程已退出'
-                        }
-                        yield f"data: {json.dumps(fallback_msg, ensure_ascii=False)}\n\n"
-                    break
-        _cleanup_pipeline_process()
-    
+        try:
+            while True:
+                try:
+                    msg = _log_queue.get(timeout=1)
+                    yield f"data: {json.dumps(msg, ensure_ascii=False)}\n\n"
+
+                    if msg.get('type') == 'complete':
+                        completed_received = True
+                        break
+                except queue.Empty:
+                    yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
+
+                    if not is_pipeline_running():
+                        if not completed_received:
+                            fallback_msg = {
+                                'type': 'complete',
+                                'success': False,
+                                'message': 'Stopped by user' if _stop_requested.value else 'Pipeline process exited'
+                            }
+                            yield f"data: {json.dumps(fallback_msg, ensure_ascii=False)}\n\n"
+                        break
+        finally:
+            _cleanup_pipeline_process()
+            _release_stream_slot()
+
     return Response(generate(), mimetype='text/event-stream', headers={
         'Cache-Control': 'no-cache',
         'Connection': 'keep-alive',

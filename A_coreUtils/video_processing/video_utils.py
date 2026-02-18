@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+# 本文件使用 UTF-8 编码，请勿使用 GBK 或其他编码打开/保存
 # video_processing_utils.py
 # 视频处理系统工具类 - GPU优化版本 (修复版)
 # v3.0: 新增 SceneFeatureExtractor.extract_all_from_scene 支持三元组完整匹配
@@ -8,15 +10,11 @@ import sys
 import subprocess
 import json
 import shutil
-import hashlib
 import time
-import pickle
-import threading
 import glob
 import numpy as np
 import torch
 from concurrent.futures import ThreadPoolExecutor
-from scipy.signal import argrelmax
 from threading import Thread, Event
 
 # ============================================================
@@ -25,9 +23,9 @@ from threading import Thread, Event
 _current_file = os.path.abspath(__file__)
 _video_processing_dir = os.path.dirname(_current_file)
 _a_core_utils_dir = os.path.dirname(_video_processing_dir)
-_cut_detect_scene_dir = os.path.dirname(_a_core_utils_dir)
-if _cut_detect_scene_dir not in sys.path:
-    sys.path.insert(0, _cut_detect_scene_dir)
+_project_root_dir = os.path.dirname(_a_core_utils_dir)
+if _project_root_dir not in sys.path:
+    sys.path.insert(0, _project_root_dir)
 
 # ============================================================
 #  全局配置
@@ -38,7 +36,6 @@ from path_resolver import PathResolver
 
 # 初始化路径解析器（不传参数，使用 path_resolver.py 所在目录作为项目根目录）
 _path_resolver = PathResolver()
-base_dir = _path_resolver.get_project_root_str()
 TEMP_DIR = _path_resolver.join_str('temp')
 
 # FFmpeg工具路径（使用 PathResolver 获取 models/ffmpeg/bin）
@@ -67,21 +64,6 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 
 # ============================================================
-# 路径解析工具（使用统一的PathResolver）
-# ============================================================
-def resolve_path(user_path):
-    """
-    解析路径（兼容旧版API）
-    
-    功能：
-    - 去除引号
-    - 处理Windows快捷方式（.lnk）
-    - 绝对路径直接用，相对路径基于base_dir
-    """
-    return _path_resolver.resolve_normpath(user_path, base_dir=base_dir)
-
-
-# ============================================================
 # 临时文件夹管理
 # ============================================================
 def cleanup_temp_folder(folder_path: str = None):
@@ -104,27 +86,14 @@ def cleanup_temp_folder(folder_path: str = None):
             print(f"[Warning] 清理文件夹时出错: {e}")
 
 
-def ensure_temp_folder_clean():
-    print("[Info] 正在清理临时文件夹...")
-    cleanup_temp_folder(TEMP_DIR)
-    os.makedirs(TEMP_DIR, exist_ok=True)
-    print("[Info] 临时文件夹已就绪")
-
-
 # ============================================================
 # 单帧提取工具 (纯CPU解码 - 禁用GPU加速避免与模型推理冲突)
 # ============================================================
-_GPU_HWACCEL = ''  # 禁用GPU加速
-
-def _detect_gpu_hwaccel() -> str:
-    """禁用FFmpeg GPU硬件加速，避免与模型推理冲突"""
-    return ''
-
 
 def extract_single_frame(video_path: str, frame_number: int, fps: float, output_path: str) -> bool:
     """
     精确按帧号提取缩略图（用于 HTML 预览，固定宽度 320px）
-    方案3: 快速seek + 精确定位 + GPU加速
+    方案3: 快速seek + 精确定位
     """
     try:
         # 提前2秒seek，确保不跳过目标帧
@@ -132,13 +101,7 @@ def extract_single_frame(video_path: str, frame_number: int, fps: float, output_
         seek_frame = int(approx_time * fps)
         relative_frame = frame_number - seek_frame
         
-        hwaccel = _detect_gpu_hwaccel()
-        
-        cmd = [FFMPEG_PATH, '-y']
-        if hwaccel:
-            cmd.extend(['-hwaccel', hwaccel])
-        
-        cmd.extend([
+        cmd = [FFMPEG_PATH, '-y',
             '-ss', str(approx_time),
             '-i', video_path,
             '-vf', f"select='eq(n,{relative_frame})',scale=320:-1",
@@ -146,7 +109,7 @@ def extract_single_frame(video_path: str, frame_number: int, fps: float, output_
             '-q:v', '3',
             '-vsync', 'vfr',
             output_path
-        ])
+        ]
         
         subprocess.run(cmd, check=True, capture_output=True, text=True, 
                       encoding='utf-8', errors='ignore')
@@ -164,7 +127,7 @@ def extract_single_frame_rerank(
 ) -> bool:
     """
     精确按帧号提取帧图像（用于 Reranker，支持短边缩放）
-    方案3: 快速seek + 精确定位 + GPU加速
+    方案3: 快速seek + 精确定位
     
     Args:
         video_path: 视频文件路径
@@ -182,16 +145,10 @@ def extract_single_frame_rerank(
         seek_frame = int(approx_time * fps)
         relative_frame = frame_number - seek_frame
         
-        hwaccel = _detect_gpu_hwaccel()
-        
-        cmd = [FFMPEG_PATH, '-y']
-        if hwaccel:
-            cmd.extend(['-hwaccel', hwaccel])
-        
-        cmd.extend([
+        cmd = [FFMPEG_PATH, '-y',
             '-ss', str(approx_time),
             '-i', video_path,
-        ])
+        ]
         
         # 构建滤镜链：精确帧选择 + 可选缩放
         vf_parts = [f"select='eq(n,{relative_frame})'"]
@@ -221,52 +178,17 @@ def extract_single_frame_rerank(
 
 
 def _get_video_dimensions(video_path: str) -> tuple:
-    """获取视频宽高"""
-    try:
-        cmd = [FFPROBE_PATH, '-v', 'error', '-select_streams', 'v:0',
-               '-show_entries', 'stream=width,height', '-of', 'csv=p=0', video_path]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10,
-                               encoding='utf-8', errors='ignore')
-        if result.returncode == 0 and result.stdout.strip():
-            parts = result.stdout.strip().split(',')
-            if len(parts) >= 2:
-                return int(parts[0]), int(parts[1])
-    except:
-        pass
-    return 0, 0
+    """获取视频宽高（复用 VideoMetaHelper.get_video_meta）"""
+    _, _, width, height = VideoMetaHelper.get_video_meta(video_path)
+    return width, height
 
 
 def _build_scale_filter_for_rerank(width: int, height: int, output_resolution: str) -> str:
-    """
-    构建短边缩放滤镜（用于 Reranker）
-    
-    Args:
-        width: 视频宽度
-        height: 视频高度
-        output_resolution: 目标短边像素数（如 '384'）
-    
-    Returns:
-        str: scale 滤镜字符串，如 "scale=512:384"
-    """
-    if not output_resolution or output_resolution == 'original':
+    """构建短边缩放滤镜（用于 Reranker），委托给 FrameExtractorThread._build_scale_filter"""
+    if not output_resolution:
         return None
-    
-    if output_resolution.isdigit():
-        target_short = int(output_resolution)
-        if width >= height:
-            # 横向视频：高度为短边
-            out_height = target_short
-            out_width = int(width * target_short / height)
-        else:
-            # 纵向视频：宽度为短边
-            out_width = target_short
-            out_height = int(height * target_short / width)
-        # 确保偶数（FFmpeg 要求）
-        out_width = out_width - (out_width % 2)
-        out_height = out_height - (out_height % 2)
-        return f"scale={out_width}:{out_height}"
-    
-    return None
+    scale_filter, _, _ = FrameExtractorThread._build_scale_filter(width, height, output_resolution)
+    return scale_filter
 
 
 # ============================================================
@@ -407,9 +329,6 @@ class FrameExtractorThread:
             return f"scale={out_width}:{out_height}", out_width, out_height
         return None, width, height
 
-    def get_frame_path(self, frame_number: int) -> str:
-        return os.path.join(self.temp_dir, f"frame_{frame_number:06d}.jpg")
-    
     def get_frame_files(self) -> list:
         """获取当前已提取的所有帧文件路径"""
         return glob.glob(os.path.join(self.temp_dir, "frame_*.jpg"))
@@ -524,159 +443,51 @@ class VideoMetaHelper:
         secs = seconds % 60
         return f"{hours:02d}:{minutes:02d}:{secs:06.3f}"
 
-
-# ============================================================
-# 缓存管理器
-# ============================================================
-class FeatureCacheManager:
-    @staticmethod
-    def get_cache_key(video_path: str, model_name: str, sample_interval: int, resolution: str = 'default') -> str:
-        stat = os.stat(video_path)
-        unique_string = f"{video_path}_{stat.st_size}_{stat.st_mtime}_{model_name}_{sample_interval}_{resolution}"
-        return hashlib.md5(unique_string.encode()).hexdigest()
-
-    @staticmethod
-    def get_cache_dir(video_path: str) -> str:
-        video_dir = os.path.dirname(os.path.abspath(video_path))
-        return os.path.join(video_dir, '.feature_cache')
-
-    @staticmethod
-    def load_cache(video_path: str, cache_key: str):
-        cache_dir = FeatureCacheManager.get_cache_dir(video_path)
-        cache_path = os.path.join(cache_dir, f"{cache_key}.pkl")
-        if os.path.exists(cache_path):
-            try:
-                with open(cache_path, 'rb') as f:
-                    return pickle.load(f)
-            except (pickle.PickleError, IOError):
-                pass
-        return None
-
-    @staticmethod
-    def save_cache(video_path: str, cache_key: str, data):
-        cache_dir = FeatureCacheManager.get_cache_dir(video_path)
-        os.makedirs(cache_dir, exist_ok=True)
-        cache_path = os.path.join(cache_dir, f"{cache_key}.pkl")
-        try:
-            with open(cache_path, 'wb') as f:
-                pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
-            return True
-        except (pickle.PickleError, IOError):
-            return False
-
-
-# ============================================================
-# 相似度计算辅助类
-# ============================================================
-class SimilarityHelper:
-    """相似度计算辅助类 - 仅支持余弦相似度"""
-    
-    @staticmethod
-    def compute_similarity(vec1, vec2, use_gpu: bool = False) -> float:
-        """
-        计算两个向量之间的余弦相似度
-        
-        Args:
-            vec1: 第一个向量 (torch.Tensor 或 np.ndarray)
-            vec2: 第二个向量 (torch.Tensor 或 np.ndarray)
-            use_gpu: 是否使用GPU计算
-            
-        Returns:
-            余弦相似度值 (越大越相似)
-        """
-        if use_gpu:
-            return torch.dot(vec1, vec2).item()
-        else:
-            return float(np.dot(vec1, vec2))
-    
-    @staticmethod
-    def is_better_similarity(new_val: float, old_val: float) -> bool:
-        """
-        判断新的相似度是否比旧的更好
-        
-        Returns:
-            True 如果新值更好 (余弦相似度越大越好)
-        """
-        return new_val > old_val
-    
-    @staticmethod
-    def get_worst_similarity() -> float:
-        """获取最差的相似度初始值"""
-        return -1.0  # cosine最差是-1
-
-
 # ============================================================
 # 场景边界检测器
 # ============================================================
 class SceneBoundaryDetector:
     @staticmethod
-    def detect_boundaries(features, frame_indices: list, threshold: float = 0.85,
-                         min_scene_length: int = 5) -> list:
-        """检测场景边界"""
-        if len(frame_indices) < 2:
-            return [(frame_indices[0], frame_indices[-1])] if frame_indices else []
+    def _strict_local_minima_indices(similarities, order: int = 1):
+        """
+        获取严格局部最小值索引（仿 argrelmin 严格比较）。
+        平顶（plateau）不算极值。
+        """
+        try:
+            order = int(order)
+        except (TypeError, ValueError):
+            order = 1
+        if order < 1:
+            order = 1
         
-        is_tensor = isinstance(features, torch.Tensor)
-        use_gpu = is_tensor and features.is_cuda
+        if isinstance(similarities, torch.Tensor):
+            if similarities.ndim != 1:
+                similarities = similarities.reshape(-1)
+            window_size = 2 * order + 1
+            if similarities.numel() < window_size:
+                return torch.empty(0, dtype=torch.long, device=similarities.device)
+            windows = similarities.unfold(0, window_size, 1)
+            center = windows[:, order:order + 1]
+            is_strict_min = (center < windows[:, :order]).all(dim=1) & (center < windows[:, order + 1:]).all(dim=1)
+            return torch.where(is_strict_min)[0] + order
         
-        # 计算帧间相似度
-        similarities = []
-        for i in range(len(frame_indices) - 1):
-            idx1, idx2 = frame_indices[i], frame_indices[i + 1]
-            
-            if use_gpu:
-                sim = torch.dot(features[idx1], features[idx2]).item()
-            else:
-                sim = np.dot(features[idx1], features[idx2])
-            
-            similarities.append(sim)
+        similarities_np = np.asarray(similarities).reshape(-1)
+        window_size = 2 * order + 1
+        if similarities_np.size < window_size:
+            return np.array([], dtype=np.int64)
         
-        if not similarities:
-            return [(frame_indices[0], frame_indices[-1])]
+        local_min_indices = []
+        for i in range(order, similarities_np.size - order):
+            center = similarities_np[i]
+            left = similarities_np[i - order:i]
+            right = similarities_np[i + 1:i + order + 1]
+            if np.all(center < left) and np.all(center < right):
+                local_min_indices.append(i)
         
-        similarities = np.array(similarities)
-        
-        # 找到局部最小值（相似度最低的点）
-        if len(similarities) > 2:
-            try:
-                local_min_indices = argrelmax(-similarities, order=1)[0]
-            except Exception:
-                local_min_indices = np.array([])
-        else:
-            local_min_indices = np.array([])
-        
-        # 筛选低于阈值的边界
-        boundaries = []
-        for idx in local_min_indices:
-            if similarities[idx] < threshold:
-                boundaries.append(idx)
-        
-        # 如果没有检测到边界，检查全局最小值
-        if not boundaries and len(similarities) > 0:
-            min_idx = np.argmin(similarities)
-            if similarities[min_idx] < threshold:
-                boundaries.append(min_idx)
-        
-        # 构建场景列表
-        scenes = []
-        prev_boundary = 0
-        
-        for boundary in sorted(boundaries):
-            if boundary - prev_boundary >= min_scene_length:
-                scenes.append((frame_indices[prev_boundary], frame_indices[boundary]))
-                prev_boundary = boundary + 1
-        
-        # 添加最后一个场景
-        if prev_boundary < len(frame_indices):
-            scenes.append((frame_indices[prev_boundary], frame_indices[-1]))
-        
-        if not scenes:
-            scenes = [(frame_indices[0], frame_indices[-1])]
-        
-        return scenes
+        return np.array(local_min_indices, dtype=np.int64)
 
     @staticmethod
-    def find_scene_boundaries(frame_indices: list, features, localmax_order: int = 2, 
+    def find_scene_boundaries(frame_indices: list, features, localmax_order: int = 2,
                               cosine_similarity_threshold: float = None) -> list:
         """
         检测场景边界，返回边界帧索引列表
@@ -697,41 +508,57 @@ class SceneBoundaryDetector:
         if cosine_similarity_threshold is None:
             cosine_similarity_threshold = 0.85
         
+        try:
+            localmax_order = int(localmax_order)
+        except (TypeError, ValueError):
+            localmax_order = 2
+        if localmax_order < 1:
+            localmax_order = 1
+        
         is_tensor = isinstance(features, torch.Tensor)
-        use_gpu = is_tensor and features.is_cuda
         
-        # 计算相邻帧间的相似度
-        similarities = []
-        for i in range(len(frame_indices) - 1):
-            if use_gpu:
-                sim = torch.dot(features[i], features[i + 1]).item()
-            else:
-                sim = np.dot(features[i], features[i + 1])
-            similarities.append(sim)
-        
-        if not similarities:
-            return [frame_indices[0]]
-        
-        similarities = np.array(similarities)
+        # 计算相邻帧间的相似度（向量化）
+        if is_tensor:
+            similarities = (features[:-1] * features[1:]).sum(dim=1)
+            if similarities.numel() == 0:
+                return [frame_indices[0]]
+        else:
+            features_np = np.asarray(features)
+            similarities = np.einsum('ij,ij->i', features_np[:-1], features_np[1:])
+            if similarities.size == 0:
+                return [frame_indices[0]]
         
         # 找局部极值作为候选边界
         boundaries = [frame_indices[0]]  # 起始帧
         
         if len(similarities) > 2 * localmax_order:
-            try:
-                # 找局部最小值（相似度最低的点）
-                local_min_indices = argrelmax(-similarities, order=localmax_order)[0]
+            # 找严格局部最小值（平顶不算极值）
+            local_min_indices = SceneBoundaryDetector._strict_local_minima_indices(
+                similarities, order=localmax_order
+            )
+            
+            if is_tensor:
+                if local_min_indices.numel() > 0:
+                    valid_indices = local_min_indices[
+                        similarities[local_min_indices] < cosine_similarity_threshold
+                    ].detach().cpu().tolist()
+                    for idx in valid_indices:
+                        boundaries.append(frame_indices[idx + 1])
+            else:
                 for idx in local_min_indices:
                     if similarities[idx] < cosine_similarity_threshold:
                         boundaries.append(frame_indices[idx + 1])
-            except Exception:
-                pass
         
         # 如果没找到边界，检查是否有超过阈值的点
         if len(boundaries) == 1:
-            for i, sim in enumerate(similarities):
-                if sim < cosine_similarity_threshold:
-                    boundaries.append(frame_indices[i + 1])
+            if is_tensor:
+                valid_indices = torch.where(similarities < cosine_similarity_threshold)[0].detach().cpu().tolist()
+                for idx in valid_indices:
+                    boundaries.append(frame_indices[idx + 1])
+            else:
+                for i, sim in enumerate(similarities):
+                    if sim < cosine_similarity_threshold:
+                        boundaries.append(frame_indices[i + 1])
         
         # 确保边界是排序的且唯一的
         boundaries = sorted(set(boundaries))
@@ -861,23 +688,25 @@ class SceneBoundaryDetector:
                 # 如果是短场景，尝试合并
                 if scene_length < min_scene_length:
                     best_neighbor = -1
-                    best_sim = SimilarityHelper.get_worst_similarity()
+                    best_sim = -1.0
                     
                     # 检查前一个场景
                     if i > 0 and (i - 1) not in skip_indices:
-                        val = SimilarityHelper.compute_similarity(
-                            scene_vectors[i], scene_vectors[i - 1], use_gpu
-                        )
-                        if SimilarityHelper.is_better_similarity(val, best_sim):
+                        if use_gpu:
+                            val = torch.dot(scene_vectors[i], scene_vectors[i - 1]).item()
+                        else:
+                            val = float(np.dot(scene_vectors[i], scene_vectors[i - 1]))
+                        if val > best_sim:
                             best_sim = val
                             best_neighbor = i - 1
                     
                     # 检查后一个场景
                     if i < len(scenes) - 1 and (i + 1) not in skip_indices:
-                        val = SimilarityHelper.compute_similarity(
-                            scene_vectors[i], scene_vectors[i + 1], use_gpu
-                        )
-                        if SimilarityHelper.is_better_similarity(val, best_sim):
+                        if use_gpu:
+                            val = torch.dot(scene_vectors[i], scene_vectors[i + 1]).item()
+                        else:
+                            val = float(np.dot(scene_vectors[i], scene_vectors[i + 1]))
+                        if val > best_sim:
                             best_sim = val
                             best_neighbor = i + 1
                     
@@ -911,48 +740,12 @@ class SceneBoundaryDetector:
 # ============================================================
 class SceneFeatureExtractor:
     @staticmethod
-    def extract_from_scene(scene: dict, frame_type: str = 'mid'):
-        """
-        从场景中提取指定位置的特征
-        
-        三元组模式: 根据 frame_type 选择位置
-        - 'start': 开始帧特征
-        - 'mid': 中间帧特征（默认）
-        - 'end': 结束帧特征
-        """
-        features_list = scene.get('features', [])
-        if not isinstance(features_list, list) or not features_list:
-            return None
-        
-        # 三元组模式: 根据 frame_type 选择位置
-        if len(features_list) >= 3:
-            if frame_type == 'start':
-                target_tensor = features_list[0]
-            elif frame_type == 'end':
-                target_tensor = features_list[2]
-            else:
-                target_tensor = features_list[1]
-        else:
-            # SceneNative模式: 只有1个向量
-            target_tensor = features_list[0]
-        
-        if target_tensor is None:
-            return None
-        if isinstance(target_tensor, torch.Tensor):
-            return target_tensor.cpu().numpy()
-        elif isinstance(target_tensor, np.ndarray):
-            return target_tensor
-        return np.array(target_tensor, dtype=np.float32)
-
-    @staticmethod
     def extract_all_from_scene(scene: dict) -> list:
         """
         从场景中提取所有特征向量
         
         Returns:
-            list: 特征向量列表
-            - SceneNative模式: [feature] (1个元素)
-            - 三元组模式: [start_feat, mid_feat, end_feat] (3个元素)
+            list: 三元组特征向量列表 [start_feat, mid_feat, end_feat]
         """
         result = []
         features_list = scene.get('features', [])
@@ -967,124 +760,8 @@ class SceneFeatureExtractor:
                         result.append(np.array(feat, dtype=np.float32))
         return result
     
-    @staticmethod
-    def get_feature_count(scene: dict) -> int:
-        """
-        获取场景中的特征向量数量
-        
-        Returns:
-            int: 特征数量 (1 或 3)
-        """
-        features_list = scene.get('features', [])
-        if isinstance(features_list, list):
-            return len(features_list)
-        return 0
-
-
-# ============================================================
-# 异步写入器
-# ============================================================
-class AsyncWriter:
-    def __init__(self, max_workers: int = 2):
-        self._executor = ThreadPoolExecutor(max_workers=max_workers)
-        self._pending_futures = []
-        self._lock = threading.Lock()
-        self._pending_count = 0
-        self._error_count = 0
-
-    def submit(self, data, path: str):
-        with self._lock:
-            self._pending_count += 1
-        future = self._executor.submit(self._write_task, data, path)
-        future.add_done_callback(self._on_complete)
-        with self._lock:
-            self._pending_futures = [f for f in self._pending_futures if not f.done()]
-            self._pending_futures.append(future)
-        return future
-
-    def _on_complete(self, future):
-        with self._lock:
-            self._pending_count -= 1
-            if future.exception():
-                self._error_count += 1
-
-    def _write_task(self, data, path: str):
-        temp = path + ".tmp"
-        try:
-            with open(temp, 'wb') as f:
-                pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
-            shutil.move(temp, path)
-            return True
-        except Exception as e:
-            print(f"[Error] 写入失败 {path} - {e}")
-            if os.path.exists(temp):
-                try:
-                    os.remove(temp)
-                except OSError:
-                    pass
-            return False
-
-    def pending_count(self) -> int:
-        with self._lock:
-            return self._pending_count
-
-    def wait_all(self, timeout: float = None):
-        with self._lock:
-            futures = list(self._pending_futures)
-        for future in futures:
-            try:
-                future.result(timeout=timeout)
-            except Exception as e:
-                print(f"[Error] 等待写入时出错 - {e}")
-
-    def shutdown(self):
-        self.wait_all()
-        self._executor.shutdown(wait=True)
-
-
 # ============================================================
 # 工具函数
 # ============================================================
 def sanitize_name(base_name):
     return "".join([c for c in base_name if c.isalnum() or c in (' ', '.', '_', '-')]).strip()
-
-
-def _safe_pickle_dump(data, path):
-    temp = path + ".tmp"
-    try:
-        with open(temp, 'wb') as f:
-            pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
-        shutil.move(temp, path)
-        return True
-    except Exception as e:
-        print(f"[Error] 保存失败: {e}")
-        if os.path.exists(temp):
-            try:
-                os.remove(temp)
-            except OSError:
-                pass
-        return False
-
-
-def _recover_and_merge(main_index_path, temp_pkl_dir):
-    if not os.path.isdir(temp_pkl_dir):
-        return
-    temp_files = [f for f in os.listdir(temp_pkl_dir) if f.endswith('.pkl')]
-    if not temp_files:
-        shutil.rmtree(temp_pkl_dir, ignore_errors=True)
-        return
-    rec_idx = {}
-    for tf in temp_files:
-        try:
-            with open(os.path.join(temp_pkl_dir, tf), 'rb') as f:
-                rec_idx.update(pickle.load(f))
-        except (IOError, pickle.PickleError):
-            pass
-    if os.path.exists(main_index_path):
-        try:
-            with open(main_index_path, 'rb') as f:
-                rec_idx.update(pickle.load(f))
-        except (IOError, pickle.PickleError):
-            pass
-    _safe_pickle_dump(rec_idx, main_index_path)
-    shutil.rmtree(temp_pkl_dir, ignore_errors=True)

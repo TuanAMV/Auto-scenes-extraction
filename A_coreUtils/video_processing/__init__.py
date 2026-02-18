@@ -1,42 +1,55 @@
-﻿"""Video processing subpackage exports."""
+# -*- coding: utf-8 -*-
+# 本文件使用 UTF-8 编码，请勿使用 GBK 或其他编码打开/保存
+# video_processing - 视频处理模块
+"""
+视频处理模块，包含：
+- ffmpeg_precision_cutter.py: FFmpeg高精度视频处理器
+- video_utils.py: 视频处理工具类
+- Video_Scene_Merger.py: 视频场景合并器
+- Video_Scene_Analyzer.py: 视频场景分析器
+- video_name_parser.py: 视频文件名解析器
+"""
 
-from __future__ import annotations
+import os
+import sys
 
-import importlib
-from typing import Any
+# ============================================================
+#  路径设置 - 确保能找到项目根目录的模块
+# ============================================================
+_current_file = os.path.abspath(__file__)
+_video_processing_dir = os.path.dirname(_current_file)
+_a_core_utils_dir = os.path.dirname(_video_processing_dir)
+_project_root_dir = os.path.dirname(_a_core_utils_dir)
+if _project_root_dir not in sys.path:
+    sys.path.insert(0, _project_root_dir)
 
-_EXPORTS = {
-    "VideoMetaHelper": (".video_utils", "VideoMetaHelper"),
-    "FrameExtractorThread": (".video_utils", "FrameExtractorThread"),
-    "SceneBoundaryDetector": (".video_utils", "SceneBoundaryDetector"),
-    "SceneFeatureExtractor": (".video_utils", "SceneFeatureExtractor"),
-    "AsyncWriter": (".video_utils", "AsyncWriter"),
-    "cleanup_temp_folder": (".video_utils", "cleanup_temp_folder"),
-    "ensure_temp_folder_clean": (".video_utils", "ensure_temp_folder_clean"),
-    "sanitize_name": (".video_utils", "sanitize_name"),
-    "resolve_path": (".video_utils", "resolve_path"),
-    "extract_single_frame": (".video_utils", "extract_single_frame"),
-    "extract_single_frame_rerank": (".video_utils", "extract_single_frame_rerank"),
-    "TEMP_DIR": (".video_utils", "TEMP_DIR"),
-    "DEVICE": (".video_utils", "DEVICE"),
-    "FFmpegPrecisionCutter": (".ffmpeg_precision_cutter", "FFmpegPrecisionCutter"),
-    "VideoInfo": (".ffmpeg_precision_cutter", "VideoInfo"),
-    "export_video_clip": (".ffmpeg_precision_cutter", "export_video_clip"),
-    "VideoNameParser": (".video_name_parser", "VideoNameParser"),
-}
+from .video_utils import (
+    VideoMetaHelper,
+    FrameExtractorThread,
+    SceneBoundaryDetector,
+    SceneFeatureExtractor,
+    cleanup_temp_folder,
+    sanitize_name,
+    extract_single_frame,
+    extract_single_frame_rerank,
+    TEMP_DIR,
+    DEVICE,
+)
+from .ffmpeg_precision_cutter import FFmpegPrecisionCutter, VideoInfo
+from .video_name_parser import VideoNameParser
 
-__all__ = list(_EXPORTS.keys())
-
-
-def __getattr__(name: str) -> Any:
-    if name in _EXPORTS:
-        module_name, attr_name = _EXPORTS[name]
-        module = importlib.import_module(module_name, __name__)
-        value = getattr(module, attr_name)
-        globals()[name] = value
-        return value
-    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
-
-
-def __dir__() -> list[str]:
-    return sorted(list(globals().keys()) + __all__)
+__all__ = [
+    'VideoMetaHelper',
+    'FrameExtractorThread',
+    'SceneBoundaryDetector',
+    'SceneFeatureExtractor',
+    'cleanup_temp_folder',
+    'sanitize_name',
+    'extract_single_frame',
+    'extract_single_frame_rerank',
+    'TEMP_DIR',
+    'DEVICE',
+    'FFmpegPrecisionCutter',
+    'VideoInfo',
+    'VideoNameParser',
+]

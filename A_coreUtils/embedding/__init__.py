@@ -1,30 +1,28 @@
-﻿"""Embedding subpackage exports."""
+# -*- coding: utf-8 -*-
+# 本文件使用 UTF-8 编码，请勿使用 GBK 或其他编码打开/保存
+# embedding - CLIP系列嵌入模型
+"""
+CLIP系列嵌入模型模块，包含：
+- embedding_model.py: 通用嵌入模型处理器（支持CLIP、FG-CLIP2等）
+"""
 
-from __future__ import annotations
+import os
+import sys
 
-import importlib
-from typing import Any
+# ============================================================
+#  路径设置 - 确保能找到项目根目录的模块
+# ============================================================
+_current_file = os.path.abspath(__file__)
+_embedding_dir = os.path.dirname(_current_file)
+_a_core_utils_dir = os.path.dirname(_embedding_dir)
+_project_root_dir = os.path.dirname(_a_core_utils_dir)
+if _project_root_dir not in sys.path:
+    sys.path.insert(0, _project_root_dir)
 
-_EXPORTS = {
-    "EmbeddingModelProcessor": (".embedding_model", "EmbeddingModelProcessor"),
-    "VectorizerThread": (".embedding_model", "VectorizerThread"),
-    "SemanticSearchEngine": (".embedding_model", "SemanticSearchEngine"),
-    "create_video_index": (".embedding_model", "create_video_index"),
-    "batch_create_video_index": (".embedding_model", "batch_create_video_index"),
-}
+from .embedding_model import (
+    EmbeddingModelProcessor,
+)
 
-__all__ = list(_EXPORTS.keys())
-
-
-def __getattr__(name: str) -> Any:
-    if name in _EXPORTS:
-        module_name, attr_name = _EXPORTS[name]
-        module = importlib.import_module(module_name, __name__)
-        value = getattr(module, attr_name)
-        globals()[name] = value
-        return value
-    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
-
-
-def __dir__() -> list[str]:
-    return sorted(list(globals().keys()) + __all__)
+__all__ = [
+    'EmbeddingModelProcessor',
+]

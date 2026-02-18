@@ -1,17 +1,15 @@
+# -*- coding: utf-8 -*-
+# 本文件使用 UTF-8 编码，请勿使用 GBK 或其他编码打开/保存
 # text_search.py (v3.11 - CLIP/FG-CLIP2)
 # 支持从models文件夹动态加载模型
-# 使用模型原生 logit_scale 计算相似度
 # v3.11: 移除 Qwen3-VL-Embedding 支持，仅保留 CLIP/FG-CLIP2
-# v3.10: 添加跨视频去重功能（复用P模式的去重逻辑）
-# v3.9: 搜索和重排序分步执行，避免同时加载两个模型
-# v3.7: 移除 Chinese-CLIP 支持，与 embedding_model v3.6 保持一致
 
 import os
 import atexit
 import subprocess
 import shutil
 import gc
-import pickle
+from A_coreUtils.lance_index_io import read_lance_index_for_reranker
 import json
 import time
 import re
@@ -58,8 +56,7 @@ if not _EMBEDDING_MODEL_AVAILABLE:
     raise ImportError("需要安装 embedding_model 模块")
 
 # 导入路径解析工具
-from path_resolver import PathResolver
-from A_coreUtils.video_processing.video_utils import resolve_path
+from path_resolver import PathResolver, resolve_path
 
 # 创建路径解析器实例（无参 → 以 path_resolver.py 所在目录为项目根）
 _base_resolver = PathResolver()
@@ -257,7 +254,7 @@ def detect_model_type(model_path: str) -> str:
     # 检查 FG-CLIP2
     if 'fg-clip2' in model_name_lower or 'fg_clip2' in model_name_lower or 'fgclip2' in model_name_lower:
         return 'fgclip2'
-    
+
     # 检查配置文件 (open_clip 格式)
     config_path = os.path.join(model_path, 'open_clip_config.json')
     if os.path.exists(config_path):
@@ -267,8 +264,7 @@ def detect_model_type(model_path: str) -> str:
     config_json_path = os.path.join(model_path, 'config.json')
     if os.path.exists(config_json_path):
         try:
-            import json
-            with open(config_json_path, 'r') as f:
+            with open(config_json_path, 'r', encoding='utf-8') as f:
                 config = json.load(f)
             
             # [简化] 移除 Chinese CLIP 检测
@@ -665,27 +661,55 @@ def set_default_preset():
         return jsonify({"success": False, "message": f"设置默认预设失败: {str(e)}"}), 500
 
 
-def extract_model_name_from_pkl(pkl_path: str) -> str:
-    """从PKL文件名中提取模型名
-    支持格式:
-    1. {source}_{model_name}{_dXXX}_{mode}.pkl
-    2. {source}_{model_name}.pkl
-    """
-    import re
-    filename = os.path.basename(pkl_path)
-    basename = filename.replace('.pkl', '')
-    
-    remaining = basename
-    
-    # 尝试匹配模式后缀
-    mode_match = re.search(r'_(Single|Triplet|TripletAvg|SceneNative3f|SceneNative|SceneDetect|Video)$', basename)
+def _strip_index_suffixes(index_name: str) -> str:
+    """去掉索引文件名中的模式和维度后缀"""
+    remaining = index_name
+    mode_match = re.search(r'_(Single|Triplet|TripletAvg|SceneNative3f|SceneNative|SceneDetect|Video)$', remaining)
     if mode_match:
-        remaining = basename[:mode_match.start()]
-    
-    # 匹配可选的维度后缀
+        remaining = remaining[:mode_match.start()]
+
     dim_match = re.search(r'_d\d+$', remaining)
     if dim_match:
         remaining = remaining[:dim_match.start()]
+
+    return remaining
+
+
+def _match_model_name_from_models_dir(index_name: str) -> str | None:
+    """根据 models 目录中的模型名，从索引文件名后缀反推模型名"""
+    try:
+        model_names = []
+        if os.path.isdir(MODELS_DIR):
+            for item in os.listdir(MODELS_DIR):
+                item_path = os.path.join(MODELS_DIR, item)
+                if os.path.isdir(item_path):
+                    model_names.append(item)
+
+        # 优先匹配更长名称，避免短名称误命中
+        model_names.sort(key=len, reverse=True)
+        for model_name in model_names:
+            if index_name == model_name or index_name.endswith(f"_{model_name}"):
+                return model_name
+    except Exception:
+        pass
+    return None
+
+
+def extract_model_name_from_index(index_path: str) -> str:
+    """从索引文件/目录名中提取模型名
+    支持格式:
+    1. {source}_{model_name}{_dXXX}_{mode}.lance
+    2. {source}_{model_name}.lance
+    """
+    filename = os.path.basename(index_path)
+    basename = filename.replace('.lance', '')
+
+    remaining = _strip_index_suffixes(basename)
+
+    # 优先用 models 目录反推，兼容 source 名称中含下划线的情况
+    matched_model = _match_model_name_from_models_dir(remaining)
+    if matched_model:
+        return matched_model
     
     # 找到第一个下划线后的部分作为模型名
     first_underscore = remaining.find('_')
@@ -844,12 +868,12 @@ def deduplicate_text_search_results(
     text_search 结果去重（跨视频去重）
     
     优先规则：
-    - 如果同PKL内有 OP/ED 视频，只保留 OP/ED 视频
+    - 如果同Lance内有 OP/ED 视频，只保留 OP/ED 视频
     - 否则进行向量相似度去重
     
     去重范围：
-    - 按 source_pkl 分组，只在同一PKL内进行去重
-    - 同一PKL内仅跨视频去重，同视频内不去重
+    - 按 source_lance 分组，只在同一Lance内进行去重
+    - 同一Lance内仅跨视频去重，同视频内不去重
     
     Args:
         all_matches: 搜索结果列表
@@ -866,18 +890,18 @@ def deduplicate_text_search_results(
         print("[去重] 无场景特征向量，跳过去重")
         return all_matches
     
-    # Step 1: 按 source_pkl 分组
+    # Step 1: 按 source_lance 分组
     groups = defaultdict(list)
     for idx, match in enumerate(all_matches):
-        pkl_path = match.get('source_pkl', 'unknown')
-        groups[pkl_path].append((idx, match))
+        lance_path = match.get('source_lance', 'unknown')
+        groups[lance_path].append((idx, match))
     
     # Step 2: 每组内去重
     keep_indices = set()
     op_ed_priority_count = 0
     vector_dedup_count = 0
     
-    for pkl_path, group_items in groups.items():
+    for lance_path, group_items in groups.items():
         if len(group_items) == 1:
             # 只有一个，直接保留
             keep_indices.add(group_items[0][0])
@@ -945,12 +969,12 @@ def deduplicate_text_search_results(
     return [all_matches[i] for i in sorted(keep_indices)]
 
 
-def load_scene_features_from_pkl(pkl_path: str, matches: list) -> dict:
+def load_scene_features_from_lance(lance_path: str, matches: list) -> dict:
     """
-    从 PKL 文件加载场景特征向量
+    从 Lance 索引加载场景特征向量（用于去重）
     
     Args:
-        pkl_path: PKL 文件路径
+        lance_path: Lance 索引目录路径
         matches: 需要加载特征的匹配结果列表
     
     Returns:
@@ -958,47 +982,28 @@ def load_scene_features_from_pkl(pkl_path: str, matches: list) -> dict:
     """
     scene_features = {}
     
-    if not os.path.exists(pkl_path):
+    if not os.path.exists(lance_path):
         return scene_features
     
     try:
-        with open(pkl_path, 'rb') as f:
-            data_dict = pickle.load(f)
-        
         # 构建需要的场景键集合
         needed_keys = set()
         for match in matches:
-            if match.get('source_pkl') == pkl_path:
+            if match.get('source_lance') == lance_path:
                 scene_key = f"{match.get('video_path', '')}_{match.get('start_frame', 0)}_{match.get('end_frame', 0)}"
                 needed_keys.add(scene_key)
         
-        # 遍历 PKL 数据提取特征
-        for video_path, data in data_dict.items():
-            scenes = data.get('scenes', []) if isinstance(data, dict) else data
-            for scene in scenes:
-                start_frame = scene.get('start_frame', 0)
-                end_frame = scene.get('end_frame', 0)
-                scene_key = f"{video_path}_{start_frame}_{end_frame}"
-                
-                if scene_key not in needed_keys:
-                    continue
-                
-                # 提取特征向量
-                features = scene.get('features', [])
-                if features:
-                    # 转换为 numpy 数组
-                    feat_list = []
-                    for f in features:
-                        if hasattr(f, 'numpy'):
-                            feat_list.append(f.numpy())
-                        elif isinstance(f, np.ndarray):
-                            feat_list.append(f)
-                    if feat_list:
-                        scene_features[scene_key] = np.vstack(feat_list)
+        if not needed_keys:
+            return scene_features
+        
+        # 从 Lance 索引按需读取
+        scene_features = read_lance_index_for_reranker(lance_path, needed_keys)
     except Exception as e:
-        print(f"[Warning] 加载 PKL 特征失败 {pkl_path}: {e}")
+        print(f"[Warning] 加载 Lance 特征失败 {lance_path}: {e}")
     
     return scene_features
+
+
 
 
 @app.route('/search', methods=['POST'])
@@ -1063,7 +1068,7 @@ def search_similar_scenes():
         # ✅ v3.11: 检查多索引是否来自相同模型
         model_names = set()
         for index_path in index_paths:
-            model_name = extract_model_name_from_pkl(index_path)
+            model_name = extract_model_name_from_index(index_path)
             if model_name:
                 model_names.add(model_name)
             else:
@@ -1104,9 +1109,9 @@ def search_similar_scenes():
                 [index_path],
                 similarity_threshold=initial_threshold
             )
-            # ✅ v3.10: 为每个 match 添加 source_pkl 字段
+            # ✅ v3.10: 为每个 match 添加 source_lance 字段
             for match in matches:
-                match['source_pkl'] = index_path
+                match['source_lance'] = index_path
             all_matches.extend(matches)
         
         # 按相似度排序（基础召回）
@@ -1210,10 +1215,10 @@ def search_similar_scenes():
             
             # 加载场景特征向量
             scene_features = {}
-            unique_pkls = set(m.get('source_pkl') for m in all_matches if m.get('source_pkl'))
-            for pkl_path in unique_pkls:
-                pkl_features = load_scene_features_from_pkl(pkl_path, all_matches)
-                scene_features.update(pkl_features)
+            unique_lances = set(m.get('source_lance') for m in all_matches if m.get('source_lance'))
+            for lance_path in unique_lances:
+                lance_feats = load_scene_features_from_lance(lance_path, all_matches)
+                scene_features.update(lance_feats)
             
             # 执行去重
             all_matches = deduplicate_text_search_results(
@@ -1411,7 +1416,7 @@ def export_clips():
                     parsed_name = os.path.splitext(os.path.basename(video_path))[0]
             else:
                 parsed_name = os.path.splitext(os.path.basename(video_path))[0]
-            output_filename = f"{start_frame}_{parsed_name}_{ext}"
+            output_filename = f"{start_frame}_{parsed_name}{ext}"
             output_path = os.path.join(output_dir, output_filename)
             
             # 避免文件名冲突

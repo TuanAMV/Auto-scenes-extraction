@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+# 本文件使用 UTF-8 编码，请勿使用 GBK 或其他编码打开/保存
 # embedding_model.py
 # 嵌入模型处理器 - GPU优化版本 (并行I/O加载)
 # 支持多种模型格式:
@@ -20,9 +22,9 @@ logging.getLogger().setLevel(logging.ERROR)  # 只显示错误，不显示警告
 _current_file = os.path.abspath(__file__)
 _embedding_dir = os.path.dirname(_current_file)
 _a_core_utils_dir = os.path.dirname(_embedding_dir)
-_cut_detect_scene_dir = os.path.dirname(_a_core_utils_dir)
-if _cut_detect_scene_dir not in sys.path:
-    sys.path.insert(0, _cut_detect_scene_dir)
+_project_root_dir = os.path.dirname(_a_core_utils_dir)
+if _project_root_dir not in sys.path:
+    sys.path.insert(0, _project_root_dir)
 
 # ============================================================
 #  关键修复: 在所有导入之前设置离线环境变量
@@ -35,11 +37,7 @@ import time
 import torch
 import torch.nn.functional as F
 import numpy as np
-import pickle
-import hashlib
 import shutil
-import tempfile
-import gc
 import traceback
 import re
 from threading import Thread, Event
@@ -49,7 +47,7 @@ from PIL import Image
 
 # [简化] 移除 Chinese CLIP 支持
 try:
-    from transformers import CLIPModel, CLIPImageProcessor, BertTokenizer
+    from transformers import CLIPModel, CLIPImageProcessor
     HAS_TRANSFORMERS_CLIP = True
 except ImportError:
     HAS_TRANSFORMERS_CLIP = False
@@ -59,13 +57,17 @@ from A_coreUtils.video_processing.video_utils import (
     FrameExtractorThread, 
     VideoMetaHelper, 
     SceneBoundaryDetector,
-    SceneFeatureExtractor,
-    AsyncWriter,
     sanitize_name,
-    _safe_pickle_dump,
-    _recover_and_merge,
     cleanup_temp_folder,
     TEMP_DIR
+)
+
+# 导入 Lance 索引读写工具
+from A_coreUtils.lance_index_io import (
+    scenes_to_lance_rows,
+    get_indexed_video_paths,
+    read_lance_index_raw,
+    AsyncLanceWriter,
 )
 
 # 导入路径解析器
@@ -77,7 +79,6 @@ from path_resolver import PathResolver, get_project_root
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 # 初始化路径解析器（不传参数，使用 path_resolver.py 所在目录作为项目根目录）
 _path_resolver = PathResolver()
-base_dir = _path_resolver.get_project_root_str()
 
 
 class VectorizerThread:
@@ -124,7 +125,6 @@ class VectorizerThread:
         if self.brightness_threshold is None or self.brightness_threshold <= 0:
             return False
         try:
-            import numpy as np
             gray = img.convert('L')
             pixels = np.array(gray)
             black_pixels = np.sum(pixels < self.brightness_threshold)
@@ -173,7 +173,7 @@ class VectorizerThread:
         return self._load_images_parallel(filepaths)
     
     def _vectorize_worker(self):
-        """单实例模式：正确处理预加载逻辑，避免帧丢失"""
+        """单实例模式：双缓冲流水线 - I/O与GPU并行执行"""
         try:
             local_processed = set()  # 本线程处理过的文件（用于本地去重）
             actual_frames_processed = 0  # 实际有效处理的帧数
@@ -193,24 +193,16 @@ class VectorizerThread:
                     next_batch_files = files_to_process[self.batch_size:self.batch_size*2] if self.prefetch else []
                     batch_number += 1
                     
-                    # 传入预加载目标文件列表进行验证
-                    valid_count = self._process_batch_optimized(
-                        batch_files, 
-                        batch_number, 
+                    # 双缓冲：_process_batch_optimized 内部在 I/O 完成后、GPU 之前提交预取
+                    # 返回 (有效帧数, 新预取future, 新预取文件列表)
+                    valid_count, prefetch_future, prefetch_target_files = self._process_batch_optimized(
+                        batch_files,
+                        batch_number,
                         prefetch_future=prefetch_future,
                         prefetch_target_files=prefetch_target_files,
                         next_batch_files=next_batch_files
                     )
                     actual_frames_processed += valid_count
-                    
-                    # 记录预加载的目标文件列表
-                    if self.prefetch and next_batch_files:
-                        prefetch_future = self._io_executor.submit(self._load_images_parallel, next_batch_files)
-                        prefetch_target_files = list(next_batch_files)  # 保存副本
-                    else:
-                        prefetch_future = None
-                        prefetch_target_files = None
-                    
                     local_processed.update(batch_files)
                     
                 elif self.extractor.is_done():
@@ -218,9 +210,9 @@ class VectorizerThread:
                         files_to_process.sort(key=lambda f: int(os.path.basename(f).replace('frame_', '').replace('.jpg', '')))
                         batch_number += 1
                         print(f"[GPU] 处理最后一批 {len(files_to_process)} 帧...")
-                        valid_count = self._process_batch_optimized(
-                            files_to_process, 
-                            batch_number, 
+                        valid_count, _, _ = self._process_batch_optimized(
+                            files_to_process,
+                            batch_number,
                             prefetch_future=prefetch_future,
                             prefetch_target_files=prefetch_target_files
                         )
@@ -238,37 +230,37 @@ class VectorizerThread:
             self._io_executor.shutdown(wait=False)
             self.vectorization_done.set()
     
-    def _process_batch_optimized(self, batch_files: list, batch_number: int, 
+    def _process_batch_optimized(self, batch_files: list, batch_number: int,
                                   prefetch_future=None, prefetch_target_files=None,
-                                  next_batch_files=None) -> int:
-        """验证预加载文件匹配性，返回实际处理帧数
+                                  next_batch_files=None) -> tuple:
+        """双缓冲流水线：I/O完成后立即提交下一批预取，再执行GPU推理
         
-        关键修复：
-        1. 验证预加载文件列表是否匹配当前batch
-        2. 返回实际处理帧数
-        3. 只删除实际处理的文件
+        返回: (实际处理帧数, 新预取future, 新预取文件列表)
+        
+        流水线时序：
+        1. 阻塞等待上一轮预取结果（或同步加载首批）
+        2. 提交下一批预取到I/O线程池
+        3. GPU推理当前batch（此时下一批I/O在并行执行）
         """
         prefix = f"[GPU] 批次 #{batch_number}"
         batch_start = time.time()
         io_start = time.time()
         
-        # 核心修复：验证预加载文件是否匹配当前batch
+        # ① 获取当前batch数据：阻塞等待预取结果，或同步加载
         use_prefetch = False
-        if prefetch_future is not None and prefetch_future.done():
+        if prefetch_future is not None:
             if prefetch_target_files is not None:
-                # 检查预加载的文件列表是否与当前batch_files一致
                 if set(prefetch_target_files) == set(batch_files):
                     use_prefetch = True
         
         if use_prefetch:
             try:
-                valid_indices, image_tensors, valid_paths = prefetch_future.result()
+                valid_indices, image_tensors, valid_paths = prefetch_future.result(timeout=30.0)
                 io_source = "预加载"
             except Exception:
                 valid_indices, image_tensors, valid_paths = self._load_images_parallel(batch_files)
-                io_source = "并行加载"
+                io_source = "并行加载(预取异常)"
         else:
-            # 总是处理当前的 batch_files，而不是预加载的结果
             valid_indices, image_tensors, valid_paths = self._load_images_parallel(batch_files)
             io_source = "并行加载"
         
@@ -276,8 +268,22 @@ class VectorizerThread:
         
         if not image_tensors:
             print(f"{prefix}: 无有效图像,跳过 (提交 {len(batch_files)} 文件)")
-            return 0
+            # 即使当前batch为空，也要提交下一批预取
+            new_prefetch_future = None
+            new_prefetch_target_files = None
+            if self.prefetch and next_batch_files:
+                new_prefetch_future = self._io_executor.submit(self._load_images_parallel, next_batch_files)
+                new_prefetch_target_files = list(next_batch_files)
+            return 0, new_prefetch_future, new_prefetch_target_files
         
+        # ② GPU之前提交下一批预取（关键：让I/O与GPU并行）
+        new_prefetch_future = None
+        new_prefetch_target_files = None
+        if self.prefetch and next_batch_files:
+            new_prefetch_future = self._io_executor.submit(self._load_images_parallel, next_batch_files)
+            new_prefetch_target_files = list(next_batch_files)
+        
+        # ③ GPU推理（此时下一批I/O在并行执行）
         gpu_start = time.time()
         with torch.no_grad():
             if self.model_type == 'fgclip2':
@@ -289,18 +295,18 @@ class VectorizerThread:
                 features = torch.cat(all_features, dim=0)
             else:
                 batch_tensor = torch.stack(image_tensors).to(DEVICE)
+                # Align input dtype with model weight dtype (fixes Float/Half mismatch on CUDA).
+                model_ref = getattr(self.model, 'model', self.model)
+                try:
+                    target_dtype = next(model_ref.parameters()).dtype
+                    if batch_tensor.dtype != target_dtype:
+                        batch_tensor = batch_tensor.to(dtype=target_dtype)
+                except (StopIteration, AttributeError, TypeError):
+                    pass
                 features = self.model.encode_image(batch_tensor)
         gpu_time = time.time() - gpu_start
         
-        # 先截断，再统一归一化（只1次）
-        if self.truncate_dim is not None and features.shape[1] > self.truncate_dim:
-            original_dim = features.shape[1]
-            features = features[:, :self.truncate_dim]
-            if batch_number == 1:
-                print(f"{prefix}: 向量维度截断 {original_dim} -> {self.truncate_dim}")
-        
-        # 统一归一化（唯一1次）
-        features = F.normalize(features, dim=-1)
+        features = _truncate_and_normalize(features, self.truncate_dim, log=(batch_number == 1))
         
         total_time = time.time() - batch_start
         fps = len(valid_indices) / total_time if total_time > 0 else 0
@@ -318,7 +324,7 @@ class VectorizerThread:
             except:
                 pass
         
-        return len(valid_indices)  # ✅ v3.0: 返回实际有效处理的帧数
+        return len(valid_indices), new_prefetch_future, new_prefetch_target_files
     
     def get_results(self) -> tuple:
         if self.features_list:
@@ -336,6 +342,67 @@ class VectorizerThread:
     
     def is_done(self) -> bool:
         return self.vectorization_done.is_set()
+
+
+def _truncate_and_normalize(features, truncate_dim, log=True):
+    """截断维度并 L2 归一化（统一入口）"""
+    if truncate_dim is not None and features.shape[1] > truncate_dim:
+        if log:
+            print(f"[Info] 截断向量维度: {features.shape[1]} -> {truncate_dim}")
+        features = features[:, :truncate_dim]
+    features = F.normalize(features, dim=-1)
+    return features
+
+
+class _SimpleProcessor:
+    """轻量 processor 容器，持有 tokenizer 和 image_processor"""
+    def __init__(self, tokenizer, image_processor):
+        self.tokenizer = tokenizer
+        self.image_processor = image_processor
+
+
+class _TransformersModelWrapper:
+    """统一的 transformers 模型包装器，支持 CLIP 和 FG-CLIP2"""
+    def __init__(self, model, fp16=False, is_fgclip2=False):
+        self.model = model
+        self.fp16 = fp16
+        self.is_fgclip2 = is_fgclip2
+        self.logit_scale = model.logit_scale if hasattr(model, 'logit_scale') else None
+        self.logit_bias = model.logit_bias if hasattr(model, 'logit_bias') else None
+
+    def encode_image(self, image_inputs):
+        """编码图像 - 支持 tensor 和 dict 两种输入"""
+        with torch.no_grad():
+            if isinstance(image_inputs, torch.Tensor):
+                if image_inputs.dim() == 3:
+                    image_inputs = image_inputs.unsqueeze(0)
+                if self.fp16 and image_inputs.dtype != torch.float16:
+                    image_inputs = image_inputs.half()
+                output = self.model.get_image_features(pixel_values=image_inputs)
+            elif isinstance(image_inputs, dict) or hasattr(image_inputs, 'keys'):
+                image_inputs = {k: v.to(DEVICE) if hasattr(v, 'to') else v for k, v in image_inputs.items()}
+                output = self.model.get_image_features(**image_inputs)
+            else:
+                raise RuntimeError(f"不支持的图像输入类型: {type(image_inputs)}")
+            features = output.pooler_output if hasattr(output, 'pooler_output') else output
+            return features.float()
+
+    def encode_text(self, text_inputs, walk_type="short"):
+        """编码文本 - FG-CLIP2 支持 walk_type 参数，CLIP 忽略"""
+        with torch.no_grad():
+            if isinstance(text_inputs, dict) or hasattr(text_inputs, 'keys'):
+                text_inputs = {k: v.to(DEVICE) if hasattr(v, 'to') else v for k, v in text_inputs.items()}
+                if self.is_fgclip2:
+                    output = self.model.get_text_features(**text_inputs, walk_type=walk_type)
+                else:
+                    output = self.model.get_text_features(**text_inputs)
+            else:
+                if self.is_fgclip2:
+                    output = self.model.get_text_features(input_ids=text_inputs, walk_type=walk_type)
+                else:
+                    output = self.model.get_text_features(input_ids=text_inputs)
+            features = output.pooler_output if hasattr(output, 'pooler_output') else output
+            return features.float()
 
 
 class EmbeddingModelProcessor:
@@ -451,48 +518,6 @@ class EmbeddingModelProcessor:
             # [简化] 移除 Chinese CLIP 支持
             self.model_type = 'fgclip2'
             
-            # 创建 FG-CLIP2 Wrapper 类
-            use_fp16 = self.use_fp16
-            
-            class FGClip2TransformersWrapper:
-                def __init__(self, model, fp16=False):
-                    self.model = model
-                    self.fp16 = fp16
-                    # 保存 logit_scale 和 logit_bias 引用
-                    self.logit_scale = model.logit_scale if hasattr(model, 'logit_scale') else None
-                    self.logit_bias = model.logit_bias if hasattr(model, 'logit_bias') else None
-                
-                def encode_image(self, image_inputs):
-                    """编码图像 - FG-CLIP2 使用完整的输入字典"""
-                    with torch.no_grad():
-                        # image_inputs 可能是 tensor 或 dict
-                        if isinstance(image_inputs, torch.Tensor):
-                            # 兼容旧的调用方式
-                            if image_inputs.dim() == 3:
-                                image_inputs = image_inputs.unsqueeze(0)
-                            if self.fp16 and image_inputs.dtype != torch.float16:
-                                image_inputs = image_inputs.half()
-                            output = self.model.get_image_features(pixel_values=image_inputs)
-                        elif isinstance(image_inputs, dict) or hasattr(image_inputs, 'keys'):
-                            # FG-CLIP2 的标准调用方式
-                            image_inputs = {k: v.to(DEVICE) if hasattr(v, 'to') else v for k, v in image_inputs.items()}
-                            output = self.model.get_image_features(**image_inputs)
-                        else:
-                            raise RuntimeError(f"不支持的图像输入类型: {type(image_inputs)}")
-                        features = output.pooler_output if hasattr(output, 'pooler_output') else output
-                        return features.float()
-                
-                def encode_text(self, text_inputs, walk_type="short"):
-                    """编码文本 - FG-CLIP2 支持 walk_type 参数"""
-                    with torch.no_grad():
-                        if isinstance(text_inputs, dict) or hasattr(text_inputs, 'keys'):
-                            text_inputs = {k: v.to(DEVICE) if hasattr(v, 'to') else v for k, v in text_inputs.items()}
-                            output = self.model.get_text_features(**text_inputs, walk_type=walk_type)
-                        else:
-                            output = self.model.get_text_features(input_ids=text_inputs, walk_type=walk_type)
-                        features = output.pooler_output if hasattr(output, 'pooler_output') else output
-                        return features.float()
-            
             # 加载单个模型实例（与 CLIP transformers 一致）
             self._model_raw = AutoModelForCausalLM.from_pretrained(
                 self.model_path,
@@ -520,16 +545,10 @@ class EmbeddingModelProcessor:
             
             print(f"[Info] 模型默认维度: {self.model_default_dim}")
             
-            self._model = FGClip2TransformersWrapper(self._model_raw, use_fp16)
+            self._model = _TransformersModelWrapper(self._model_raw, self.use_fp16, is_fgclip2=True)
             self._preprocess = preprocess_image
             
-            # 创建简单的 processor 对象以保持兼容性
-            class SimpleProcessor:
-                def __init__(self, tokenizer, image_processor):
-                    self.tokenizer = tokenizer
-                    self.image_processor = image_processor
-            
-            self._processor = SimpleProcessor(self._tokenizer, self._image_processor)
+            self._processor = _SimpleProcessor(self._tokenizer, self._image_processor)
             
             print(f"[Info] FG-CLIP2 模型加载完成，设备: {DEVICE}, FP16: {self.use_fp16}")
             
@@ -559,37 +578,10 @@ class EmbeddingModelProcessor:
             self._preprocess = preprocess_image
             # [简化] 移除 Chinese CLIP 支持
             self.model_type = 'clip'
-            class SimpleProcessor:
-                def __init__(self, tokenizer, image_processor):
-                    self.tokenizer = tokenizer
-                    self.image_processor = image_processor
-            self._processor = SimpleProcessor(self._tokenizer, self._image_processor)
+            self._processor = _SimpleProcessor(self._tokenizer, self._image_processor)
             self.model_default_dim = self._model_raw.config.projection_dim
             print(f"[Info] 模型默认维度: {self.model_default_dim}")
-            original_model = self._model_raw
-            use_fp16 = self.use_fp16
-            class ClipTransformersWrapper:
-                def __init__(self, model, fp16=False):
-                    self.model = model
-                    self.fp16 = fp16
-                def encode_image(self, images):
-                    with torch.no_grad():
-                        if images.dim() == 3:
-                            images = images.unsqueeze(0)
-                        if self.fp16 and images.dtype != torch.float16:
-                            images = images.half()
-                        output = self.model.get_image_features(pixel_values=images)
-                        features = output.pooler_output if hasattr(output, 'pooler_output') else output
-                        return features.float()
-                def encode_text(self, text_tokens):
-                    with torch.no_grad():
-                        if isinstance(text_tokens, dict) or hasattr(text_tokens, 'keys'):
-                            output = self.model.get_text_features(**text_tokens)
-                        else:
-                            output = self.model.get_text_features(input_ids=text_tokens)
-                        features = output.pooler_output if hasattr(output, 'pooler_output') else output
-                        return features.float()
-            self._model = ClipTransformersWrapper(original_model, use_fp16)
+            self._model = _TransformersModelWrapper(self._model_raw, self.use_fp16, is_fgclip2=False)
         except Exception as e:
             raise RuntimeError(f"CLIP 模型加载失败: {e}")
     
@@ -683,11 +675,6 @@ class EmbeddingModelProcessor:
         self._tokenizer = self._load_tokenizer_local(model_name, config)
         print(f"[Info] open_clip 模型加载完成, FP16: {self.use_fp16}")
     
-    def _detect_model_type(self, model_name: str, model_cfg: dict) -> str:
-        """检测 open_clip 格式的模型类型"""
-        # open_clip 格式默认为 CLIP 类型
-        return 'clip'
-    
     def _infer_openclip_arch_from_name(self, folder_name: str) -> str:
         """从文件夹名推断 open_clip 模型架构
         
@@ -696,7 +683,6 @@ class EmbeddingModelProcessor:
         - laion_CLIP-ViT-L-14-DataComp.XL-s13B-b90K -> ViT-L-14
         - openai_clip-vit-large-patch14 -> ViT-L-14
         """
-        import re
         folder_lower = folder_name.lower()
         
         # 常见的 ViT 架构模式
@@ -822,91 +808,6 @@ class EmbeddingModelProcessor:
             print(f"[Warning] transformers AutoTokenizer 加载失败: {e}")
         raise RuntimeError(f"无法加载 tokenizer。请确保以下文件之一存在于 {self.model_path}:\n  - tokenizer.json\n  - tokenizer_config.json\n  - spiece.model\n或者模型是 open_clip 支持的内置模型。")
     
-    def compute_image_text_similarity(self, images, texts, return_probs: bool = False) -> torch.Tensor:
-        """计算图像-文本相似度（使用模型原生方法，非外部点积）"""
-        if not isinstance(images, list):
-            images = [images]
-        if isinstance(texts, str):
-            texts = [texts]
-        pil_images = []
-        for img in images:
-            if isinstance(img, str):
-                pil_images.append(Image.open(img).convert('RGB'))
-            else:
-                pil_images.append(img)
-        with torch.no_grad():
-            # [简化] 移除 Chinese CLIP 分支
-            if self.model_type == 'fgclip2' and hasattr(self, '_processor') and self._processor is not None:
-                # FG-CLIP2 使用特征计算，支持 logit_bias
-                logits_per_image = self._compute_similarity_via_features(pil_images, texts)
-            elif hasattr(self, '_processor') and self._processor is not None and hasattr(self._model_raw, '__call__'):
-                try:
-                    if hasattr(self._processor, 'tokenizer') and hasattr(self._processor, 'image_processor'):
-                        text_inputs = self._processor.tokenizer(texts, return_tensors="pt", padding=True, truncation=True)
-                        image_inputs = self._processor.image_processor(images=pil_images, return_tensors="pt")
-                        inputs = {**text_inputs, **image_inputs}
-                        inputs = {k: v.to(DEVICE) for k, v in inputs.items()}
-                        outputs = self._model_raw(**inputs)
-                        logits_per_image = outputs.logits_per_image
-                    else:
-                        logits_per_image = self._compute_similarity_via_features(pil_images, texts)
-                except Exception as e:
-                    print(f"[Warning] CLIP 联合处理失败: {e}，使用特征计算")
-                    logits_per_image = self._compute_similarity_via_features(pil_images, texts)
-            else:
-                logits_per_image = self._compute_similarity_via_features(pil_images, texts)
-        if return_probs:
-            return logits_per_image.softmax(dim=-1)
-        return logits_per_image
-    
-    def _compute_similarity_via_features(self, pil_images: list, texts: list) -> torch.Tensor:
-        """通过特征向量计算相似度"""
-        if self.model_type == 'fgclip2':
-            # FG-CLIP2: 逐个处理图像
-            all_features = []
-            for img in pil_images:
-                img_input = self._preprocess(img)
-                feat = self._model.encode_image(img_input)
-                all_features.append(feat)
-            image_features = torch.cat(all_features, dim=0)
-        else:
-            image_tensors = torch.stack([self._preprocess(img) for img in pil_images]).to(DEVICE)
-            if self.use_fp16 and image_tensors.dtype != torch.float16:
-                image_tensors = image_tensors.half()
-            image_features = self._model.encode_image(image_tensors)
-        image_features = F.normalize(image_features, dim=-1)
-        is_transformers_format = hasattr(self, '_processor') and self._processor is not None
-        # [简化] 移除 Chinese CLIP 分支
-        if is_transformers_format:
-            if hasattr(self._processor, 'tokenizer'):
-                tokenizer = self._processor.tokenizer
-            else:
-                tokenizer = self._tokenizer
-            # FG-CLIP2 使用 max_length=196 (长描述模式) 且必须使用 padding="max_length"
-            if self.model_type == 'fgclip2':
-                text_inputs = tokenizer(texts, return_tensors="pt", padding="max_length", truncation=True, max_length=196).to(DEVICE)
-                text_features = self._model.encode_text(text_inputs, walk_type="long")
-            else:
-                text_inputs = tokenizer(texts, return_tensors="pt", padding=True, truncation=True, max_length=77).to(DEVICE)
-                text_features = self._model.encode_text(text_inputs)
-        else:
-            text_tokens = self._tokenizer(texts).to(DEVICE)
-            text_features = self._model.encode_text(text_tokens)
-        text_features = F.normalize(text_features, dim=-1)
-        if hasattr(self._model_raw, 'logit_scale'):
-            logit_scale = self._model_raw.logit_scale.exp()
-        elif hasattr(self._model, 'logit_scale'):
-            logit_scale = self._model.logit_scale.exp()
-        else:
-            logit_scale = torch.tensor(100.0, device=DEVICE)
-        logits_per_image = logit_scale * image_features @ text_features.T
-        # FG-CLIP2 支持 logit_bias
-        if self.model_type == 'fgclip2':
-            if hasattr(self._model_raw, 'logit_bias'):
-                logit_bias = self._model_raw.logit_bias.to(text_features.device)
-                logits_per_image = logits_per_image + logit_bias
-        return logits_per_image
-    
     def get_logit_scale(self) -> torch.Tensor:
         """获取模型的 logit_scale 参数"""
         with torch.no_grad():
@@ -917,90 +818,40 @@ class EmbeddingModelProcessor:
             else:
                 return torch.tensor(100.0, device=DEVICE)
     
-    def encode_text(self, texts: list, task: str = "retrieval", prompt_name: str = "query") -> np.ndarray:
-        """文本编码 - 获取文本的特征向量
+    def _encode_text_raw(self, texts: list) -> torch.Tensor:
+        """文本编码核心逻辑 - 返回原始特征张量（未截断/归一化）
         
-        v2.9: 优化归一化 - 截断后统一归一化1次
-        v3.0: 优化显存管理 - 及时释放中间张量，防止显存逐渐升高
+        统一 tokenization 分支，供 encode_text 等方法复用
         """
+        is_transformers_format = hasattr(self, '_processor') and self._processor is not None
+        if is_transformers_format:
+            if hasattr(self._processor, 'tokenizer'):
+                tokenizer = self._processor.tokenizer
+            else:
+                tokenizer = self._tokenizer
+            if self.model_type == 'fgclip2':
+                text_inputs = tokenizer(texts, return_tensors="pt", padding="max_length", truncation=True, max_length=196).to(DEVICE)
+                return self._model.encode_text(text_inputs, walk_type="long")
+            else:
+                text_inputs = tokenizer(texts, return_tensors="pt", padding=True, truncation=True, max_length=77).to(DEVICE)
+                return self._model.encode_text(text_inputs)
+        else:
+            text_tokens = self._tokenizer(texts).to(DEVICE)
+            return self._model.encode_text(text_tokens)
+    
+    def encode_text(self, texts: list, task: str = "retrieval", prompt_name: str = "query") -> np.ndarray:
+        """文本编码 - 获取文本的特征向量（截断 + L2 归一化后转 numpy）"""
         if self._model is None:
             raise RuntimeError("模型未加载")
         
-        text_inputs = None
-        text_tokens = None
         features = None
-        
         try:
             with torch.no_grad():
-                is_transformers_format = hasattr(self, '_processor') and self._processor is not None
-                # [简化] 移除 Chinese CLIP 分支
-                if is_transformers_format:
-                    if hasattr(self._processor, 'tokenizer'):
-                        tokenizer = self._processor.tokenizer
-                    else:
-                        tokenizer = self._tokenizer
-                    # FG-CLIP2 使用 max_length=196 (长描述模式) 且必须使用 padding="max_length"
-                    if self.model_type == 'fgclip2':
-                        text_inputs = tokenizer(texts, return_tensors="pt", padding="max_length", truncation=True, max_length=196).to(DEVICE)
-                        features = self._model.encode_text(text_inputs, walk_type="long")
-                    else:
-                        text_inputs = tokenizer(texts, return_tensors="pt", padding=True, truncation=True, max_length=77).to(DEVICE)
-                        features = self._model.encode_text(text_inputs)
-                else:
-                    text_tokens = self._tokenizer(texts).to(DEVICE)
-                    features = self._model.encode_text(text_tokens)
-                
-                # ✅ v2.9: 先截断
-                if self.truncate_dim is not None and features.shape[1] > self.truncate_dim:
-                    print(f"[Info] 截断向量维度: {features.shape[1]} -> {self.truncate_dim}")
-                    features = features[:, :self.truncate_dim]
-                
-                # ✅ v2.9: 再归一化（唯一1次）
-                features = F.normalize(features, dim=-1)
-                
-                # ✅ v2.9: 直接转numpy，不再归一化
-                features_np = features.detach().cpu().numpy()
-                return features_np
+                features = self._encode_text_raw(texts)
+                features = _truncate_and_normalize(features, self.truncate_dim)
+                return features.detach().cpu().numpy()
         finally:
-            # ✅ v3.0: 显式删除中间张量，帮助 Python GC 及时回收 GPU 显存
-            del text_inputs, text_tokens, features
-    
-    def encode_image(self, images: list, task: str = "retrieval") -> np.ndarray:
-        """图像编码 - 获取图像的特征向量
-        
-        v2.9: 优化归一化 - 截断后统一归一化1次
-        """
-        if self._model is None:
-            raise RuntimeError("模型未加载")
-        with torch.no_grad():
-            pil_images = [Image.open(img_path).convert('RGB') for img_path in images]
-            
-            if self.model_type == 'fgclip2':
-                # FG-CLIP2: 逐个处理图像，因为每个图像的 max_num_patches 可能不同
-                all_features = []
-                for img in pil_images:
-                    image_inputs = self._preprocess(img)  # 返回字典
-                    features = self._model.encode_image(image_inputs)
-                    all_features.append(features)
-                features = torch.cat(all_features, dim=0)
-            else:
-                # 其他模型: 批量处理
-                image_tensors = torch.stack([self._preprocess(img) for img in pil_images]).to(DEVICE)
-                if self.use_fp16 and image_tensors.dtype != torch.float16:
-                    image_tensors = image_tensors.half()
-                features = self._model.encode_image(image_tensors)
-            
-            # ✅ v2.9: 先截断
-            if self.truncate_dim is not None and features.shape[1] > self.truncate_dim:
-                print(f"[Info] 截断向量维度: {features.shape[1]} -> {self.truncate_dim}")
-                features = features[:, :self.truncate_dim]
-            
-            # ✅ v2.9: 再归一化（唯一1次）
-            features = F.normalize(features, dim=-1)
-            
-            # ✅ v2.9: 直接转numpy，不再归一化
-            features_np = features.detach().cpu().numpy()
-            return features_np
+            del features
 
     def _extract_and_vectorize_parallel(self, video_path: str, sample_interval: int, output_resolution: str = '256', brightness_threshold: float = None, black_pixel_ratio: float = 98) -> tuple:
         """单实例模式：CPU-GPU 流水线并行"""
@@ -1034,7 +885,7 @@ class EmbeddingModelProcessor:
                   localmax_order: int = 2,
                   output_resolution: str = '512', min_scene_length: int = 7,
                   cosine_similarity_threshold: float = None,
-                  brightness_threshold: float = None,
+                  brightness_threshold: float = 32,
                   black_pixel_ratio: float = 98) -> list:
         """
         处理视频，检测场景边界并提取特征
@@ -1087,27 +938,16 @@ class EmbeddingModelProcessor:
                 scenes, frame_indices, features, min_scene_length
             )
         
-        filtered_scenes = scenes
-        
-        filtered_features = []
-        for start, end in filtered_scenes:
-            feat = SceneBoundaryDetector.get_scene_features((start, end), frame_indices, features)
-            filtered_features.append(feat)
-        
-        # [简化] 只保留三元组模式: 保存全部三个特征
+        # 提取每个场景的三元组特征并构建结果
         results = []
-        for i, (start, end) in enumerate(filtered_scenes):
-            scene_data = {'start_frame': start, 'end_frame': end}
-            feats = filtered_features[i]  # 始终是 [start_feature, mid_feature, end_feature]
-            
-            # 三元组模式: 保存全部三个特征
-            scene_data['features'] = []
+        for start, end in scenes:
+            feats = SceneBoundaryDetector.get_scene_features((start, end), frame_indices, features)
+            scene_data = {'start_frame': start, 'end_frame': end, 'features': []}
             for f in feats:
                 if isinstance(f, torch.Tensor):
                     scene_data['features'].append(f.cpu())
                 else:
                     scene_data['features'].append(torch.tensor(f, dtype=torch.float32))
-            
             results.append(scene_data)
         
         print(f"[结果] {os.path.basename(video_path)}: {len(results)} 个场景")
@@ -1115,116 +955,33 @@ class EmbeddingModelProcessor:
 
 
 class SemanticSearchEngine:
-    """语义搜索引擎 - 使用模型原生 logit_scale 计算相似度（磁盘缓存版）
+    """语义搜索引擎 - 使用模型原生 logit_scale 计算相似度（Lance 直读版）
     
-    v2.9: 归一化优化 - pkl中的向量已归一化，搜索时直接使用
+    v4.0: 使用 Lance 列式存储直接读取，无需 NPZ 缓存
+    v2.9: 归一化优化 - 索引中的向量已归一化，搜索时直接使用
     """
     
     def __init__(self, processor: EmbeddingModelProcessor, cache_dir: str):
         self.processor = processor
         self.cache_dir = cache_dir
-        self.feature_cache_dir = os.path.join(cache_dir, 'features')
         os.makedirs(cache_dir, exist_ok=True)
-        os.makedirs(self.feature_cache_dir, exist_ok=True)
     
-    def _get_cache_path(self, pkl_path: str) -> str:
-        """根据 pkl 路径生成磁盘缓存文件路径"""
-        mtime = os.path.getmtime(pkl_path)
-        cache_key = f"{pkl_path}_{mtime}".encode('utf-8')
-        file_hash = hashlib.md5(cache_key).hexdigest()
-        return os.path.join(self.feature_cache_dir, f"{file_hash}.npz")
-    
-    def _load_features_cached(self, pkl_path: str) -> tuple:
+    def _load_features_from_lance(self, lance_path: str) -> tuple:
         """
-        加载 pkl 并返回处理好的特征矩阵（带磁盘缓存）
-        
-        v3.0: 支持三元组模式完整匹配
-        - 返回所有特征向量（三元组模式返回3个/场景）
-        - 新增 feature_counts 记录每个场景的向量数量
-        
-        v2.9: 向量已归一化，直接使用
+        从 Lance 索引加载特征（直接读取，无需缓存层）
         
         Returns:
             tuple: (features_np, scene_map, feature_counts)
-            - features_np: [M, dim] 所有特征向量
-            - scene_map: [N] 场景信息列表
-            - feature_counts: [N] 每个场景的向量数量
         """
-        cache_path = self._get_cache_path(pkl_path)
-        
-        # 检查磁盘缓存是否存在
-        if os.path.exists(cache_path):
-            try:
-                cached = np.load(cache_path, allow_pickle=True)
-                # v3.0: 必须包含 feature_counts，否则重建
-                if 'feature_counts' not in cached:
-                    print(f"    [缓存过期] 缺少 feature_counts，重建缓存...")
-                    os.remove(cache_path)
-                else:
-                    features_np = cached['features']
-                    scene_map = cached['scene_map'].tolist()
-                    feature_counts = cached['feature_counts'].tolist()
-                    print(f"    [缓存命中] {os.path.basename(pkl_path)}")
-                    return features_np, scene_map, feature_counts
-            except Exception as e:
-                print(f"    [缓存损坏] {os.path.basename(pkl_path)}: {e}")
-                try:
-                    os.remove(cache_path)
-                except:
-                    pass
-        
-        # 缓存不存在，从 pkl 加载并处理
         try:
-            with open(pkl_path, 'rb') as f:
-                data_dict = pickle.load(f)
+            features_np, scene_map, feature_counts = read_lance_index_raw(lance_path)
+            if features_np is None:
+                return None, None, None
+            print(f"    [Lance读取] {os.path.basename(lance_path)}: {len(scene_map)} 场景, {features_np.shape[0]} 向量")
+            return features_np, scene_map, feature_counts
         except Exception as e:
-            print(f"    [Error] 无法加载 pkl: {e}")
+            print(f"    [Error] 无法加载 Lance 索引: {e}")
             return None, None, None
-        
-        # v3.0: 收集所有特征和场景信息，支持三元组完整匹配
-        local_features = []
-        scene_map = []
-        feature_counts = []
-        
-        for video_path, data in data_dict.items():
-            scenes = data.get('scenes', []) if isinstance(data, dict) else data
-            fps = data.get('fps', 25.0) if isinstance(data, dict) else 25.0
-            for scene in scenes:
-                # v3.0: 提取场景的所有特征向量
-                all_feats = SceneFeatureExtractor.extract_all_from_scene(scene)
-                if not all_feats:
-                    continue
-                
-                # 添加所有特征向量
-                for feat in all_feats:
-                    local_features.append(feat)
-                
-                # 记录场景信息和向量数量
-                scene_map.append({
-                    "video_path": video_path,
-                    "start_frame": scene.get("start_frame", 0),
-                    "end_frame": scene.get("end_frame", 0),
-                    "fps": fps
-                })
-                feature_counts.append(len(all_feats))
-        
-        if not local_features:
-            return None, None, None
-        
-        # ✅ v2.9: 构建特征矩阵，向量已归一化，直接使用
-        features_np = np.vstack(local_features).astype(np.float32)
-        
-        # 保存到磁盘缓存（v3.0: 包含 feature_counts）
-        try:
-            np.savez(cache_path, 
-                     features=features_np, 
-                     scene_map=np.array(scene_map, dtype=object),
-                     feature_counts=np.array(feature_counts, dtype=np.int32))
-            print(f"    [缓存保存] {os.path.basename(pkl_path)} -> {os.path.basename(cache_path)}")
-        except Exception as e:
-            print(f"    [缓存写入失败] {e}")
-        
-        return features_np, scene_map, feature_counts
     
     def search_by_text(self, query_text: str, index_paths: list, similarity_threshold: float = 20.0) -> list:
         """
@@ -1239,10 +996,10 @@ class SemanticSearchEngine:
         """
         valid_index_paths = []
         for path in index_paths:
-            if os.path.isfile(path) and path.endswith('.pkl'):
+            if os.path.isdir(path) and path.endswith('.lance'):
                 valid_index_paths.append(path)
-            elif os.path.isdir(path):
-                print(f"[Warning] 跳过目录: {path}")
+            elif os.path.isfile(path):
+                print(f"[Warning] 跳过非 Lance 文件: {path}")
             else:
                 print(f"[Warning] 无效路径: {path}")
         if not valid_index_paths:
@@ -1280,8 +1037,8 @@ class SemanticSearchEngine:
         for i, path in enumerate(valid_index_paths):
             print(f"  [{i+1}/{len(valid_index_paths)}] {os.path.basename(path)}")
             try:
-                # ✅ v3.0: 加载特征、场景映射和向量计数
-                features_np, scene_map, feature_counts = self._load_features_cached(path)
+                # ✅ v4.0: 从 Lance 索引直接读取特征
+                features_np, scene_map, feature_counts = self._load_features_from_lance(path)
                 
                 if features_np is None or scene_map is None:
                     print(f"    [Warning] 无场景数据: {os.path.basename(path)}")
@@ -1357,30 +1114,21 @@ class SemanticSearchEngine:
         
         return all_results
     
-    def search_by_feature(self, feature_vector: np.ndarray, index_paths: list, similarity_threshold: float = 0.2) -> list:
-        pass
 
 
 def create_video_index(source_paths: list, output_dir: str, sample_interval: int = 5,
                        localmax_order: int = 2, output_resolution: str = '256',
                        min_scene_length: int = 7, model_name: str = None,
-                       model_path: str = None, model_type: str = 'fgclip2',
+                       model_path: str = None, model_type: str = 'auto',
                        batch_size: int = 128, truncate_dim: int = None,
-                       workers: int = None, io_workers: int = 8,
+                       io_workers: int = 8, workers: int = 2,
                        cosine_similarity_threshold: float = None,
                        brightness_threshold: float = 32,
                        black_pixel_ratio: float = 98,
-                       status_callback=print, resume_processing: bool = True,
+                       resume_processing: bool = True,
                        use_fp16: bool = True):
     """
-    创建视频索引
-    
-    [简化] v3.7: 移除 streaming_mode 参数，统一使用流式处理
-    [简化] v3.6: 只保留三元组模式，移除 single_frame_mode 和 triplet_average_mode
-    v2.9: 移除欧氏距离选项，仅保留余弦相似度
-    - 移除 distance_metric 参数
-    - 移除 euclidean_distance_threshold 参数
-    - metric_suffix 固定为 "Cosine"
+    创建视频索引（Lance 格式，异步写入）
     """
     if model_path is not None and model_name is None:
         model_name = model_path
@@ -1408,37 +1156,40 @@ def create_video_index(source_paths: list, output_dir: str, sample_interval: int
     else:
         source_folder_name = f"{os.path.basename(os.path.dirname(ref_path))}_{os.path.splitext(os.path.basename(ref_path))[0]}"
     clean_name = sanitize_name(source_folder_name) or "Untitled"
-    # [简化] v3.6: 只保留三元组模式，后缀固定为 "Triplet"
-    # ✅ v3.5: 使用模型名替代model_label，去掉Cosine后缀和模型类型
     dim_suffix = f"_d{truncate_dim}" if truncate_dim else ""
-    # 从model_name中提取干净的模型名（去掉路径，保留文件夹名）
     if model_name:
         model_name_clean = os.path.basename(model_name.rstrip(os.sep))
     else:
         model_name_clean = "clip"
-    # 清理模型名中的特殊字符
     model_name_clean = sanitize_name(model_name_clean) or "clip"
-    final_index_file = os.path.join(output_dir, f"{clean_name}_{model_name_clean}{dim_suffix}.pkl")
-    temp_pkl_dir = os.path.join(os.path.dirname(final_index_file), f".tmp_{clean_name}")
-    _recover_and_merge(final_index_file, temp_pkl_dir)
-    base_index = {}
+    # 默认按模型分目录存放索引: <output_dir>/<model_name_clean>/*.lance
+    # 如果 output_dir 已经是该模型目录，则不重复嵌套。
+    output_dir_base = os.path.basename(os.path.normpath(output_dir))
+    if os.path.normcase(output_dir_base) == os.path.normcase(model_name_clean):
+        model_output_dir = output_dir
+    else:
+        model_output_dir = os.path.join(output_dir, model_name_clean)
+    os.makedirs(model_output_dir, exist_ok=True)
+
+    final_index_file = os.path.join(model_output_dir, f"{clean_name}_{model_name_clean}{dim_suffix}.lance")
+    # 非增量模式：删除同名 .lance 索引，避免 append 导致数据重复
+    if not resume_processing and os.path.exists(final_index_file):
+        print(f"[Info] resume_processing=False，删除同名索引重建: {os.path.basename(final_index_file)}")
+        shutil.rmtree(final_index_file, ignore_errors=True)
+    # 增量处理：获取已索引的视频路径
+    indexed_videos = set()
     if resume_processing and os.path.exists(final_index_file):
         try:
-            with open(final_index_file, 'rb') as f:
-                base_index = pickle.load(f)
+            indexed_videos = get_indexed_video_paths(final_index_file)
         except Exception as e:
             print(f"[Error] 现有索引损坏,将重建: {e}")
-    new_videos = [v for v in videos_to_process if v not in base_index]
+            shutil.rmtree(final_index_file, ignore_errors=True)
+    new_videos = [v for v in videos_to_process if v not in indexed_videos]
     if not new_videos:
         print(f"[结果] 所有 {len(videos_to_process)} 个视频均已索引")
         return final_index_file
-    os.makedirs(temp_pkl_dir, exist_ok=True)
     processor = EmbeddingModelProcessor(model_name, model_type, batch_size, truncate_dim, io_workers, use_fp16=use_fp16)
-    # ✅ v3.5: 不再需要根据auto检测结果重命名，因为已使用完整模型名
-    if workers is None:
-        workers = 2
-    async_writer = AsyncWriter(max_workers=workers)
-    write_count = 0
+    async_writer = AsyncLanceWriter(final_index_file, max_workers=workers)
     total_time = 0
     for i, video_path in enumerate(new_videos):
         t_start = time.time()
@@ -1455,28 +1206,18 @@ def create_video_index(source_paths: list, output_dir: str, sample_interval: int
             )
             if scenes:
                 fps, total_frames, _, _ = VideoMetaHelper.get_video_meta(video_path)
-                micro_idx = {video_path: {"scenes": scenes, "total_frames": total_frames, "fps": fps}}
-                v_hash = hashlib.md5(video_path.encode('utf-8')).hexdigest()
-                temp_file = os.path.join(temp_pkl_dir, f"{v_hash}.pkl")
-                async_writer.submit(micro_idx, temp_file)
-                write_count += 1
+                lance_rows = scenes_to_lance_rows(video_path, scenes, fps)
+                if lance_rows:
+                    async_writer.submit(lance_rows)
             total_time += time.time() - t_start
         except Exception as e:
             print(f"[Error] 处理失败 {video_path}: {e}")
             traceback.print_exc()
-    if write_count > 0:
-        async_writer.wait_all()
+    # 等待所有异步写入完成
     async_writer.shutdown()
-    for tf in [f for f in os.listdir(temp_pkl_dir) if f.endswith('.pkl')]:
-        try:
-            with open(os.path.join(temp_pkl_dir, tf), 'rb') as f:
-                base_index.update(pickle.load(f))
-        except:
-            pass
-    _safe_pickle_dump(base_index, final_index_file)
-    shutil.rmtree(temp_pkl_dir, ignore_errors=True)
     cleanup_temp_folder(TEMP_DIR)
-    print(f"[结果] 索引完成: {len(base_index)} 个视频, 耗时 {total_time:.2f}s, 文件 {final_index_file}")
+    total_indexed = len(indexed_videos) + async_writer.write_count
+    print(f"[结果] 索引完成: {total_indexed} 个视频, 耗时 {total_time:.2f}s, 文件 {final_index_file}")
     return final_index_file
 
 
@@ -1542,9 +1283,6 @@ if __name__ == "__main__":
     print("支持的模型类型: clip, fgclip2, auto")
     # [简化] 只保留三元组模式
     print("\n存储模式: 三元组模式 (保存完整三帧向量)")
-    print("\n新增方法: compute_image_text_similarity(images, texts)")
-    print("  - 使用模型原生方法计算图像-文本相似度")
-    print("  - 支持 FG-CLIP2 / CLIP 等模型")
     if DEVICE == 'cuda':
         print(f"GPU: {torch.cuda.get_device_name(0)}")
         print(f"显存: {torch.cuda.get_device_properties(0).total_memory / (1024**3):.1f} GB")

@@ -536,7 +536,7 @@
                 </div>
                 <div class="form-group">
                     <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: nowrap;">
-                        <label for="index_select" style="margin-bottom: 0;">2. 选择索引库 (.pkl) <small style="color:#666;">(可多选)</small></label>
+                        <label for="index_select" style="margin-bottom: 0;">2. 选择索引库 (.lance) <small style="color:#666;">(可多选)</small></label>
                         <div style="display: flex; gap: 5px; flex-shrink: 0;">
                             <button type="button" class="browse-btn refresh-btn" id="refreshIndexBtn" title="刷新索引列表">🔄</button>
                             <button type="button" class="browse-btn refresh-btn" id="browseIndexBtn" title="浏览文件夹">📁</button>
@@ -614,7 +614,7 @@
                         <input type="range" id="dedup_threshold" min="0.85" max="1" step="0.01" value="0.95">
                         <span id="dedup_threshold_val">0.95</span>
                     </div>
-                    <div class="inline-note" id="dedupInfo">余弦相似度超过阈值的同PKL内视频将被去重，OP/ED视频优先保留</div>
+                    <div class="inline-note" id="dedupInfo">余弦相似度超过阈值的同Lance内视频将被去重，OP/ED视频优先保留</div>
                 </div>
                 <div class="form-group">
                     <label>6. 预设管理</label>
@@ -1323,9 +1323,6 @@
         function collectPresetData() {
             const exportMode = document.querySelector('input[name="exportMode"]:checked')?.value || 'copy';
             return {
-                text_query: document.getElementById('text_query').value || '',
-                current_index_dir: currentIndexDir || '',
-                selected_indices: getSelectedIndexPaths(),
                 threshold: parseFloat(thresholdSlider.value),
                 use_reranker: useReranker ? useReranker.checked : false,
                 rerank_top_k: rerankTopKInput ? parseInt(rerankTopKInput.value, 10) : 50,
@@ -1357,22 +1354,12 @@
             });
             indexFullPath.value = selectedPaths.join('\n');
             if (selectedPaths.length > 0) {
-                autoSelectModelFromPkl(selectedPaths[0]);
+                autoSelectModelFromIndex(selectedPaths[0]);
             }
             indexSelect.dispatchEvent(new Event('change'));
         }
         async function applyPresetData(presetData) {
             if (!presetData || typeof presetData !== 'object') return;
-            if (presetData.text_query !== undefined) {
-                document.getElementById('text_query').value = presetData.text_query ?? '';
-            }
-            const presetIndexDir = (presetData.current_index_dir || '').trim();
-            if (presetIndexDir) {
-                await loadIndexList(presetIndexDir);
-            }
-            if (Array.isArray(presetData.selected_indices)) {
-                applySelectedIndices(presetData.selected_indices);
-            }
             if (presetData.threshold !== undefined && presetData.threshold !== null) {
                 thresholdSlider.value = String(presetData.threshold);
                 thresholdValueSpan.textContent = parseInt(thresholdSlider.value, 10);
@@ -2180,14 +2167,14 @@
         updateSelectionUI();
         renderCandidateDrawer();
 
-        // ============ 从PKL文件名提取模型名 ============
+        // ============ 从索引目录名提取模型名 ============
         /**
-         * 从PKL文件名中提取模型名
+         * 从Lance索引目录名中提取模型名
          * 支持多种格式:
          */
-        function extractModelNameFromPkl(pklPath) {
-            const filename = pklPath.split(/[/\\]/).pop();  // 获取文件名
-            const basename = filename.replace('.pkl', '');
+        function extractModelNameFromIndex(indexPath) {
+            const filename = indexPath.split(/[/\\]/).pop();  // 获取目录名
+            const basename = filename.replace('.lance', '');
             
             let remaining = basename;
             
@@ -2203,6 +2190,16 @@
             if (dimMatch) {
                 remaining = remaining.slice(0, -dimMatch[0].length);
             }
+
+            // 优先匹配后端返回的真实模型名，避免 source 部分含下划线时误判。
+            const candidateNames = Array.isArray(availableModels)
+                ? availableModels.map(m => m && m.name).filter(Boolean).sort((a, b) => b.length - a.length)
+                : [];
+            for (const name of candidateNames) {
+                if (remaining === name || remaining.endsWith(`_${name}`)) {
+                    return name;
+                }
+            }
             
             // 剩余部分: {source}_{model_name}
             // 找到第一个下划线后的部分作为模型名
@@ -2215,10 +2212,10 @@
         /**
          * 根据提取的模型名自动选择下拉框中的模型
          */
-        function autoSelectModelFromPkl(pklPath) {
-            const extractedModel = extractModelNameFromPkl(pklPath);
+        function autoSelectModelFromIndex(indexPath) {
+            const extractedModel = extractModelNameFromIndex(indexPath);
             if (!extractedModel) {
-                console.log('[AutoSelect] 无法从PKL文件名提取模型名:', pklPath);
+                console.log('[AutoSelect] 无法从索引目录名提取模型名:', indexPath);
                 return false;
             }
             
@@ -2257,9 +2254,9 @@
                     throw new Error(data.error || '加载失败');
                 }
                 
-                // 过滤出.pkl文件
-                const pklFiles = data.files.filter(f => f.toLowerCase().endsWith('.pkl'));
-                availableIndexes = pklFiles.map(filename => ({
+                // 过滤出.lance目录
+                const lanceFiles = data.dirs.filter(f => f.toLowerCase().endsWith('.lance'));
+                availableIndexes = lanceFiles.map(filename => ({
                     name: filename,
                     path: data.current_path + (data.current_path.endsWith('\\') || data.current_path.endsWith('/') ? '' : '/') + filename
                 }));
@@ -2270,7 +2267,7 @@
                     indexSelect.innerHTML = '<option value="">未找到索引文件</option>';
                     indexInfo.innerHTML = `
                         <div class="no-models">
-                            ⚠️ 在 <code>${data.current_path}</code> 中未找到 .pkl 索引文件<br>
+                            ⚠️ 在 <code>${data.current_path}</code> 中未找到 .lance 索引目录<br>
                             请先创建索引或点击"浏览"选择其他文件夹
                         </div>
                     `;
@@ -2291,7 +2288,7 @@
                 
                 // 自动选择第一个索引对应的模型
                 if (availableIndexes.length > 0) {
-                    const selected = autoSelectModelFromPkl(availableIndexes[0].path);
+                    const selected = autoSelectModelFromIndex(availableIndexes[0].path);
                     if (selected) {
                         statusDiv.textContent = `✅ 已根据索引文件自动选择模型`;
                     }
@@ -2315,14 +2312,14 @@
                 // 提取所有选中索引的模型名
                 const modelNames = new Set();
                 selectedPaths.forEach(path => {
-                    const modelName = extractModelNameFromPkl(path);
+                    const modelName = extractModelNameFromIndex(path);
                     if (modelName) modelNames.add(modelName);
                 });
                 
                 if (modelNames.size === 1) {
                     // 只有一个模型，自动选择
                     const modelName = Array.from(modelNames)[0];
-                    autoSelectModelFromPkl(selectedPaths[0]);
+                    autoSelectModelFromIndex(selectedPaths[0]);
                     statusDiv.textContent = `✅ 已选择 ${selectedPaths.length} 个索引，模型: ${modelName}`;
                     statusDiv.style.color = '';
                 } else if (modelNames.size > 1) {
@@ -2642,7 +2639,7 @@
         const modalTitle = document.getElementById('modalTitle');
         let currentTargetInputId = null;
         let currentMode = 'file';
-        const fileFilters = { pkl: ['.pkl'] };
+        const fileFilters = { lance: ['.lance'] };
         function hideModal() { modal.style.display = 'none'; }
         function selectItem(path) {
             if (!currentTargetInputId) return;

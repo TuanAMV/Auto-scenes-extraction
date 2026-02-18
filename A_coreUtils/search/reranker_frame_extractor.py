@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+# 本文件使用 UTF-8 编码，请勿使用 GBK 或其他编码打开/保存
 # reranker_frame_extractor.py
 # Reranker 专用单线程帧提取器
 # v1.0: 参考 video_utils.FrameExtractorThread 的单线程设计
@@ -15,6 +17,7 @@
 import os
 import sys
 import time
+import io
 import hashlib
 import subprocess
 import glob
@@ -22,6 +25,7 @@ import shutil
 from typing import List, Dict, Optional, Tuple
 from collections import defaultdict
 from threading import Thread, Lock
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 
 # ============================================================
 #  路径设置 - 确保能找到项目根目录的模块
@@ -29,9 +33,9 @@ from threading import Thread, Lock
 _current_file = os.path.abspath(__file__)
 _search_dir = os.path.dirname(_current_file)
 _a_core_utils_dir = os.path.dirname(_search_dir)
-_cut_detect_scene_dir = os.path.dirname(_a_core_utils_dir)
-if _cut_detect_scene_dir not in sys.path:
-    sys.path.insert(0, _cut_detect_scene_dir)
+_project_root_dir = os.path.dirname(_a_core_utils_dir)
+if _project_root_dir not in sys.path:
+    sys.path.insert(0, _project_root_dir)
 
 # 导入路径解析器
 from path_resolver import PathResolver
@@ -39,6 +43,7 @@ from path_resolver import PathResolver
 # 导入视频工具的辅助函数（只读取，不修改）
 from A_coreUtils.video_processing.video_utils import (
     VideoMetaHelper,
+    FrameExtractorThread,
     TEMP_DIR,
     FFMPEG_PATH,
     FFPROBE_PATH,
@@ -56,52 +61,17 @@ except ImportError:
 
 
 def _get_video_dimensions(video_path: str) -> Tuple[int, int]:
-    """获取视频宽高"""
-    try:
-        cmd = [FFPROBE_PATH, '-v', 'error', '-select_streams', 'v:0',
-               '-show_entries', 'stream=width,height', '-of', 'csv=p=0', video_path]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10,
-                               encoding='utf-8', errors='ignore')
-        if result.returncode == 0 and result.stdout.strip():
-            parts = result.stdout.strip().split(',')
-            if len(parts) >= 2:
-                return int(parts[0]), int(parts[1])
-    except:
-        pass
-    return 0, 0
+    """获取视频宽高（委托给 VideoMetaHelper）"""
+    _, _, width, height = VideoMetaHelper.get_video_meta(video_path)
+    return width, height
 
 
 def _build_scale_filter(width: int, height: int, output_resolution: str) -> Optional[str]:
-    """
-    构建短边缩放滤镜
-    
-    Args:
-        width: 视频宽度
-        height: 视频高度
-        output_resolution: 目标短边像素数（如 '384'）
-    
-    Returns:
-        str: scale 滤镜字符串，如 "scale=512:384"
-    """
+    """构建短边缩放滤镜（委托给 FrameExtractorThread._build_scale_filter）"""
     if not output_resolution or output_resolution == 'original':
         return None
-    
-    if output_resolution.isdigit():
-        target_short = int(output_resolution)
-        if width >= height:
-            # 横向视频：高度为短边
-            out_height = target_short
-            out_width = int(width * target_short / height)
-        else:
-            # 纵向视频：宽度为短边
-            out_width = target_short
-            out_height = int(height * target_short / width)
-        # 确保偶数（FFmpeg 要求）
-        out_width = out_width - (out_width % 2)
-        out_height = out_height - (out_height % 2)
-        return f"scale={out_width}:{out_height}"
-    
-    return None
+    scale_filter, _, _ = FrameExtractorThread._build_scale_filter(width, height, output_resolution)
+    return scale_filter
 
 
 class RerankerFrameExtractor:
@@ -137,7 +107,11 @@ class RerankerFrameExtractor:
     def __init__(self,
                  output_resolution: str = '384',
                  cache_dir: str = None,
-                 backend: str = 'auto'):
+                 backend: str = 'auto',
+                 decord_decode_batch_size: int = 24,
+                 decord_save_workers: int = 2,
+                 decord_max_pending_tasks: int = 8,
+                 jpeg_quality: int = 95):
         """
         初始化单线程帧提取器
         
@@ -163,6 +137,9 @@ class RerankerFrameExtractor:
         
         # decord VideoReader 缓存 {video_path: VideoReader}
         self._decord_cache: Dict[str, object] = {}
+        # decord reader 输出尺寸缓存（若 VideoReader 构造时指定了 width/height）
+        # {video_path: (out_w, out_h) or None}
+        self._decord_reader_output_size: Dict[str, Optional[Tuple[int, int]]] = {}
         
         # 缓存目录
         if cache_dir is None:
@@ -182,6 +159,25 @@ class RerankerFrameExtractor:
         
         # 视频尺寸缓存
         self._dimension_cache: Dict[str, Tuple[int, int]] = {}
+        
+        # decord 分块/写盘参数，控制内存峰值（非法输入回退默认值）
+        try:
+            self.decord_decode_batch_size = max(1, int(decord_decode_batch_size))
+        except (TypeError, ValueError):
+            self.decord_decode_batch_size = 24
+        try:
+            self.decord_save_workers = max(1, int(decord_save_workers))
+        except (TypeError, ValueError):
+            self.decord_save_workers = 2
+        try:
+            pending = int(decord_max_pending_tasks)
+        except (TypeError, ValueError):
+            pending = 8
+        self.decord_max_pending_tasks = max(self.decord_save_workers, pending)
+        try:
+            self.jpeg_quality = max(1, min(100, int(jpeg_quality)))
+        except (TypeError, ValueError):
+            self.jpeg_quality = 95
     
     def _clear_cache_dir(self):
         """清空缓存目录（初始化时调用）"""
@@ -383,7 +379,38 @@ class RerankerFrameExtractor:
     def _get_decord_reader(self, video_path: str):
         """获取或创建 decord VideoReader（带缓存）"""
         if video_path not in self._decord_cache:
-            self._decord_cache[video_path] = _DecordVideoReader(video_path, ctx=_decord_cpu(0))
+            out_w = -1
+            out_h = -1
+
+            # 尽量在解码阶段就做缩放：显著降低峰值内存与后续 JPEG 编码开销
+            if (self.output_resolution
+                    and self.output_resolution != 'original'
+                    and self.output_resolution.isdigit()):
+                target_short = int(self.output_resolution)
+                src_w, src_h = self._get_dimensions(video_path)
+                if src_w > 0 and src_h > 0:
+                    short_side = min(src_w, src_h)
+                    if short_side > target_short:
+                        scale = target_short / float(short_side)
+                        out_w = int(src_w * scale + 0.5)
+                        out_h = int(src_h * scale + 0.5)
+                        # 与 _resize_frame_pil 保持一致：四舍五入后确保偶数
+                        out_w = out_w if out_w % 2 == 0 else out_w + 1
+                        out_h = out_h if out_h % 2 == 0 else out_h + 1
+
+            try:
+                if out_w > 0 and out_h > 0:
+                    self._decord_cache[video_path] = _DecordVideoReader(
+                        video_path, ctx=_decord_cpu(0), width=out_w, height=out_h
+                    )
+                    self._decord_reader_output_size[video_path] = (out_w, out_h)
+                else:
+                    self._decord_cache[video_path] = _DecordVideoReader(video_path, ctx=_decord_cpu(0))
+                    self._decord_reader_output_size[video_path] = None
+            except TypeError:
+                # 兼容旧版 decord：不支持 width/height 参数
+                self._decord_cache[video_path] = _DecordVideoReader(video_path, ctx=_decord_cpu(0))
+                self._decord_reader_output_size[video_path] = None
         return self._decord_cache[video_path]
     
     def _resize_frame_pil(self, frame_np, target_short: int):
@@ -415,71 +442,159 @@ class RerankerFrameExtractor:
         
         return img.resize((new_w, new_h), Image.LANCZOS)
     
+    def _save_decord_frame(self,
+                           frame_np,
+                           scene_keys: Tuple[str, ...],
+                           need_resize: bool,
+                           target_short: int) -> List[Tuple[str, str]]:
+        """
+        Save one frame for one or many scene keys.
+        For duplicated frame numbers, JPEG is encoded once then copied to each target path.
+        """
+        if not scene_keys:
+            return []
+        
+        img = self._resize_frame_pil(frame_np, target_short) if need_resize else Image.fromarray(frame_np)
+        try:
+            if len(scene_keys) == 1:
+                scene_key = scene_keys[0]
+                frame_path = self._get_frame_path(scene_key)
+                img.save(frame_path, 'JPEG', quality=self.jpeg_quality)
+                return [(scene_key, frame_path)]
+            
+            # Same frame shared by multiple scenes: encode JPEG once.
+            buffer = io.BytesIO()
+            img.save(buffer, 'JPEG', quality=self.jpeg_quality)
+            jpeg_data = buffer.getvalue()
+        finally:
+            try:
+                img.close()
+            except Exception:
+                pass
+        
+        saved = []
+        for scene_key in scene_keys:
+            frame_path = self._get_frame_path(scene_key)
+            with open(frame_path, 'wb') as f:
+                f.write(jpeg_data)
+            saved.append((scene_key, frame_path))
+        
+        return saved
+    
     def _extract_video_frames_decord(self,
                                       video_path: str,
                                       target_frames_info: List[Tuple],
                                       results: Dict[str, str]) -> Dict[str, str]:
         """
-        使用 decord 批量提取帧
-        
-        Args:
-            video_path: 视频路径
-            target_frames_info: [(target_frame, scene_key, scene), ...] 已排序
-            results: 已有的缓存结果（会被更新）
-        
-        Returns:
-            {scene_key: frame_path} 字典
+        Use decord to batch extract frames, but decode/save in chunks to avoid memory spikes.
         """
         try:
             vr = self._get_decord_reader(video_path)
             total_frames = len(vr)
-            
-            # 收集帧号（去重 + 裁剪到有效范围）
+
+            # Collect and deduplicate valid frame numbers
             frame_to_keys = defaultdict(list)  # {frame_number: [scene_key, ...]}
             valid_frame_numbers = []
             seen_frames = set()
-            
+
             for target_frame, scene_key, scene in target_frames_info:
-                # 确保帧号在有效范围内
                 clamped = max(0, min(target_frame, total_frames - 1))
                 frame_to_keys[clamped].append(scene_key)
                 if clamped not in seen_frames:
                     seen_frames.add(clamped)
                     valid_frame_numbers.append(clamped)
-            
+
             if not valid_frame_numbers:
                 return results
-            
-            # 批量提取（decord 内部优化 seek）
-            frames_batch = vr.get_batch(valid_frame_numbers).asnumpy()  # [N, H, W, C] RGB
-            
-            # 解析缩放参数
-            need_resize = (self.output_resolution
-                          and self.output_resolution != 'original'
-                          and self.output_resolution.isdigit())
+
+            # 若 VideoReader 构造时已指定 width/height（解码阶段缩放），则无需再做 PIL 缩放
+            decord_out_size = self._decord_reader_output_size.get(video_path)
+            need_resize = (
+                decord_out_size is None
+                and self.output_resolution
+                and self.output_resolution != 'original'
+                and self.output_resolution.isdigit()
+            )
             target_short = int(self.output_resolution) if need_resize else 0
-            
-            # 保存为 jpg
-            for i, frame_number in enumerate(valid_frame_numbers):
-                frame_np = frames_batch[i]
-                
-                # 缩放
-                if need_resize:
-                    img = self._resize_frame_pil(frame_np, target_short)
-                else:
-                    img = Image.fromarray(frame_np)
-                
-                # 为该帧号对应的所有 scene_key 保存
-                for scene_key in frame_to_keys[frame_number]:
-                    frame_path = self._get_frame_path(scene_key)
-                    img.save(frame_path, 'JPEG', quality=95)
-                    
-                    with self._cache_lock:
-                        self.frame_cache[scene_key] = frame_path
-                    results[scene_key] = frame_path
-            
+
+            # 动态限制 decord decode chunk 与 pending 任务数量，控制峰值内存
+            decode_batch_size = self.decord_decode_batch_size
+            max_pending = self.decord_max_pending_tasks
+            est_w, est_h = decord_out_size or self._get_dimensions(video_path)
+            if est_w > 0 and est_h > 0:
+                bytes_per_frame = max(1, int(est_w) * int(est_h) * 3)  # RGB uint8
+                # 控制单次 get_batch().asnumpy() 的峰值（约 <= 128MB）
+                auto_decode_cap = max(1, (128 * 1024 * 1024) // bytes_per_frame)
+                decode_batch_size = max(1, min(int(decode_batch_size), int(auto_decode_cap)))
+                # 控制保存线程 pending 帧拷贝的峰值（约 <= 256MB）
+                auto_pending_cap = max(self.decord_save_workers, (256 * 1024 * 1024) // bytes_per_frame)
+                max_pending = max(self.decord_save_workers, min(int(max_pending), int(auto_pending_cap)))
+
+            # Single-thread fallback: chunked decode + immediate save
+            if self.decord_save_workers <= 1:
+                for batch_start in range(0, len(valid_frame_numbers), decode_batch_size):
+                    frame_chunk = valid_frame_numbers[batch_start:batch_start + decode_batch_size]
+                    frames_batch = vr.get_batch(frame_chunk).asnumpy()  # [B, H, W, C] uint8 RGB
+
+                    for i, frame_number in enumerate(frame_chunk):
+                        saved_items = self._save_decord_frame(
+                            frames_batch[i],
+                            tuple(frame_to_keys[frame_number]),
+                            need_resize,
+                            target_short,
+                        )
+                        for scene_key, frame_path in saved_items:
+                            with self._cache_lock:
+                                self.frame_cache[scene_key] = frame_path
+                            results[scene_key] = frame_path
+
+                    del frames_batch
+
+                return results
+
+            # Dual pipeline: main thread decodes chunks, worker threads save to disk.
+            pending = []
+            with ThreadPoolExecutor(max_workers=self.decord_save_workers) as executor:
+                for batch_start in range(0, len(valid_frame_numbers), decode_batch_size):
+                    frame_chunk = valid_frame_numbers[batch_start:batch_start + decode_batch_size]
+                    frames_batch = vr.get_batch(frame_chunk).asnumpy()  # [B, H, W, C] uint8 RGB
+
+                    for i, frame_number in enumerate(frame_chunk):
+                        # Copy to standalone array to avoid keeping whole chunk alive in futures.
+                        frame_np = np.ascontiguousarray(frames_batch[i])
+                        scene_keys = tuple(frame_to_keys[frame_number])
+                        future = executor.submit(
+                            self._save_decord_frame,
+                            frame_np,
+                            scene_keys,
+                            need_resize,
+                            target_short,
+                        )
+                        pending.append(future)
+
+                        if len(pending) >= max_pending:
+                            done, not_done = wait(pending, return_when=FIRST_COMPLETED)
+                            for done_future in done:
+                                saved_items = done_future.result()
+                                for scene_key, frame_path in saved_items:
+                                    with self._cache_lock:
+                                        self.frame_cache[scene_key] = frame_path
+                                    results[scene_key] = frame_path
+                            pending = list(not_done)
+
+                    del frames_batch
+
+                if pending:
+                    done, _ = wait(pending)
+                    for done_future in done:
+                        saved_items = done_future.result()
+                        for scene_key, frame_path in saved_items:
+                            with self._cache_lock:
+                                self.frame_cache[scene_key] = frame_path
+                            results[scene_key] = frame_path
+
             return results
-            
+
         except Exception as e:
             print(f"[帧提取-decord] 失败: {os.path.basename(video_path)} - {e}, 回退到 FFmpeg")
             # 回退到 FFmpeg
@@ -703,6 +818,10 @@ class RerankerFrameExtractor:
                     
             except Exception as e:
                 print(f"[帧提取] 视频处理失败: {os.path.basename(video_path)} - {e}")
+            finally:
+                # 及时释放 decord VideoReader，避免多视频 reader 同时驻留内存
+                self._decord_cache.pop(video_path, None)
+                self._decord_reader_output_size.pop(video_path, None)
         
         elapsed = time.time() - start_time
         if show_progress:
@@ -720,6 +839,7 @@ class RerankerFrameExtractor:
         try:
             # 释放 decord VideoReader 缓存
             self._decord_cache.clear()
+            self._decord_reader_output_size.clear()
             
             # remove_files=False: 仅清理 batch_* 临时目录（中间批次）
             # remove_files=True: 额外清理缓存帧文件（任务结束）
@@ -752,3 +872,4 @@ class RerankerFrameExtractor:
                 'cached_frames': len(self.frame_cache),
                 'cache_dir': self.cache_dir
             }
+

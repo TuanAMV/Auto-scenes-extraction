@@ -21,8 +21,8 @@ if not exist "%PYTHON_EXE%" (
 :: 设置项目根目录到PYTHONPATH
 set "PYTHONPATH=%SCRIPT_DIR%;%PYTHONPATH%"
 
-:: 启动 pipeline_app.py
-"%PYTHON_EXE%" "%SCRIPT_DIR%\pipeline_app.py"
+:: 启动 text_search.py
+"%PYTHON_EXE%" "%SCRIPT_DIR%\text_search.py"
 
 if %ERRORLEVEL% neq 0 (
     echo.

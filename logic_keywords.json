@@ -80,7 +80,8 @@
     },
     "分配规则":{
       "{生物}孤独的呆在房间里，他{情绪}得流着{物体}":"The {生物} was alone in the room, and he was so {情绪} that he was in {物体}",
-      "{生物}含情脉脉得{动作}":"The {生物} {动作} with a tender and affectionate gaze"
+      "{生物}含情脉脉得{动作}":"The {生物} {动作} with a tender and affectionate gaze",
+      "这是一句测试":"This is a test prompt"
     }
   }
 }

@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
@@ -272,26 +272,6 @@
         .status-box.running { background-color: #fff6db; color: #74520f; border-color: #f2e2ac; }
         .status-box.success { background-color: #dff2e7; color: #16663f; border-color: #bde2cd; }
         .status-box.error { background-color: #f8e0e0; color: #8d2d2d; border-color: #efc4c4; }
-
-        .log-container {
-            background: #11252c;
-            color: #d4dde1;
-            border-radius: 8px;
-            padding: 10px;
-            font-family: "Consolas", "Monaco", monospace;
-            font-size: 0.8em;
-            max-height: 320px;
-            overflow-y: auto;
-            white-space: pre-wrap;
-            word-wrap: break-word;
-            border: 1px solid #1e3a44;
-        }
-
-        .log-container .log-info { color: #6fcde8; }
-        .log-container .log-success { color: #8fdba8; }
-        .log-container .log-warning { color: #f2c77a; }
-        .log-container .log-error { color: #f09696; }
-        .log-container .log-time { color: #8da2ab; }
 
         .progress-bar {
             height: 6px;
@@ -586,14 +566,6 @@
                                 </select>
                             </div>
                             <div class="form-group">
-                                <label for="idx_model_type">类型</label>
-                                <select id="idx_model_type">
-                                    <option value="auto">auto</option>
-                                    <option value="clip">clip</option>
-                                    <option value="fgclip2">fgclip2</option>
-                                </select>
-                            </div>
-                            <div class="form-group">
                                 <label for="idx_output_resolution">分辨率</label>
                                 <input type="number" id="idx_output_resolution" value="256" min="64" max="2048">
                             </div>
@@ -724,82 +696,82 @@
                         <div class="three-columns">
                             <div class="form-group" id="label-batch-group">
                                 <label for="ls_text_batch_size">标签Batch</label>
-                                <input type="number" id="ls_text_batch_size" value="64" min="1" max="4096">
+                                <input type="text" id="ls_text_batch_size" value="" placeholder="留空或 none 使用默认">
                             </div>
                             <div class="form-group">
                                 <label for="ps_prompt_cache_batch">缓存Batch</label>
-                                <input type="number" id="ps_prompt_cache_batch" value="1536" min="1" max="4096">
+                                <input type="text" id="ps_prompt_cache_batch" value="" placeholder="留空或 none 使用默认">
                             </div>
                             <div class="form-group">
                                 <label for="ps_prompt_search_batch">搜索Batch</label>
-                                <input type="number" id="ps_prompt_search_batch" value="500000" min="1000">
+                                <input type="text" id="ps_prompt_search_batch" value="" placeholder="留空或 none 使用默认">
                             </div>
                         </div>
-                        <!-- 搜索模式、候选分批大小一行（与PKL参数同布局） -->
+                        <!-- 搜索模式、候选分批大小一行（与Lance参数同布局） -->
                         <div class="three-columns">
                             <div class="form-group">
                                 <label>搜索模式</label>
-                                <select id="search_mode_select" style="padding:6px 8px; border-radius:4px; width:100%;">
-                                    <option value="0">按PKL</option>
+                                <select id="search_mode_select" data-default-value="0" style="padding:6px 8px; border-radius:4px; width:100%;">
+                                    <option value="0">按Lance</option>
                                     <option value="-1">按视频</option>
-                                    <option value="1">跨PKL</option>
+                                    <option value="1">跨Lance</option>
                                 </select>
                             </div>
                             <div class="form-group">
                                 <label for="candidate_batch_size">候选分批大小</label>
-                                <input type="number" id="candidate_batch_size" value="1000" min="1">
+                                <input type="text" id="candidate_batch_size" value="" placeholder="留空或 none 使用默认">
                             </div>
                             <div class="form-group">
-                                <label for="ps_pkl_batch_size">PKL Batch</label>
-                                <input type="number" id="ps_pkl_batch_size" value="5" min="1" max="50">
+                                <label for="ps_lance_batch_size">Lance Batch</label>
+                                <input type="text" id="ps_lance_batch_size" value="" placeholder="留空或 none 使用默认">
                             </div>
                         </div>
-                        <!-- Top-K、PKL加载线程 一行 -->
+                        <!-- Top-K、Lance加载线程 一行 -->
                         <div class="three-columns">
                             <div class="form-group">
                                 <label for="ps_top_k">Top-K</label>
-                                <input type="number" id="ps_top_k" value="50" min="1" max="1000">
+                                <input type="text" id="ps_top_k" value="" placeholder="留空或 none 表示不限制">
                             </div>
                             <div class="form-group">
-                                <label for="ps_pkl_load_workers">PKL加载线程</label>
-                                <input type="number" id="ps_pkl_load_workers" value="4" min="1" max="16">
+                                <label for="ps_lance_load_workers">Lance加载线程</label>
+                                <input type="text" id="ps_lance_load_workers" value="" placeholder="留空或 none 使用默认">
                             </div>
                         </div>
                         <!-- 四个勾选一行（Rerank参数上方） -->
                         <div class="toggle-row">
-                            <input type="checkbox" id="ps_use_reranker" checked>
+                            <input type="checkbox" id="ps_use_reranker" checked data-default-checked="true">
                             <label for="ps_use_reranker">Reranker</label>
-                            <input type="checkbox" id="use_diskcache" checked style="margin-left:15px;">
+                            <input type="checkbox" id="use_diskcache" checked data-default-checked="true" style="margin-left:15px;">
                             <label for="use_diskcache">磁盘缓存</label>
-                            <input type="checkbox" id="ps_use_fp16" checked style="margin-left:15px;">
+                            <input type="checkbox" id="ps_use_fp16" checked data-default-checked="true" style="margin-left:15px;">
                             <label for="ps_use_fp16">FP16模型</label>
-                            <input type="checkbox" id="ps_feature_fp16" style="margin-left:15px;">
+                            <input type="checkbox" id="ps_feature_fp16" data-default-checked="false" style="margin-left:15px;">
                             <label for="ps_feature_fp16">FP16特征</label>
-                            <input type="checkbox" id="ps_use_chinese_query" style="margin-left:15px;">
+                            <input type="checkbox" id="ps_use_chinese_query" data-default-checked="false" style="margin-left:15px;">
                             <label for="ps_use_chinese_query">中文查询</label>
-                            <input type="checkbox" id="debug_similarity" checked style="margin-left:15px;">
+                            <input type="checkbox" id="debug_similarity" checked data-default-checked="true" style="margin-left:15px;">
                             <label for="debug_similarity">调试输出</label>
                         </div>
                         <!-- Rerank参数 一行 -->
                         <div class="three-columns">
                             <div class="form-group">
                                 <label for="ps_rerank_top_k">Rerank Top-K</label>
-                                <input type="number" id="ps_rerank_top_k" value="12" min="1" max="1000">
+                                <input type="text" id="ps_rerank_top_k" value="" placeholder="留空或 none 使用默认">
                             </div>
                             <div class="form-group">
                                 <label for="ps_rerank_batch_size">Rerank Batch</label>
-                                <input type="number" id="ps_rerank_batch_size" value="12" min="1" max="64">
+                                <input type="text" id="ps_rerank_batch_size" value="" placeholder="留空或 none 使用默认">
                             </div>
                             <div class="form-group">
                                 <label for="ps_reranker_resolution">Rerank分辨率</label>
-                                <input type="number" id="ps_reranker_resolution" value="448" min="64" max="2048">
+                                <input type="text" id="ps_reranker_resolution" value="" placeholder="留空或 none 使用默认">
                             </div>
                         </div>
                         <!-- LMDB写入批大小、向量去重阈值、相邻合并帧数 一行 -->
                         <div class="three-columns">
                             <div class="form-group">
                                 <label for="ps_lmdb_write_batch_size">LMDB写入批大小</label>
-                                <input type="number" id="ps_lmdb_write_batch_size" value="1000" min="1" max="100000">
+                                <input type="text" id="ps_lmdb_write_batch_size" value="" placeholder="留空或 none 使用默认">
                             </div>
                             <div class="form-group">
                                 <label for="ps_vector_dedup_threshold">向量去重阈值</label>
@@ -1221,7 +1193,7 @@
             // 通用搜索参数（所有模式都可用）
             const commonSearchElements = [
                 'ps_prompt_search_batch',
-                'ps_pkl_batch_size',
+                'ps_lance_batch_size',
                 'ps_prompt_cache_batch',
                 'candidate_batch_size'
             ];
@@ -1248,40 +1220,43 @@
                 setElementsEnabled(rerankerElements, true);
                 setElementsEnabled(labelOnlyElements, false);
                 setElementsEnabled(commonSearchElements, true);
-                // 启用中文查询选项
-                const chineseQueryEl = document.getElementById('ps_use_chinese_query');
-                if (chineseQueryEl) {
-                    chineseQueryEl.disabled = false;
-                    chineseQueryEl.style.opacity = '';
-                }
+                // 根据模型类型决定中文查询可用性
+                updateChineseQueryAvailability();
             } else if (mode === 'label') {
                 // 标签模式：禁用Prompt专属和Reranker，启用标签专属
                 setElementsEnabled(promptOnlyElements, false);
                 setElementsEnabled(rerankerElements, false);
                 setElementsEnabled(labelOnlyElements, true);
                 setElementsEnabled(commonSearchElements, true);
-                // 启用中文查询选项（标签模式也使用中文标签）
-                const chineseQueryEl = document.getElementById('ps_use_chinese_query');
-                if (chineseQueryEl) {
-                    chineseQueryEl.disabled = false;
-                    chineseQueryEl.style.opacity = '';
-                }
+                // 根据模型类型决定中文查询可用性
+                updateChineseQueryAvailability();
             } else if (mode === 'cloze') {
                 // 选词填空模式：禁用Prompt专属和标签专属，启用Reranker
                 setElementsEnabled(promptOnlyElements, false);
                 setElementsEnabled(rerankerElements, true);
                 setElementsEnabled(labelOnlyElements, false);
                 setElementsEnabled(commonSearchElements, true);
-                // 启用中文查询选项（选词填空模式使用 use_chinese）
-                const chineseQueryEl = document.getElementById('ps_use_chinese_query');
-                if (chineseQueryEl) {
-                    chineseQueryEl.disabled = false;
-                    chineseQueryEl.style.opacity = '';
-                }
+                // 根据模型类型决定中文查询可用性
+                updateChineseQueryAvailability();
             }
             
             // 根据Reranker勾选状态更新参数禁用
             updateRerankerParams();
+        }
+        
+        // ============ 中文查询可用性联动 ============
+        function updateChineseQueryAvailability() {
+            const chineseQueryEl = document.getElementById('ps_use_chinese_query');
+            if (!chineseQueryEl) return;
+            const modelSelect = document.getElementById('idx_model_name');
+            const selectedOption = modelSelect.options[modelSelect.selectedIndex];
+            const modelType = selectedOption ? (selectedOption.dataset.type || '').toLowerCase() : '';
+            const isFgClip2 = modelType === 'fgclip2';
+            chineseQueryEl.disabled = !isFgClip2;
+            chineseQueryEl.style.opacity = isFgClip2 ? '' : '0.5';
+            if (!isFgClip2) {
+                chineseQueryEl.checked = false;
+            }
         }
         
         // ============ Reranker勾选联动 ============
@@ -1314,12 +1289,12 @@
         // ============ 搜索模式下拉框联动 ============
         function updateSearchModeSelect() {
             const searchModeSelect = document.getElementById('search_mode_select');
-            const pklBatchEl = document.getElementById('ps_pkl_batch_size');
+            const lanceBatchEl = document.getElementById('ps_lance_batch_size');
 
-            if (pklBatchEl) {
-                pklBatchEl.disabled = false;
-                pklBatchEl.style.opacity = '';
-                pklBatchEl.style.backgroundColor = '';
+            if (lanceBatchEl) {
+                lanceBatchEl.disabled = false;
+                lanceBatchEl.style.opacity = '';
+                lanceBatchEl.style.backgroundColor = '';
             }
         }
 
@@ -1620,11 +1595,43 @@
                 return String(parsed);
             };
 
+            const getOptionalPositiveInt = (inputId) => {
+                const raw = document.getElementById(inputId).value;
+                const normalized = raw == null ? '' : String(raw).trim();
+                if (normalized === '') {
+                    return null;
+                }
+                const normalizedLower = normalized.toLowerCase();
+                if (normalizedLower === 'none' || normalizedLower === 'null' || normalizedLower === 'unlimited' || normalizedLower === '默认') {
+                    return null;
+                }
+                const parsed = Number.parseInt(normalized, 10);
+                if (Number.isNaN(parsed) || parsed <= 0) {
+                    return null;
+                }
+                return parsed;
+            };
+
+            const getOptionalSelectInt = (inputId, defaultValue) => {
+                const el = document.getElementById(inputId);
+                if (!el) {
+                    return null;
+                }
+                const parsed = Number.parseInt(el.value, 10);
+                if (Number.isNaN(parsed)) {
+                    return null;
+                }
+                if (parsed === defaultValue) {
+                    return null;
+                }
+                return parsed;
+            };
+
             const exportMode = document.querySelector('input[name="export_mode"]:checked').value;
             const searchEntryMode = document.getElementById('search_entry_mode').value;
-            const searchModeSelectValue = parseInt(document.getElementById('search_mode_select').value);
-            const selectedPklBatchSize = parseInt(document.getElementById('ps_pkl_batch_size').value);
-            const selectedCandidateBatchSize = parseInt(document.getElementById('candidate_batch_size').value);
+            const searchModeSelectValue = getOptionalSelectInt('search_mode_select', 0);
+            const selectedLanceBatchSize = getOptionalPositiveInt('ps_lance_batch_size');
+            const selectedCandidateBatchSize = getOptionalPositiveInt('candidate_batch_size');
             const startFrameOffset = getOptionalIntegerString('start_offset');
             const endFrameOffset = getOptionalIntegerString('end_offset');
             
@@ -1639,7 +1646,7 @@
                     input_directory: document.getElementById('input_directory').value,
                     output_directory: document.getElementById('output_directory').value,
                     model_name: document.getElementById('idx_model_name').value,
-                    model_type: document.getElementById('idx_model_type').value,
+                    model_type: 'auto',
                     truncate_dim: document.getElementById('idx_truncate_dim').value || null,
                     output_resolution: document.getElementById('idx_output_resolution').value,
                     batch_size: parseInt(document.getElementById('idx_batch_size').value),
@@ -1662,24 +1669,24 @@
                     feature_fp16: document.getElementById('ps_feature_fp16').checked,
                     use_reranker: document.getElementById('ps_use_reranker').checked,
                     use_chinese: document.getElementById('ps_use_chinese_query').checked,
-                    rerank_top_k: parseInt(document.getElementById('ps_rerank_top_k').value),
-                    rerank_batch_size: parseInt(document.getElementById('ps_rerank_batch_size').value),
-                    reranker_output_resolution: document.getElementById('ps_reranker_resolution').value,
+                    rerank_top_k: getOptionalPositiveInt('ps_rerank_top_k'),
+                    rerank_batch_size: getOptionalPositiveInt('ps_rerank_batch_size'),
+                    reranker_output_resolution: getOptionalPositiveInt('ps_reranker_resolution'),
                     prompt_template: document.getElementById('ps_prompt_template').value,
                     video_copy_mode: exportMode === 'copy',
                     video_name_format: document.getElementById('video_name_format').value,
                     start_frame_offset: startFrameOffset,
                     end_frame_offset: endFrameOffset,
-                    prompt_search_batch_size: parseInt(document.getElementById('ps_prompt_search_batch').value),
-                    pkl_batch_size: selectedPklBatchSize,
+                    prompt_search_batch_size: getOptionalPositiveInt('ps_prompt_search_batch'),
+                    lance_batch_size: selectedLanceBatchSize,
                     use_diskcache: document.getElementById('use_diskcache').checked,
                     debug_similarity: document.getElementById('debug_similarity').checked,
                     search_mode: searchModeSelectValue,
-                    top_k: parseInt(document.getElementById('ps_top_k').value),
+                    top_k: getOptionalPositiveInt('ps_top_k'),
                     candidate_batch_size: selectedCandidateBatchSize,
-                    prompt_cache_batch_size: parseInt(document.getElementById('ps_prompt_cache_batch').value),
-                    pkl_load_workers: parseInt(document.getElementById('ps_pkl_load_workers').value),
-                    lmdb_write_batch_size: parseInt(document.getElementById('ps_lmdb_write_batch_size').value),
+                    prompt_cache_batch_size: getOptionalPositiveInt('ps_prompt_cache_batch'),
+                    lance_load_workers: getOptionalPositiveInt('ps_lance_load_workers'),
+                    lmdb_write_batch_size: getOptionalPositiveInt('ps_lmdb_write_batch_size'),
                     vector_dedup_threshold: document.getElementById('ps_vector_dedup_threshold').value ? parseFloat(document.getElementById('ps_vector_dedup_threshold').value) : null,
                     adjacent_merge_frames: document.getElementById('ps_adjacent_merge_frames').value ? parseInt(document.getElementById('ps_adjacent_merge_frames').value) : null,
                 },
@@ -1688,21 +1695,23 @@
                 label_search: {
                     index_directory: document.getElementById('search_index_directory').value,
                     video_output_directory: document.getElementById('ps_video_output_directory').value || null,
-                    prompt_search_batch_size: parseInt(document.getElementById('ls_text_batch_size').value),
+                    use_fp16: document.getElementById('ps_use_fp16').checked,
+                    feature_fp16: document.getElementById('ps_feature_fp16').checked,
+                    prompt_search_batch_size: getOptionalPositiveInt('ls_text_batch_size'),
                     video_copy_mode: exportMode === 'copy',
                     video_name_format: document.getElementById('video_name_format').value,
                     debug_similarity: document.getElementById('debug_similarity').checked,
                     start_frame_offset: startFrameOffset,
                     end_frame_offset: endFrameOffset,
                     search_mode: searchModeSelectValue,
-                    top_k: parseInt(document.getElementById('ps_top_k').value),
+                    top_k: getOptionalPositiveInt('ps_top_k'),
                     candidate_batch_size: selectedCandidateBatchSize,
                     use_diskcache: document.getElementById('use_diskcache').checked,
-                    use_chinese_labels: document.getElementById('ps_use_chinese_query').checked,
-                    pkl_load_workers: parseInt(document.getElementById('ps_pkl_load_workers').value),
-                    lmdb_write_batch_size: parseInt(document.getElementById('ps_lmdb_write_batch_size').value),
-                    label_cache_batch_size: parseInt(document.getElementById('ps_prompt_cache_batch').value),
-                    pkl_batch_size: selectedPklBatchSize,
+                    use_chinese: document.getElementById('ps_use_chinese_query').checked,
+                    lance_load_workers: getOptionalPositiveInt('ps_lance_load_workers'),
+                    lmdb_write_batch_size: getOptionalPositiveInt('ps_lmdb_write_batch_size'),
+                    label_cache_batch_size: getOptionalPositiveInt('ps_prompt_cache_batch'),
+                    lance_batch_size: selectedLanceBatchSize,
                     vector_dedup_threshold: document.getElementById('ps_vector_dedup_threshold').value ? parseFloat(document.getElementById('ps_vector_dedup_threshold').value) : null,
                     adjacent_merge_frames: document.getElementById('ps_adjacent_merge_frames').value ? parseInt(document.getElementById('ps_adjacent_merge_frames').value) : null,
                 },
@@ -1711,25 +1720,27 @@
                 cloze_search: {
                     index_directory: document.getElementById('search_index_directory').value,
                     video_output_directory: document.getElementById('ps_video_output_directory').value || null,
+                    use_fp16: document.getElementById('ps_use_fp16').checked,
+                    feature_fp16: document.getElementById('ps_feature_fp16').checked,
                     use_reranker: document.getElementById('ps_use_reranker').checked,
                     use_chinese: document.getElementById('ps_use_chinese_query').checked,
-                    rerank_top_k: parseInt(document.getElementById('ps_rerank_top_k').value),
-                    rerank_batch_size: parseInt(document.getElementById('ps_rerank_batch_size').value),
-                    reranker_output_resolution: document.getElementById('ps_reranker_resolution').value,
+                    rerank_top_k: getOptionalPositiveInt('ps_rerank_top_k'),
+                    rerank_batch_size: getOptionalPositiveInt('ps_rerank_batch_size'),
+                    reranker_output_resolution: getOptionalPositiveInt('ps_reranker_resolution'),
                     video_copy_mode: exportMode === 'copy',
                     video_name_format: document.getElementById('video_name_format').value,
                     start_frame_offset: startFrameOffset,
                     end_frame_offset: endFrameOffset,
-                    prompt_search_batch_size: parseInt(document.getElementById('ps_prompt_search_batch').value),
-                    pkl_batch_size: selectedPklBatchSize,
+                    prompt_search_batch_size: getOptionalPositiveInt('ps_prompt_search_batch'),
+                    lance_batch_size: selectedLanceBatchSize,
                     use_diskcache: document.getElementById('use_diskcache').checked,
                     debug_similarity: document.getElementById('debug_similarity').checked,
                     search_mode: searchModeSelectValue,
-                    top_k: parseInt(document.getElementById('ps_top_k').value),
+                    top_k: getOptionalPositiveInt('ps_top_k'),
                     candidate_batch_size: selectedCandidateBatchSize,
-                    prompt_cache_batch_size: parseInt(document.getElementById('ps_prompt_cache_batch').value),
-                    pkl_load_workers: parseInt(document.getElementById('ps_pkl_load_workers').value),
-                    lmdb_write_batch_size: parseInt(document.getElementById('ps_lmdb_write_batch_size').value),
+                    prompt_cache_batch_size: getOptionalPositiveInt('ps_prompt_cache_batch'),
+                    lance_load_workers: getOptionalPositiveInt('ps_lance_load_workers'),
+                    lmdb_write_batch_size: getOptionalPositiveInt('ps_lmdb_write_batch_size'),
                     vector_dedup_threshold: document.getElementById('ps_vector_dedup_threshold').value ? parseFloat(document.getElementById('ps_vector_dedup_threshold').value) : null,
                     adjacent_merge_frames: document.getElementById('ps_adjacent_merge_frames').value ? parseInt(document.getElementById('ps_adjacent_merge_frames').value) : null,
                 }
@@ -1801,12 +1812,18 @@
         }
 
         function pickDefined(...values) {
+            let hasNull = false;
             for (const value of values) {
                 if (value !== undefined && value !== null) {
                     return value;
                 }
+                if (value === null) {
+                    hasNull = true;
+                }
             }
-            return undefined;
+            // 至少有一个 null（预设中明确设为空）→ 返回 null 以清空输入框
+            // 全部 undefined（预设中没有这个 key）→ 返回 undefined 保留 HTML 默认值
+            return hasNull ? null : undefined;
         }
 
         function setInputValue(id, value) {
@@ -1815,9 +1832,21 @@
                 return;
             }
             if (element.type === 'checkbox') {
+                if (value === null) {
+                    const defaultAttr = element.getAttribute('data-default-checked');
+                    if (defaultAttr != null) {
+                        element.checked = String(defaultAttr).toLowerCase() === 'true';
+                    }
+                    return;
+                }
                 element.checked = Boolean(value);
             } else {
-                element.value = value === null ? '' : String(value);
+                if (value === null) {
+                    const defaultValue = element.getAttribute('data-default-value');
+                    element.value = defaultValue != null ? String(defaultValue) : '';
+                    return;
+                }
+                element.value = String(value);
             }
         }
 
@@ -1871,7 +1900,6 @@
             setInputValue('input_directory', indexerConfig.input_directory);
             setInputValue('output_directory', indexerConfig.output_directory);
             setInputValue('idx_model_name', indexerConfig.model_name);
-            setInputValue('idx_model_type', indexerConfig.model_type);
             setInputValue('idx_truncate_dim', indexerConfig.truncate_dim);
             setInputValue('idx_output_resolution', indexerConfig.output_resolution);
             setInputValue('idx_batch_size', indexerConfig.batch_size);
@@ -1929,20 +1957,20 @@
                 labelConfig.candidate_batch_size,
                 clozeConfig.candidate_batch_size
             ));
-            setInputValue('ps_pkl_batch_size', pickDefined(
-                promptConfig.pkl_batch_size,
-                labelConfig.pkl_batch_size,
-                clozeConfig.pkl_batch_size
+            setInputValue('ps_lance_batch_size', pickDefined(
+                promptConfig.lance_batch_size,
+                labelConfig.lance_batch_size,
+                clozeConfig.lance_batch_size
             ));
             setInputValue('ps_top_k', pickDefined(
                 promptConfig.top_k,
                 labelConfig.top_k,
                 clozeConfig.top_k
             ));
-            setInputValue('ps_pkl_load_workers', pickDefined(
-                promptConfig.pkl_load_workers,
-                labelConfig.pkl_load_workers,
-                clozeConfig.pkl_load_workers
+            setInputValue('ps_lance_load_workers', pickDefined(
+                promptConfig.lance_load_workers,
+                labelConfig.lance_load_workers,
+                clozeConfig.lance_load_workers
             ));
             setInputValue('ps_prompt_cache_batch', pickDefined(
                 promptConfig.prompt_cache_batch_size,
@@ -1967,9 +1995,17 @@
 
             setInputValue('ps_use_reranker', pickDefined(promptConfig.use_reranker, clozeConfig.use_reranker));
             setInputValue('use_diskcache', pickDefined(promptConfig.use_diskcache, labelConfig.use_diskcache, clozeConfig.use_diskcache));
-            setInputValue('ps_use_fp16', promptConfig.use_fp16);
-            setInputValue('ps_feature_fp16', promptConfig.feature_fp16);
-            setInputValue('ps_use_chinese_query', pickDefined(promptConfig.use_chinese, labelConfig.use_chinese_labels, clozeConfig.use_chinese));
+            setInputValue('ps_use_fp16', pickDefined(
+                promptConfig.use_fp16,
+                labelConfig.use_fp16,
+                clozeConfig.use_fp16
+            ));
+            setInputValue('ps_feature_fp16', pickDefined(
+                promptConfig.feature_fp16,
+                labelConfig.feature_fp16,
+                clozeConfig.feature_fp16
+            ));
+            setInputValue('ps_use_chinese_query', pickDefined(promptConfig.use_chinese, labelConfig.use_chinese, clozeConfig.use_chinese));
             setInputValue('debug_similarity', pickDefined(promptConfig.debug_similarity, labelConfig.debug_similarity, clozeConfig.debug_similarity));
             setInputValue('ps_rerank_top_k', pickDefined(promptConfig.rerank_top_k, clozeConfig.rerank_top_k));
             setInputValue('ps_rerank_batch_size', pickDefined(promptConfig.rerank_batch_size, clozeConfig.rerank_batch_size));
@@ -2133,18 +2169,35 @@
             try {
                 const response = await fetch('/list_models');
                 const data = await response.json();
-                if (data.success && data.models.length > 0) {
+                if (data.success && Array.isArray(data.models)) {
+                    const clipModels = data.models.filter(model => {
+                        const name = model && model.name ? String(model.name).toLowerCase() : '';
+                        return name.includes('clip');
+                    });
                     const select = document.getElementById('idx_model_name');
                     const currentValue = select.value;
                     select.innerHTML = '';
-                    data.models.forEach(model => {
+
+                    if (clipModels.length === 0) {
+                        const option = document.createElement('option');
+                        option.value = '';
+                        option.textContent = '无可用 clip 模型';
+                        select.appendChild(option);
+                        return;
+                    }
+
+                    clipModels.forEach(model => {
                         const option = document.createElement('option');
                         option.value = model.name;
+                        option.dataset.type = model.type;
                         option.textContent = `${model.name} (${model.type})`;
                         select.appendChild(option);
                     });
-                    if (currentValue) {
+
+                    if (currentValue && clipModels.some(model => model.name === currentValue)) {
                         select.value = currentValue;
+                    } else {
+                        select.value = clipModels[0].name;
                     }
                 }
             } catch (error) {
@@ -2173,6 +2226,17 @@
                 statusDiv.className = 'status-box error';
                 statusDiv.textContent = 'ERROR: Please select at least one step (index/search).';
                 return;
+            }
+
+            if (config.run_indexer) {
+                const modelName = config.indexer && config.indexer.model_name
+                    ? String(config.indexer.model_name).toLowerCase()
+                    : '';
+                if (!modelName.includes('clip')) {
+                    statusDiv.className = 'status-box error';
+                    statusDiv.textContent = "ERROR: Indexer model name must include 'clip'.";
+                    return;
+                }
             }
 
             try {
@@ -2272,7 +2336,11 @@
             }
 
             try {
-                await fetch('/stop_pipeline', { method: 'POST' });
+                const response = await fetch('/stop_pipeline', { method: 'POST' });
+                const data = await response.json();
+                if (!response.ok || !data.success) {
+                    throw new Error(data.message || data.error || '停止失败');
+                }
                 statusDiv.className = 'status-box success';
                 statusDiv.textContent = 'Stopped. Ready to run again.';
             } catch (error) {
@@ -2303,9 +2371,16 @@
             updateSearchModeSelect();
             updateExportModeControls();
             
+            // 模型选择变更时更新中文查询可用性
+            document.getElementById('idx_model_name').addEventListener('change', updateChineseQueryAvailability);
+            
             try {
                 await loadModelList();
+                // 模型列表加载后立即刷新中文查询可用性
+                updateChineseQueryAvailability();
                 await initPresets();
+                // 预设加载后再次刷新（预设可能切换了模型）
+                updateChineseQueryAvailability();
             } catch (error) {
                 console.error('初始化页面配置失败:', error);
             }

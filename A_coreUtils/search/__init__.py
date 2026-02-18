@@ -1,34 +1,37 @@
-﻿"""Search subpackage exports."""
+# -*- coding: utf-8 -*-
+# 本文件使用 UTF-8 编码，请勿使用 GBK 或其他编码打开/保存
+
+"""Search utilities for scene retrieval workflows."""
 
 from __future__ import annotations
 
-import importlib
-from typing import Any
+import os
+import sys
 
-_EXPORTS = {
-    "AutoSceneSearcher": (".auto_scene_search", "AutoSceneSearcher"),
-    "PromptGenerator": (".auto_scene_search", "PromptGenerator"),
-    "extract_model_name_from_pkl": (".auto_scene_search", "extract_model_name_from_pkl"),
-    "detect_model_type_from_name": (".auto_scene_search", "detect_model_type_from_name"),
-    "run_interactive_search": (".auto_scene_search", "run_interactive_search"),
-    "BatchTextSearchEngine": (".batch_text_search", "BatchTextSearchEngine"),
-    "run_cloze_fill_search": (".cloze_fill_search", "run_cloze_fill_search"),
-    "run_label_traverse_search": (".label_traverse_search", "run_label_traverse_search"),
-    "RerankerFrameExtractor": (".reranker_frame_extractor", "RerankerFrameExtractor"),
-}
+# Keep `path_resolver` importable as a top-level module.
+_current_file = os.path.abspath(__file__)
+_search_dir = os.path.dirname(_current_file)
+_a_core_utils_dir = os.path.dirname(_search_dir)
+_project_root_dir = os.path.dirname(_a_core_utils_dir)
+if _project_root_dir not in sys.path:
+    sys.path.insert(0, _project_root_dir)
 
-__all__ = list(_EXPORTS.keys())
+from .auto_scene_search import (  # noqa: E402
+    AutoSceneSearcher,
+    PromptGenerator,
+    detect_model_type_from_name,
+    extract_model_name_from_index,
+)
+from .batch_text_search import BatchTextSearchEngine  # noqa: E402
 
+# Backward-compatible alias for old API name.
+extract_model_name_from_pkl = extract_model_name_from_index
 
-def __getattr__(name: str) -> Any:
-    if name in _EXPORTS:
-        module_name, attr_name = _EXPORTS[name]
-        module = importlib.import_module(module_name, __name__)
-        value = getattr(module, attr_name)
-        globals()[name] = value
-        return value
-    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
-
-
-def __dir__() -> list[str]:
-    return sorted(list(globals().keys()) + __all__)
+__all__ = [
+    "AutoSceneSearcher",
+    "PromptGenerator",
+    "extract_model_name_from_index",
+    "extract_model_name_from_pkl",
+    "detect_model_type_from_name",
+    "BatchTextSearchEngine",
+]

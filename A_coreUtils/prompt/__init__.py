@@ -1,30 +1,30 @@
-﻿"""Prompt subpackage exports.
-
-Note: legacy logic_Prompt.py is no longer present in this project.
+# -*- coding: utf-8 -*-
+# 本文件使用 UTF-8 编码，请勿使用 GBK 或其他编码打开/保存
+# prompt - Prompt生成模块
+"""
+Prompt生成模块，包含：
+- prompt_vector_cache.py: Prompt向量缓存器（预计算归一化向量）
 """
 
-from __future__ import annotations
+import os
+import sys
 
-import importlib
-from typing import Any
+# ============================================================
+#  路径设置 - 确保能找到项目根目录的模块
+# ============================================================
+_current_file = os.path.abspath(__file__)
+_prompt_dir = os.path.dirname(_current_file)
+_a_core_utils_dir = os.path.dirname(_prompt_dir)
+_project_root_dir = os.path.dirname(_a_core_utils_dir)
+if _project_root_dir not in sys.path:
+    sys.path.insert(0, _project_root_dir)
 
-_EXPORTS = {
-    "PromptVectorCache": (".prompt_vector_cache", "PromptVectorCache"),
-    "PromptVectorBatchIterator": (".prompt_vector_cache", "PromptVectorBatchIterator"),
-}
+from .prompt_vector_cache import (
+    PromptVectorCache,
+    PromptVectorBatchIterator
+)
 
-__all__ = list(_EXPORTS.keys())
-
-
-def __getattr__(name: str) -> Any:
-    if name in _EXPORTS:
-        module_name, attr_name = _EXPORTS[name]
-        module = importlib.import_module(module_name, __name__)
-        value = getattr(module, attr_name)
-        globals()[name] = value
-        return value
-    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
-
-
-def __dir__() -> list[str]:
-    return sorted(list(globals().keys()) + __all__)
+__all__ = [
+    'PromptVectorCache',
+    'PromptVectorBatchIterator',
+]

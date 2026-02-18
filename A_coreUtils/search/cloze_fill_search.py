@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+# 本文件使用 UTF-8 编码，请勿使用 GBK 或其他编码打开/保存
 # cloze_fill_search.py
 # 选词填空模式搜索
 # v1.0: 初始版本
@@ -29,11 +31,18 @@ from typing import Dict, List, Tuple, Optional, Generator, Any
 _current_file = os.path.abspath(__file__)
 _search_dir = os.path.dirname(_current_file)
 _a_core_utils_dir = os.path.dirname(_search_dir)
-_cut_detect_scene_dir = os.path.dirname(_a_core_utils_dir)
-if _cut_detect_scene_dir not in sys.path:
-    sys.path.insert(0, _cut_detect_scene_dir)
+_project_root_dir = os.path.dirname(_a_core_utils_dir)
+if _project_root_dir not in sys.path:
+    sys.path.insert(0, _project_root_dir)
 
 from path_resolver import PathResolver
+
+DEFAULT_CLOZE_PROMPT_SEARCH_BATCH_SIZE = 1024
+DEFAULT_CLOZE_RERANK_TOP_K = 7
+DEFAULT_CLOZE_RERANK_BATCH_SIZE = 7
+DEFAULT_CLOZE_PROMPT_CACHE_BATCH_SIZE = 512
+DEFAULT_CLOZE_LANCE_LOAD_WORKERS = 4
+DEFAULT_CLOZE_LMDB_WRITE_BATCH_SIZE = 1000
 
 
 class ClozeKeywordManager:
@@ -406,412 +415,380 @@ class ClozePromptGenerator:
 
 class ClozeVectorCache:
     """
-    选词填空向量缓存器
-    
-    v2.1: memmap 流式写入 + 生产者-消费者并行优化
-    - 向量: .dat 文件（memmap 流式写入，极低内存占用）
-    - 向量元信息: .meta.json 文件（存储 shape 和 dtype）
-    - 元数据: .pkl 文件（prompt 信息 + 配置哈希）
-    
-    缓存文件命名格式:
-    - cloze_cache_{model_name}_{lang}_vectors.dat (向量，memmap)
-    - cloze_cache_{model_name}_{lang}_vectors.meta.json (向量元信息)
-    - cloze_cache_{model_name}_{lang}_prompts.pkl (元数据)
+    基于 Lance 的选词填空提示词向量缓存。
+
+    缓存文件:
+      {cache_dir}/cloze_cache_{model_name}_{lang}.lance
+
+    说明:
+    - 仅支持 Lance，不支持旧 memmap/pkl 缓存格式。
+    - 对外接口保持兼容: cache_exists/generate_cache/load_cache/load_cache_batched。
     """
-    
-    def __init__(self,
-                 processor=None,
-                 keywords_path: str = None,
-                 cache_dir: str = None,
-                 model_name: str = None,
-                 use_chinese: bool = False):
-        """
-        初始化向量缓存器
-        
-        Args:
-            processor: EmbeddingModelProcessor 实例（生成缓存时需要）
-            keywords_path: logic_keywords.json 路径
-            cache_dir: 缓存目录，None则使用 templates/prompt_cache
-            model_name: 模型名称（用于缓存文件命名）
-            use_chinese: 是否使用中文模式
-        """
+
+    def __init__(
+        self,
+        processor=None,
+        keywords_path: str = None,
+        cache_dir: str = None,
+        model_name: str = None,
+        use_chinese: bool = False,
+    ):
         self.processor = processor
         self.use_chinese = use_chinese
-        
-        # 路径设置
+
         resolver = PathResolver()
         if keywords_path is None:
-            keywords_path = str(resolver.project_root / 'logic_keywords.json')
+            keywords_path = str(resolver.project_root / "logic_keywords.json")
         self.keywords_path = keywords_path
-        
+
         if cache_dir is None:
-            cache_dir = str(resolver.project_root / 'templates' / 'prompt_cache')
+            cache_dir = str(resolver.project_root / "templates" / "prompt_cache")
         self.cache_dir = cache_dir
-        os.makedirs(cache_dir, exist_ok=True)
-        
-        # 模型名称
+        os.makedirs(self.cache_dir, exist_ok=True)
+
         self.model_name = model_name or "unknown"
-        
-        # 创建 Prompt 生成器
-        self.prompt_generator = ClozePromptGenerator(keywords_path, use_chinese)
-        
-        # 计算配置哈希
+        self.prompt_generator = ClozePromptGenerator(self.keywords_path, use_chinese)
         self._config_hash = self.prompt_generator.compute_config_hash()
-    
+
     def _get_safe_model_name(self) -> str:
-        """获取安全的模型名称（用于文件命名）"""
-        return self.model_name.replace('/', '_').replace('\\', '_').replace(':', '_')
-    
+        return self.model_name.replace("/", "_").replace("\\", "_").replace(":", "_")
+
     def get_cache_path(self) -> str:
-        """获取缓存基础路径（不带扩展名）"""
         safe_model_name = self._get_safe_model_name()
         lang_suffix = "cn" if self.use_chinese else "en"
         base_name = f"cloze_cache_{safe_model_name}_{lang_suffix}"
         return os.path.join(self.cache_dir, base_name)
-    
-    def get_vectors_path(self) -> str:
-        """获取向量文件路径 (.dat，memmap格式)"""
-        return self.get_cache_path() + "_vectors.dat"
-    
-    def get_vectors_meta_path(self) -> str:
-        """获取向量元信息文件路径 (.meta.json)"""
-        return self.get_cache_path() + "_vectors.meta.json"
-    
-    def get_prompts_path(self) -> str:
-        """获取 prompt 信息文件路径 (.pkl)"""
-        return self.get_cache_path() + "_prompts.pkl"
-    
+
+    def get_lance_path(self) -> str:
+        return self.get_cache_path() + ".lance"
+
     def cache_exists(self) -> bool:
-        """检查缓存是否存在且有效（v2.1 memmap 格式）"""
-        import pickle
-        import numpy as np
-        
-        vectors_path = self.get_vectors_path()
-        vectors_meta_path = self.get_vectors_meta_path()
-        prompts_path = self.get_prompts_path()
-        
-        if not os.path.exists(vectors_path):
+        lance_path = self.get_lance_path()
+        if not os.path.exists(lance_path):
             return False
-        if not os.path.exists(vectors_meta_path):
-            return False
-        if not os.path.exists(prompts_path):
-            return False
-        
-        # 验证哈希和数据一致性
         try:
-            with open(prompts_path, 'rb') as f:
-                data = pickle.load(f)
+            import lance
 
-            expected_format_version = '2.1'
-            cached_format_version = str(data.get('format_version', ''))
-            if cached_format_version != expected_format_version:
-                print(f"[选词填空缓存] 缓存版本不匹配(当前={cached_format_version}, 期望={expected_format_version})，需要重建")
+            ds = lance.dataset(lance_path)
+            md = ds.metadata or {}
+            if md.get("format") != "cloze_vector_cache_lance_v1":
                 return False
-            
-            cached_hash = data.get('config_hash', '')
-            if cached_hash != self._config_hash:
-                print(f"[选词填空缓存] 配置已变化，需要重新生成缓存")
+            if md.get("config_hash") != self._config_hash:
                 return False
 
-            prompt_metadata = data.get('prompts')
-            if not isinstance(prompt_metadata, list):
-                print("[选词填空缓存无效] prompts 结构错误，期望 list")
+            expected_total = int(md.get("total_prompts", "0") or 0)
+            actual_total = int(ds.count_rows())
+            if expected_total and expected_total != actual_total:
                 return False
-            if prompt_metadata:
-                first_item = prompt_metadata[0]
-                if not isinstance(first_item, dict) or 'prompt' not in first_item:
-                    print("[选词填空缓存无效] prompts 元数据缺失字典结构，需要重建")
-                    return False
-            
-            # 验证向量元信息文件
-            with open(vectors_meta_path, 'r', encoding='utf-8') as f:
-                vectors_meta = json.load(f)
-            
-            # 验证向量文件可读且数量匹配
-            vectors_mmap = np.memmap(
-                vectors_path,
-                dtype=vectors_meta['dtype'],
-                mode='r',
-                shape=tuple(vectors_meta['shape'])
-            )
-            if len(vectors_mmap) != len(prompt_metadata):
-                print(f"[选词填空缓存无效] 向量数量({len(vectors_mmap)})与prompts数量({len(prompt_metadata)})不匹配")
-                del vectors_mmap
-                return False
-            del vectors_mmap
-            
             return True
-        except Exception as e:
-            print(f"[选词填空缓存] 验证缓存失败: {e}")
+        except Exception:
             return False
-    
+
     def generate_cache(self, batch_size: int = 512) -> bool:
-        """
-        生成向量缓存（v2.1 memmap 流式写入 + 生产者-消费者并行模式）
-        
-        Args:
-            batch_size: 批处理大小
-        
-        Returns:
-            是否成功生成
-        """
-        import pickle
-        import numpy as np
-        import torch
-        import time
-        import gc
-        from queue import Queue
-        from threading import Thread, Event
-        
         if self.processor is None:
-            raise RuntimeError("生成缓存需要提供 processor")
-        
-        # 检查缓存是否已存在
+            raise RuntimeError("生成缓存需要 processor 实例")
+
+        import gc
+        import pickle
+        import shutil
+        import time
+        from datetime import datetime
+
+        import torch
+        import lance
+        import pyarrow as pa
+
+        lance_path = self.get_lance_path()
         if self.cache_exists():
-            print(f"[选词填空缓存] 缓存已存在且有效，跳过生成")
+            print(f"[选词填空缓存] 缓存已存在: {lance_path}")
             return True
-        
-        vectors_path = self.get_vectors_path()
-        vectors_meta_path = self.get_vectors_meta_path()
-        prompts_path = self.get_prompts_path()
-        
-        # 删除旧文件
-        for path in [vectors_path, vectors_meta_path, prompts_path]:
-            if os.path.exists(path):
-                os.remove(path)
-        
-        print("=" * 70)
-        print("📝 选词填空向量缓存生成器 (v2.1 memmap + 生产者-消费者并行)")
-        print("=" * 70)
-        print(f"  模型: {self.model_name}")
-        print(f"  语言模式: {'中文' if self.use_chinese else '英文'}")
-        print(f"  批量大小: {batch_size}")
-        
-        # 第一遍：统计总数
-        print("\n[步骤1] 统计prompt总数...")
-        total_prompts = self.prompt_generator.count_total_combinations()
-        print(f"  总计: {total_prompts:,} 个prompt")
-        
-        if total_prompts == 0:
-            print(f"[选词填空缓存] 没有 prompt 需要编码")
-            return False
-        
-        # 获取向量维度（通过编码一个样本）
+
+        if os.path.exists(lance_path):
+            shutil.rmtree(lance_path, ignore_errors=True)
+
+        total_prompts = int(self.prompt_generator.count_total_combinations())
+        if total_prompts <= 0:
+            raise RuntimeError("total_prompts == 0, check logic_keywords.json / templates")
+
+        # sample vector dim
         first_combo = next(self.prompt_generator.iterate_all_combinations())
-        sample_vector = self.processor.encode_text([first_combo["prompt"]])
-        vector_dim = sample_vector.shape[1]
-        print(f"  向量维度: {vector_dim}")
-        
-        # 创建 memmap 文件
-        print(f"\n[步骤2] 创建 memmap 文件...")
-        vectors_mmap = np.memmap(
-            vectors_path,
-            dtype='float32',
-            mode='w+',
-            shape=(total_prompts, vector_dim)
+        sample_vec = self.processor.encode_text([first_combo.get("prompt", "")])
+        vector_dim = int(sample_vec.shape[1])
+
+        schema = pa.schema(
+            [
+                pa.field("prompt", pa.string()),
+                pa.field("vector", pa.list_(pa.float32(), vector_dim)),
+                pa.field("metadata", pa.binary()),  # pickle bytes
+            ]
         )
-        print(f"  memmap 文件: {total_prompts:,} x {vector_dim} (float32)")
-        
-        # 保存向量元信息
-        vectors_meta = {
-            'shape': [total_prompts, vector_dim],
-            'dtype': 'float32',
-            'total_prompts': total_prompts,
-            'vector_dim': vector_dim
-        }
-        with open(vectors_meta_path, 'w', encoding='utf-8') as f:
-            json.dump(vectors_meta, f, indent=2)
-        
-        # 生产者-消费者并行模式
-        print(f"\n[步骤3] 生产者-消费者并行编码 (batch_size={batch_size})...")
-        start_time = time.time()
-        
-        # 队列和事件
-        write_queue = Queue(maxsize=4)  # 写入队列，限制大小避免内存溢出
-        stop_event = Event()
-        
-        # 消费者线程：负责写入 memmap
-        def writer_thread():
-            while not stop_event.is_set() or not write_queue.empty():
-                try:
-                    item = write_queue.get(timeout=0.1)
-                    if item is None:
-                        break
-                    idx, batch_vectors = item
-                    vectors_mmap[idx:idx + len(batch_vectors)] = batch_vectors
-                    vectors_mmap.flush()
-                    write_queue.task_done()
-                except:
+
+        def _vectors_to_fixed_size_list(vectors: np.ndarray) -> pa.FixedSizeListArray:
+            vec = np.asarray(vectors, dtype=np.float32, order="C")
+            values = pa.array(vec.reshape(-1), type=pa.float32())
+            return pa.FixedSizeListArray.from_arrays(values, vector_dim)
+
+        def record_batches():
+            current_idx = 0
+            batch_prompts: List[str] = []
+            batch_meta: List[Dict] = []
+
+            start_time = time.time()
+            last_log = 0
+
+            for combo in self.prompt_generator.iterate_all_combinations():
+                prompt_text = combo.get("prompt", "")
+                batch_prompts.append(prompt_text)
+                batch_meta.append(combo)
+
+                if len(batch_prompts) < batch_size:
                     continue
-        
-        # 启动写入线程
-        writer = Thread(target=writer_thread, daemon=True)
-        writer.start()
-        
-        # 生产者：编码并放入队列（不累积 all_prompts 和 all_metadata）
-        current_idx = 0
-        batch_texts = []
-        batch_meta = []
-        
-        for combo in self.prompt_generator.iterate_all_combinations():
-            batch_texts.append(combo["prompt"])
-            batch_meta.append(combo)
-            
-            if len(batch_texts) >= batch_size:
-                # 编码当前批次
-                batch_vectors = self.processor.encode_text(batch_texts)
-                if isinstance(batch_vectors, torch.Tensor):
-                    batch_vectors = batch_vectors.cpu().numpy()
-                
-                # 放入写入队列
-                write_queue.put((current_idx, batch_vectors))
-                
-                current_idx += len(batch_texts)
-                batch_texts = []
-                batch_meta = []
-                
-                # 进度显示
-                if current_idx % (batch_size * 10) == 0:
+
+                vectors = self.processor.encode_text(batch_prompts)
+                meta_bytes = [pickle.dumps(m, protocol=pickle.HIGHEST_PROTOCOL) for m in batch_meta]
+
+                yield pa.record_batch(
+                    [
+                        pa.array(batch_prompts, type=pa.string()),
+                        _vectors_to_fixed_size_list(vectors),
+                        pa.array(meta_bytes, type=pa.binary()),
+                    ],
+                    names=["prompt", "vector", "metadata"],
+                )
+
+                current_idx += len(batch_prompts)
+                batch_prompts.clear()
+                batch_meta.clear()
+
+                if current_idx - last_log >= max(1, batch_size * 20):
                     elapsed = time.time() - start_time
                     speed = current_idx / elapsed if elapsed > 0 else 0
                     print(f"  [{current_idx:,}/{total_prompts:,}] {speed:.1f} prompts/s")
-        
-        # 处理最后一个不完整的批次
-        if batch_texts:
-            batch_vectors = self.processor.encode_text(batch_texts)
-            if isinstance(batch_vectors, torch.Tensor):
-                batch_vectors = batch_vectors.cpu().numpy()
-            write_queue.put((current_idx, batch_vectors))
-            current_idx += len(batch_texts)
-        
-        # 等待写入完成
-        write_queue.put(None)
-        stop_event.set()
-        writer.join()
-        
-        # 关闭 memmap
-        del vectors_mmap
-        
-        elapsed_time = time.time() - start_time
-        print(f"\n  编码完成! 耗时: {elapsed_time:.2f}s")
-        
-        # 保存元数据（保存完整 metadata 字典，供后续命名/导出阶段使用）
-        print(f"\n[步骤4] 保存元数据文件...")
-        regenerated_prompts = list(self.prompt_generator.iterate_all_combinations())
-        metadata = {
-            'config_hash': self._config_hash,
-            'model_name': self.model_name,
-            'use_chinese': self.use_chinese,
-            'total_prompts': total_prompts,
-            'vector_dim': vector_dim,
-            'format_version': '2.1',
-            'prompts': regenerated_prompts  # 保存完整 prompt metadata 列表
-        }
-        with open(prompts_path, 'wb') as f:
-            pickle.dump(metadata, f, protocol=pickle.HIGHEST_PROTOCOL)
-        del regenerated_prompts, metadata
-        gc.collect()
-        
-        # 获取文件大小
-        vectors_size = os.path.getsize(vectors_path) / (1024 * 1024)
-        prompts_size = os.path.getsize(prompts_path) / (1024 * 1024)
-        print(f"    -> {os.path.basename(vectors_path)}: {vectors_size:.2f} MB")
-        print(f"    -> {os.path.basename(prompts_path)}: {prompts_size:.2f} MB")
-        
-        print("\n" + "=" * 70)
-        print("✅ 选词填空缓存生成完成!")
-        print("=" * 70)
-        
-        gc.collect()
+                    last_log = current_idx
+
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                gc.collect()
+
+            if batch_prompts:
+                vectors = self.processor.encode_text(batch_prompts)
+                meta_bytes = [pickle.dumps(m, protocol=pickle.HIGHEST_PROTOCOL) for m in batch_meta]
+                yield pa.record_batch(
+                    [
+                        pa.array(batch_prompts, type=pa.string()),
+                        _vectors_to_fixed_size_list(vectors),
+                        pa.array(meta_bytes, type=pa.binary()),
+                    ],
+                    names=["prompt", "vector", "metadata"],
+                )
+                current_idx += len(batch_prompts)
+
+            if current_idx != total_prompts:
+                raise RuntimeError(f"数量不一致: 预期 {total_prompts}, 实际 {current_idx}")
+
+        print(f"[选词填空缓存] 写入 Lance 数据集: {lance_path}")
+        ds = lance.write_dataset(record_batches(), lance_path, schema=schema, mode="create")
+        ds.update_metadata(
+            {
+                "format": "cloze_vector_cache_lance_v1",
+                "model_name": str(self.model_name),
+                "config_hash": str(self._config_hash),
+                "total_prompts": str(total_prompts),
+                "vector_dim": str(vector_dim),
+                "keywords_path": str(self.keywords_path),
+                "use_chinese": "1" if self.use_chinese else "0",
+                "created_at": datetime.now().isoformat(),
+                "normalized": "1",
+            }
+        )
+
+        print(f"[选词填空缓存] 写入完成: {int(ds.count_rows()):,} 行")
         return True
-    
+
     def load_cache(self) -> Tuple[Any, List[Dict]]:
-        """
-        加载缓存（v2.1 memmap 格式）
-        
-        Returns:
-            (向量数组, prompt元数据列表)
-        """
         import pickle
-        import numpy as np
-        
+        import lance
+
+        lance_path = self.get_lance_path()
         if not self.cache_exists():
             raise RuntimeError("缓存不存在或已过期，请先调用 generate_cache()")
-        
-        vectors_path = self.get_vectors_path()
-        vectors_meta_path = self.get_vectors_meta_path()
-        prompts_path = self.get_prompts_path()
-        
-        # 加载向量元信息
-        with open(vectors_meta_path, 'r', encoding='utf-8') as f:
-            vectors_meta = json.load(f)
-        
-        # 加载向量（使用 memmap 节省内存）
-        vectors = np.memmap(
-            vectors_path,
-            dtype=vectors_meta['dtype'],
-            mode='r',
-            shape=tuple(vectors_meta['shape'])
-        )
-        
-        # 加载元数据
-        with open(prompts_path, 'rb') as f:
-            metadata = pickle.load(f)
 
-        return vectors, metadata['prompts']
+        ds = lance.dataset(lance_path)
+        md = ds.metadata or {}
+        vector_dim = int(md.get("vector_dim", "0") or 0)
+        if vector_dim <= 0:
+            try:
+                vector_dim = int(getattr(ds.schema.field("vector").type, "list_size", 0) or 0)
+            except Exception:
+                vector_dim = 0
+        if vector_dim <= 0:
+            raise RuntimeError("无法解析 vector_dim，请删除缓存并重新生成")
 
-    def load_cache_batched(self, batch_size: int = 10000):
-        """
-        鍒嗘壒鍔犺浇缂撳瓨锛屽叧閿涓轰笌 PromptVectorCache.load_cache_batched 瀵归綈
-        """
+        table = ds.to_table(columns=["vector", "metadata"])
+        vec_col = table.column("vector")
+        vec_chunks = []
+        for chunk in vec_col.chunks:
+            flat = chunk.values.to_numpy(zero_copy_only=False)
+            vec_chunks.append(flat.reshape(len(chunk), vector_dim))
+        vectors = np.vstack(vec_chunks) if vec_chunks else np.zeros((0, vector_dim), dtype=np.float32)
+
+        meta_col = table.column("metadata")
+        all_meta: List[Dict] = []
+        for chunk in meta_col.chunks:
+            for b in chunk.to_pylist():
+                try:
+                    all_meta.append(pickle.loads(b) if b is not None else {})
+                except Exception:
+                    all_meta.append({})
+
+        return vectors, all_meta
+
+    def load_cache_batched(self, batch_size: int = 10000, use_fp16: bool = True):
         if not self.cache_exists():
-            raise RuntimeError("缂撳瓨涓嶅瓨鍦ㄦ垨宸茶繃鏈燂紝璇峰厛璋冪敤 generate_cache()")
+            raise RuntimeError("缓存不存在或已过期，请先调用 generate_cache()")
+        return ClozeVectorBatchIterator(lance_path=self.get_lance_path(), batch_size=int(batch_size), use_fp16=use_fp16)
 
-        return ClozeVectorBatchIterator(
-            vectors_path=self.get_vectors_path(),
-            vectors_meta_path=self.get_vectors_meta_path(),
-            prompts_path=self.get_prompts_path(),
-            batch_size=batch_size
-        )
+    def load_meta_lookup(self) -> "ClozeMetaLookup":
+        lance_path = self.get_lance_path()
+        if not os.path.exists(lance_path):
+            raise FileNotFoundError(f"Lance 数据集不存在: {lance_path}")
+        return ClozeMetaLookup(lance_path=lance_path)
+
+    def get_cache_info(self) -> Dict:
+        import lance
+
+        lance_path = self.get_lance_path()
+        if not os.path.exists(lance_path):
+            raise FileNotFoundError(f"Lance 数据集不存在: {lance_path}")
+        ds = lance.dataset(lance_path)
+        md = ds.metadata or {}
+        total_prompts = int(ds.count_rows())
+
+        size_mb = 0.0
+        for root, _, files in os.walk(lance_path):
+            for fn in files:
+                fp = os.path.join(root, fn)
+                if os.path.isfile(fp):
+                    size_mb += os.path.getsize(fp) / (1024 * 1024)
+
+        return {
+            "total_prompts": total_prompts,
+            "vector_dim": int(md.get("vector_dim", "0") or 0),
+            "metadata": md,
+            "lance_path": lance_path,
+            "file_size_mb": size_mb,
+        }
+
+
+class ClozeMetaLookup:
+    """
+    按 prompt_idx 批量回查 metadata，避免候选里冗余携带 meta 副本。
+    对齐 PromptMetaLookup 的接口。
+    """
+
+    def __init__(self, lance_path: str):
+        import lance
+
+        self.lance_path = lance_path
+        self._ds = lance.dataset(self.lance_path)
+
+    def get_many(self, prompt_indices: List[int]) -> Dict[int, Dict]:
+        import pickle
+
+        uniq = sorted({int(i) for i in prompt_indices if i is not None and int(i) >= 0})
+        if not uniq:
+            return {}
+
+        try:
+            table = self._ds.take(uniq, columns=["metadata"])
+        except Exception as e:
+            raise RuntimeError(f"ClozeMetaLookup.take() 失败: {e}")
+
+        meta_col = table.column("metadata").to_pylist()
+        out: Dict[int, Dict] = {}
+        for idx, raw in zip(uniq, meta_col):
+            if raw is None:
+                out[idx] = {}
+                continue
+            try:
+                data = pickle.loads(raw)
+                out[idx] = data if isinstance(data, dict) else {}
+            except Exception:
+                out[idx] = {}
+        return out
+
+    def get_metadata_by_indices(self, prompt_indices: List[int]) -> Dict[int, Dict]:
+        return self.get_many(prompt_indices)
 
 
 class ClozeVectorBatchIterator:
     """
-    C 妯″紡 prompt 鍚戦噺鍒嗘壒杩唬鍣?
+    ClozeVectorCache 的 Lance 分批迭代器。
     """
-    def __init__(self, vectors_path: str, vectors_meta_path: str, prompts_path: str, batch_size: int):
+
+    def __init__(self, lance_path: str, batch_size: int, use_fp16: bool = True):
         import pickle
-        import numpy as np
         import torch
+        import lance
 
-        with open(vectors_meta_path, 'r', encoding='utf-8') as f:
-            vectors_meta = json.load(f)
-
-        self._vectors = np.memmap(
-            vectors_path,
-            dtype=vectors_meta['dtype'],
-            mode='r',
-            shape=tuple(vectors_meta['shape'])
-        )
-
-        with open(prompts_path, 'rb') as f:
-            prompts_data = pickle.load(f)
-
-        self._prompts = prompts_data['prompts']
-        self.batch_size = batch_size
-        self.total_prompts = len(self._prompts)
-        self.num_batches = (self.total_prompts + batch_size - 1) // batch_size
-        self._current_batch = 0
+        self.lance_path = lance_path
+        self.batch_size = int(batch_size)
+        self._use_fp16 = use_fp16
+        self._pickle = pickle
         self._torch = torch
-        self._device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        self._ds = lance.dataset(self.lance_path)
+        self._ds_meta = self._ds.metadata or {}
+        self.total_prompts = int(self._ds.count_rows())
+        self.num_batches = (self.total_prompts + self.batch_size - 1) // self.batch_size
+        self._current_batch = 0
+
+        self._vector_dim = int(self._ds_meta.get("vector_dim", "0") or 0)
+        if self._vector_dim <= 0:
+            try:
+                self._vector_dim = int(getattr(self._ds.schema.field("vector").type, "list_size", 0) or 0)
+            except Exception:
+                self._vector_dim = 0
+        if self._vector_dim <= 0:
+            raise RuntimeError("无法解析 vector_dim，请删除缓存并重新生成")
+
+        self._init_scanner()
+
         self._cache_metadata = {}
 
     @property
     def metadata(self):
-        return self._cache_metadata
+        return self._ds_meta
+
+    def _init_scanner(self):
+        self._scanner = self._ds.scanner(
+            columns=["vector", "prompt", "metadata"],
+            scan_in_order=True,
+            batch_size=max(1024, self.batch_size),
+        )
+        self._rb_iter = iter(self._scanner.to_batches())
+
+        self._rb = None
+        self._rb_pos = 0
+        self._rb_vectors = None
+        self._rb_prompts = None
+        self._rb_meta_bytes = None
+
+    def _load_next_rb(self):
+        rb = next(self._rb_iter)  # may raise StopIteration
+        vec_col = rb.column(0)
+        flat = vec_col.values.to_numpy(zero_copy_only=False)
+        vecs = flat.reshape(len(vec_col), self._vector_dim)
+
+        self._rb = rb
+        self._rb_pos = 0
+        self._rb_vectors = vecs
+        self._rb_prompts = rb.column(1).to_pylist()
+        self._rb_meta_bytes = rb.column(2).to_pylist()
 
     def __iter__(self):
-        self._current_batch = 0
+        self.reset()
         return self
 
     def __next__(self):
@@ -820,27 +797,68 @@ class ClozeVectorBatchIterator:
 
         start_idx = self._current_batch * self.batch_size
         end_idx = min(start_idx + self.batch_size, self.total_prompts)
+        desired = end_idx - start_idx
 
-        batch_vectors_np = self._vectors[start_idx:end_idx]
-        batch_vectors_np = np.array(batch_vectors_np)
-        batch_vectors = self._torch.from_numpy(batch_vectors_np).to(self._device)
+        out_vec = np.empty((desired, self._vector_dim), dtype=np.float32)
+        out_meta: List[Dict] = [{} for _ in range(desired)]
+        out_prompts: List[str] = ["" for _ in range(desired)]
 
-        batch_metadata = self._prompts[start_idx:end_idx]
-        batch_prompts = [meta.get('prompt', '') for meta in batch_metadata]
+        filled = 0
+        while filled < desired:
+            if self._rb is None or self._rb_pos >= len(self._rb_prompts):
+                self._load_next_rb()
+
+            rb_remain = len(self._rb_prompts) - self._rb_pos
+            take = min(rb_remain, desired - filled)
+
+            out_vec[filled : filled + take] = self._rb_vectors[self._rb_pos : self._rb_pos + take]
+            out_prompts[filled : filled + take] = self._rb_prompts[self._rb_pos : self._rb_pos + take]
+
+            mb = self._rb_meta_bytes[self._rb_pos : self._rb_pos + take]
+            for i, b in enumerate(mb):
+                try:
+                    out_meta[filled + i] = self._pickle.loads(b) if b is not None else {}
+                except Exception:
+                    out_meta[filled + i] = {}
+
+            self._rb_pos += take
+            filled += take
+
+        batch_vectors = self._torch.from_numpy(out_vec).to(self._device)
+        if self._use_fp16 and str(self._device).startswith('cuda'):
+            batch_vectors = batch_vectors.half()
+        batch_metadata = out_meta
+        batch_prompts = out_prompts
 
         batch_info = {
-            'batch_idx': self._current_batch,
-            'start_idx': start_idx,
-            'end_idx': end_idx,
-            'total_prompts': self.total_prompts,
-            'num_batches': self.num_batches
+            "batch_idx": self._current_batch,
+            "start_idx": start_idx,
+            "end_idx": end_idx,
+            "total_prompts": self.total_prompts,
+            "num_batches": self.num_batches,
         }
 
         self._current_batch += 1
         return batch_vectors, batch_prompts, batch_metadata, batch_info
 
+    def __len__(self) -> int:
+        return self.num_batches
+
     def reset(self):
         self._current_batch = 0
+        self._init_scanner()
+
+    def close(self):
+        self._rb = None
+        self._rb_vectors = None
+        self._rb_prompts = None
+        self._rb_meta_bytes = None
+        self._rb_iter = None
+        self._scanner = None
+        self._ds = None
+
+    def __del__(self):
+        self.close()
 
 
 def run_cloze_fill_search(
@@ -851,11 +869,11 @@ def run_cloze_fill_search(
     video_name_format: str = None,
     debug_similarity: bool = False,
     # 优化参数
-    prompt_search_batch_size: int = 1024,
-    pkl_batch_size: int = None,
+    prompt_search_batch_size: Optional[int] = DEFAULT_CLOZE_PROMPT_SEARCH_BATCH_SIZE,
+    lance_batch_size: Optional[int] = None,
     # 搜索模式参数
     search_mode: int = 0,
-    top_k: int = 50,
+    top_k: Optional[int] = None,
     # 视频导出帧偏移参数
     start_frame_offset: int = None,
     end_frame_offset: int = None,
@@ -866,15 +884,15 @@ def run_cloze_fill_search(
     use_chinese: bool = False,
     # Reranker 参数
     use_reranker: bool = False,
-    rerank_top_k: int = 7,
-    rerank_batch_size: int = 7,
-    reranker_output_resolution: str = '448',
-    candidate_batch_size: int = None,
+    rerank_top_k: Optional[int] = DEFAULT_CLOZE_RERANK_TOP_K,
+    rerank_batch_size: Optional[int] = DEFAULT_CLOZE_RERANK_BATCH_SIZE,
+    reranker_output_resolution: str = '384',
+    candidate_batch_size: Optional[int] = None,
     # 缓存批处理大小
-    prompt_cache_batch_size: int = 512,
+    prompt_cache_batch_size: Optional[int] = DEFAULT_CLOZE_PROMPT_CACHE_BATCH_SIZE,
     # 线程配置参数
-    pkl_load_workers: int = 4,
-    lmdb_write_batch_size: int = 1000,
+    lance_load_workers: Optional[int] = DEFAULT_CLOZE_LANCE_LOAD_WORKERS,
+    lmdb_write_batch_size: Optional[int] = DEFAULT_CLOZE_LMDB_WRITE_BATCH_SIZE,
     # 向量去重参数
     vector_dedup_threshold: float = None,
     # 相邻片段合并参数
@@ -899,9 +917,9 @@ def run_cloze_fill_search(
         video_name_format: 视频名称格式
         debug_similarity: 调试模式
         prompt_search_batch_size: 搜索时每批加载的向量数量
-        pkl_batch_size: 每批加载的PKL数量
-        search_mode: 搜索模式 (-1=按视频, 0=按PKL, 1=跨PKL)
-        top_k: 每组返回的最大结果数
+        lance_batch_size: 每批加载的Lance数量
+        search_mode: 搜索模式 (-1=按视频, 0=按Lance, 1=跨Lance)
+        top_k: 每组返回的最大结果数；None 或 <=0 表示不限制
         start_frame_offset: 起始帧偏移量
         end_frame_offset: 结束帧偏移量
         use_diskcache: 是否使用 LMDB 磁盘缓存
@@ -915,7 +933,7 @@ def run_cloze_fill_search(
         reranker_output_resolution: Reranker 帧输出分辨率
         candidate_batch_size: 候选分批处理大小
         prompt_cache_batch_size: 生成缓存时的批处理大小
-        pkl_load_workers: PKL加载线程数（全量预加载时使用）
+        lance_load_workers: Lance加载线程数（全量预加载时使用）
         lmdb_write_batch_size: LMDB单事务写入批大小（分批加载时使用）
         vector_dedup_threshold: 向量去重余弦相似度阈值
             - None（默认）: 不进行向量去重
@@ -950,36 +968,89 @@ def run_cloze_fill_search(
     # 固定缓存目录为 templates/prompt_cache
     cache_dir = str(resolver.project_root / 'templates' / 'prompt_cache')
     
-    # 查找PKL文件
-    pkl_files = []
+    # 查找 Lance 索引目录，并显式拒绝旧 .pkl 索引
+    lance_files = []
+    unsupported_pkl_files = []
     for f in os.listdir(index_directory):
-        if f.endswith('.pkl'):
-            pkl_files.append(os.path.join(index_directory, f))
-    
-    if not pkl_files:
-        print(f"❌ 错误: 在 {index_directory} 中没有找到PKL文件")
+        full_path = os.path.join(index_directory, f)
+        if os.path.isdir(full_path) and f.endswith('.lance'):
+            lance_files.append(full_path)
+        elif f.endswith('.pkl'):
+            unsupported_pkl_files.append(full_path)
+
+    if unsupported_pkl_files:
+        print(f"❌ 错误: 检测到不支持的 .pkl 索引，请先转换为 .lance: {unsupported_pkl_files[0]}")
+        return {}
+
+    if not lance_files:
+        print(f"❌ 错误: 在 {index_directory} 中没有找到 Lance 索引")
         return {}
     
-    # 从PKL文件名提取模型名称
-    model_name = None
-    for pkl_file in pkl_files:
-        basename = os.path.basename(pkl_file)
-        parts = basename.rsplit('_', 1)
-        if len(parts) == 2:
-            model_name = parts[1].replace('.pkl', '')
-            break
-    
-    if model_name is None:
-        model_name = "openai-clip-vit-large-patch14"
-    
-    # 检测模型类型
+    # 从 Lance 目录名提取模型名称（复用 Prompt 模式的解析逻辑）
     from A_coreUtils.search.auto_scene_search import (
+        extract_model_name_from_index,
         detect_model_type_from_name,
+        detect_truncate_dim_from_index_paths,
+        normalize_top_k,
+        normalize_optional_positive_int,
         SimilarityThresholdConfig,
         export_video_matches,
         cleanup_temp_after_export,
     )
+    model_name = None
+    for lance_file in sorted(lance_files):
+        parsed_model_name = extract_model_name_from_index(lance_file)
+        if parsed_model_name:
+            model_name = parsed_model_name
+            break
+
+    if model_name is None:
+        raise RuntimeError(
+            f"[选词填空搜索] 无法从 Lance 索引文件名中解析出模型名称，"
+            f"请检查 {index_directory} 中的 .lance 文件命名是否包含模型名"
+        )
+
+    # 检测模型类型
     model_type = detect_model_type_from_name(model_name)
+
+    # 从索引文件名自动检测 truncate_dim
+    detected_truncate_dim = detect_truncate_dim_from_index_paths(lance_files)
+    if detected_truncate_dim is not None:
+        print(f"[选词填空搜索] 从索引文件名自动检测到 truncate_dim={detected_truncate_dim}")
+
+    prompt_search_batch_size = normalize_optional_positive_int(
+        prompt_search_batch_size,
+        field_name='prompt_search_batch_size',
+    )
+    prompt_cache_batch_size = normalize_optional_positive_int(
+        prompt_cache_batch_size,
+        field_name='prompt_cache_batch_size',
+    )
+    rerank_top_k = normalize_optional_positive_int(
+        rerank_top_k,
+        field_name='rerank_top_k',
+    )
+    rerank_batch_size = normalize_optional_positive_int(
+        rerank_batch_size,
+        field_name='rerank_batch_size',
+    )
+    candidate_batch_size = normalize_optional_positive_int(
+        candidate_batch_size,
+        field_name='candidate_batch_size',
+    )
+    lance_batch_size = normalize_optional_positive_int(
+        lance_batch_size,
+        field_name='lance_batch_size',
+    )
+    lance_load_workers = normalize_optional_positive_int(
+        lance_load_workers,
+        field_name='lance_load_workers',
+    )
+    lmdb_write_batch_size = normalize_optional_positive_int(
+        lmdb_write_batch_size,
+        field_name='lmdb_write_batch_size',
+    )
+    top_k = normalize_top_k(top_k)
     
     lang_mode = "中文" if use_chinese else "英文"
     print(f"[选词填空搜索] 模型: {model_name} (类型: {model_type})")
@@ -997,6 +1068,14 @@ def run_cloze_fill_search(
         model_name=model_name,
         use_chinese=use_chinese
     )
+
+    # 显式 None 时采用动态全量批大小（而非回退固定常量）。
+    effective_prompt_cache_batch_size = prompt_cache_batch_size
+    if effective_prompt_cache_batch_size is None:
+        effective_prompt_cache_batch_size = max(
+            1,
+            int(vector_cache.prompt_generator.count_total_combinations() or 0)
+        )
     
     # 生成或加载缓存
     cache_valid = vector_cache.cache_exists()
@@ -1004,16 +1083,27 @@ def run_cloze_fill_search(
         print("[Cloze Search] Cache missing or invalid, loading CLIP to regenerate vectors...")
         processor = EmbeddingModelProcessor(
             model_name=model_name,
+            model_type=model_type,
+            truncate_dim=detected_truncate_dim,
+            io_workers=8,
             use_fp16=use_fp16
         )
         vector_cache.processor = processor
-        vector_cache.generate_cache(batch_size=prompt_cache_batch_size)
-    cache_iterator = vector_cache.load_cache_batched(batch_size=prompt_search_batch_size)
+        vector_cache.generate_cache(batch_size=effective_prompt_cache_batch_size)
+    cache_info = vector_cache.get_cache_info()
+    cached_total = int(cache_info.get('total_prompts', 0) or 0)
+    effective_prompt_search_batch_size = (
+        prompt_search_batch_size
+        if prompt_search_batch_size is not None
+        else max(1, cached_total)
+    )
+    cache_iterator = vector_cache.load_cache_batched(batch_size=effective_prompt_search_batch_size, use_fp16=use_fp16)
+    prompt_meta_lookup = vector_cache.load_meta_lookup()
     
     if cache_iterator is None:
-        raise RuntimeError("Cloze prompt 缂撳瓨鍚戦噺涓嶅彲鐢紝涓斾笉鍏佽鍥為€€鍒板疄鏃剁紪鐮併€?")
+        raise RuntimeError("Cloze prompt 缓存向量不可用，且不允许回退到实时编码。")
     total_prompts = cache_iterator.total_prompts
-    print(f"[选词填空搜索] 共 {total_prompts} 个 prompt")
+    print(f"[选词填空搜索] 缓存信息: {total_prompts} 个prompt, {cache_info['file_size_mb']:.1f} MB")
     
     # 从 SimilarityThresholdConfig 获取阈值（与 Prompt 模式一致）
     similarity_threshold = SimilarityThresholdConfig.get_threshold(model_type, use_reranker)
@@ -1041,20 +1131,20 @@ def run_cloze_fill_search(
     # 创建批量搜索引擎
     batch_engine = BatchTextSearchEngine(
         processor=None,
-        index_paths=pkl_files,
+        index_paths=lance_files,
         cache_dir=str(resolver.project_root / 'temp' / 'cache'),
-        load_workers=pkl_load_workers,
+        load_workers=lance_load_workers,
         use_fp16=feature_fp16,
-        pkl_batch_size=pkl_batch_size,
+        lance_batch_size=lance_batch_size,
         video_name_format=video_name_format,
         search_mode=search_mode,
         top_k=top_k,
         lmdb_write_batch_size=lmdb_write_batch_size,
+        truncate_dim=detected_truncate_dim,
         logit_scale=100.0
     )
     
     # 生成搜索配置哈希（用于断点续传验证）
-    import hashlib as _hashlib
     config_payload = {
         'similarity_threshold': similarity_threshold,
         'search_mode': search_mode,
@@ -1068,22 +1158,22 @@ def run_cloze_fill_search(
         'prompt_cache_batch_size': prompt_cache_batch_size,
         'use_fp16': use_fp16,
         'feature_fp16': feature_fp16,
-        'pkl_batch_size': pkl_batch_size,
+        'lance_batch_size': lance_batch_size,
         'use_diskcache': use_diskcache,
         'vector_dedup_threshold': vector_dedup_threshold,
         'use_chinese': use_chinese,
         'video_name_format': video_name_format,
         'cloze_prompt_config_hash': getattr(vector_cache, '_config_hash', None),
-        'index_files': sorted([os.path.basename(p) for p in pkl_files]),
+        'index_files': sorted([os.path.basename(p) for p in lance_files]),
     }
     config_str = json.dumps(config_payload, ensure_ascii=False, sort_keys=True)
-    config_hash = _hashlib.md5(config_str.encode('utf-8')).hexdigest()
+    config_hash = hashlib.md5(config_str.encode('utf-8')).hexdigest()
     
-    # 预加载PKL特征（根据 pkl_batch_size 决定全量或分批）
+    # 预加载Lance特征（根据 lance_batch_size 决定全量或分批）
     if batch_engine._preload_all:
         print("[选词填空搜索] 全量预加载模式")
     else:
-        print(f"[选词填空搜索] 分批PKL模式: 每批 {batch_engine.pkl_batch_size} 个PKL")
+        print(f"[选词填空搜索] 分批Lance模式: 每批 {batch_engine.lance_batch_size} 个Lance")
     
     # 初始化视频名称解析器
     video_name_parser = VideoNameParser()
@@ -1091,78 +1181,23 @@ def run_cloze_fill_search(
     # LMDB 缓存目录（不再无条件清空，支持断点续传）
     diskcache_root = None
     search_cache_dir = None
-    pkl_merge_cache_dir = None
+    lance_merge_cache_dir = None
     if use_diskcache:
         if diskcache_dir is None:
             diskcache_root = str(resolver.project_root / 'temp' / 'cache' / 'cloze_search_results')
         else:
             diskcache_root = diskcache_dir
         search_cache_dir = os.path.join(diskcache_root, 'inner_search')
-        pkl_merge_cache_dir = os.path.join(diskcache_root, 'pkl_merge')
+        lance_merge_cache_dir = os.path.join(diskcache_root, 'lance_merge')
         os.makedirs(search_cache_dir, exist_ok=True)
-        os.makedirs(pkl_merge_cache_dir, exist_ok=True)
+        os.makedirs(lance_merge_cache_dir, exist_ok=True)
     
     # 执行搜索
     start_time = time.time()
     
-    # 创建缓存迭代器（兼容 PromptVectorBatchIterator 的接口）
-    class ClozeCacheIterator:
-        def __init__(self, vectors, all_metadata, batch_size, device, feature_fp16):
-            self.vectors = vectors
-            self._all_metadata = all_metadata
-            self.batch_size = batch_size
-            self.device = device
-            self.feature_fp16 = feature_fp16
-            self.total_prompts = len(all_metadata)
-            self.num_batches = (self.total_prompts + batch_size - 1) // batch_size
-            self.current_batch = 0
-            # metadata 属性（兼容 search_with_batched_cache 中的 cache_iterator.metadata）
-            self._cache_metadata = {}
-        
-        @property
-        def metadata(self):
-            return self._cache_metadata
-        
-        def __iter__(self):
-            self.current_batch = 0
-            return self
-        
-        def __next__(self):
-            if self.current_batch >= self.num_batches:
-                raise StopIteration
-            
-            start_idx = self.current_batch * self.batch_size
-            end_idx = min(start_idx + self.batch_size, self.total_prompts)
-            
-            batch_vectors_np = self.vectors[start_idx:end_idx]
-            batch_vectors_np = np.array(batch_vectors_np)
-            batch_vectors = torch.from_numpy(batch_vectors_np).to(self.device)
-            if self.feature_fp16 and str(self.device).startswith('cuda'):
-                batch_vectors = batch_vectors.half()
-            batch_metadata = self._all_metadata[start_idx:end_idx]
-            batch_prompts = [m.get('prompt', '') for m in batch_metadata]
-            
-            batch_info = {
-                'batch_idx': self.current_batch,
-                'start_idx': start_idx,
-                'end_idx': end_idx,
-                'total_prompts': self.total_prompts,
-                'num_batches': self.num_batches
-            }
-            
-            self.current_batch += 1
-            
-            return batch_vectors, batch_prompts, batch_metadata, batch_info
-        
-        def reset(self):
-            """重置迭代器"""
-            self.current_batch = 0
-    
-    # cache_iterator 宸查€氳繃 vector_cache.load_cache_batched 鍒涘缓
-    
     # 懒加载 Reranker（仅在候选处理阶段首次真正需要时加载）
     reranker_loader = None
-    reranker_weight = SimilarityThresholdConfig.RERANKER_WEIGHT if use_reranker else 0.0
+    reranker_weight = SimilarityThresholdConfig.RERANKER_WEIGHT
     
     # 计算 CLIP 初始阈值（用于候选筛选）
     clip_initial_threshold = SimilarityThresholdConfig.get_threshold(model_type, use_reranker=False) if use_reranker else similarity_threshold
@@ -1203,84 +1238,80 @@ def run_cloze_fill_search(
         candidate_batch_size=candidate_batch_size,
         search_mode=search_mode,
         result_top_k=top_k,
-        config_hash=config_hash
+        config_hash=config_hash,
+        prompt_meta_lookup=prompt_meta_lookup,
     )
     
     if batch_engine._preload_all:
         # 全量预加载模式：直接搜索（search_with_batched_cache 内部已支持断点续传）
         if batch_engine.all_features_gpu is None:
             batch_engine._preload_all_features()
-        best_matches = batch_engine.search_with_batched_cache(**search_kwargs)
+        result_view = batch_engine.search_with_batched_cache(**search_kwargs)
+        result_count = int(result_view.count())
+        print(f"\n📊 搜索完成: {result_count:,} 个场景")
     else:
-        # 分批PKL加载模式（根治版）：
+        # 分批Lance加载模式（根治版）：
         #   阶段1：每批仅做 CLIP 候选聚合，写入同一个 LMDB
-        #   阶段2：全部 PKL 聚合完成后，只做一次候选后处理（含可选 Reranker）
+        #   阶段2：全部 Lance 聚合完成后，只做一次候选后处理（含可选 Reranker）
         from A_coreUtils.search.batch_text_search import LMDBCache
         import time as _time
 
-        total_pkls = len(batch_engine.index_paths)
-        pkl_bs = batch_engine.pkl_batch_size
-        total_batches = (total_pkls + pkl_bs - 1) // pkl_bs
+        total_lances = len(batch_engine.index_paths)
+        lance_bs = batch_engine.lance_batch_size
+        total_batches = (total_lances + lance_bs - 1) // lance_bs
 
-        # 生成分批PKL模式的 config_hash（包含 PKL 批次信息）
-        pkl_batch_config_str = f"cloze_pkl_batch|{config_hash}|{total_pkls}|{pkl_bs}"
-        pkl_batch_hash = _hashlib.md5(pkl_batch_config_str.encode()).hexdigest()
+        # 生成分批Lance模式的 config_hash（包含 Lance 批次信息）
+        lance_batch_config_str = f"cloze_lance_batch|{config_hash}|{total_lances}|{lance_bs}"
+        lance_batch_hash = hashlib.md5(lance_batch_config_str.encode()).hexdigest()
 
         # 候选聚合 LMDB（与阶段2统一复用）
-        pkl_batch_lmdb_dir = pkl_merge_cache_dir
-        if pkl_batch_lmdb_dir is None:
-            pkl_batch_lmdb_dir = str(resolver.project_root / 'temp' / 'cache' / 'cloze_search_results')
-        os.makedirs(pkl_batch_lmdb_dir, exist_ok=True)
+        lance_batch_lmdb_dir = lance_merge_cache_dir
+        if lance_batch_lmdb_dir is None:
+            lance_batch_lmdb_dir = str(resolver.project_root / 'temp' / 'cache' / 'cloze_search_results')
+        os.makedirs(lance_batch_lmdb_dir, exist_ok=True)
 
-        pkl_batch_lmdb = LMDBCache(pkl_batch_lmdb_dir, map_size=10 * 1024 * 1024 * 1024)
+        lance_batch_lmdb = LMDBCache(lance_batch_lmdb_dir, map_size=10 * 1024 * 1024 * 1024)
 
-        # 检查断点续传（仅针对阶段1：PKL 批次聚合）
-        start_pkl_batch = 0
-        checkpoint = pkl_batch_lmdb.load_checkpoint()
-        if checkpoint and checkpoint.get('config_hash') == pkl_batch_hash and checkpoint.get('phase') == 'pkl_batch':
-            start_pkl_batch = checkpoint.get('last_completed_pkl_batch', -1) + 1
-            if start_pkl_batch > 0:
-                print(f"[选词填空搜索] 🔄 断点续传: 从 PKL 批次 {start_pkl_batch + 1}/{total_batches} 继续")
+        # 检查断点续传（仅针对阶段1：Lance 批次聚合）
+        start_lance_batch = 0
+        checkpoint = lance_batch_lmdb.load_checkpoint()
+        if checkpoint and checkpoint.get('config_hash') == lance_batch_hash and checkpoint.get('phase') == 'lance_batch':
+            start_lance_batch = checkpoint.get('last_completed_lance_batch', -1) + 1
+            if start_lance_batch > 0:
+                print(f"[选词填空搜索] 🔄 断点续传: 从 Lance 批次 {start_lance_batch + 1}/{total_batches} 继续")
         else:
-            if checkpoint:
-                print(f"[选词填空搜索] 配置已变化，清理当前聚合缓存目录重新搜索: {pkl_batch_lmdb_dir}")
-            pkl_batch_lmdb.close()
-            temp_dir = str(resolver.project_root / 'temp')
-            if os.path.exists(temp_dir):
-                from A_coreUtils.video_processing.video_utils import cleanup_temp_folder
-                cleanup_temp_folder(temp_dir)
-            os.makedirs(pkl_batch_lmdb_dir, exist_ok=True)
-            pkl_batch_lmdb = LMDBCache(pkl_batch_lmdb_dir, map_size=10 * 1024 * 1024 * 1024)
+            lance_batch_lmdb.clear_candidates()
+            lance_batch_lmdb.clear_results()
 
-        print(f"[选词填空搜索] 分批PKL模式: {total_pkls} 个PKL, 每批 {pkl_bs} 个, 共 {total_batches} 批")
-        scene_key_to_pkl_map = {}
+        print(f"[选词填空搜索] 分批Lance模式: {total_lances} 个Lance, 每批 {lance_bs} 个, 共 {total_batches} 批")
+        scene_key_to_lance_map = {}
 
         # 阶段1：分批聚合 CLIP 候选（不做每批后处理）
-        for batch_idx in range(start_pkl_batch, total_batches):
-            batch_start_idx = batch_idx * pkl_bs
-            batch_end_idx = min(batch_start_idx + pkl_bs, total_pkls)
+        for batch_idx in range(start_lance_batch, total_batches):
+            batch_start_idx = batch_idx * lance_bs
+            batch_end_idx = min(batch_start_idx + lance_bs, total_lances)
             batch_paths = batch_engine.index_paths[batch_start_idx:batch_end_idx]
 
-            print(f"\n[PKL批次 {batch_idx + 1}/{total_batches}] 加载 {len(batch_paths)} 个PKL...")
-            batch_engine._load_pkl_batch_to_merged(batch_paths)
+            print(f"\n[Lance批次 {batch_idx + 1}/{total_batches}] 加载 {len(batch_paths)} 个Lance...")
+            batch_engine._load_lance_batch_to_merged(batch_paths)
 
             if batch_engine.all_features_gpu is None:
-                print(f"[PKL批次 {batch_idx + 1}] 无有效数据，跳过")
-                pkl_batch_lmdb.save_checkpoint({
-                    'config_hash': pkl_batch_hash,
-                    'last_completed_pkl_batch': batch_idx,
+                print(f"[Lance批次 {batch_idx + 1}] 无有效数据，跳过")
+                lance_batch_lmdb.save_checkpoint({
+                    'config_hash': lance_batch_hash,
+                    'last_completed_lance_batch': batch_idx,
                     'total_batches': total_batches,
-                    'phase': 'pkl_batch',
+                    'phase': 'lance_batch',
                     'timestamp': _time.time()
                 })
                 batch_engine._unload_merged_features()
                 continue
 
-            # 记录 scene_key -> source_pkl 映射（用于最终按PKL分组）
+            # 记录 scene_key -> source_lance 映射（用于最终按Lance分组）
             for scene_info in batch_engine.scene_map:
                 video_name = os.path.basename(scene_info['video_path']) if scene_info.get('video_path') else ''
                 scene_key = f"{scene_info['start_frame']}_{video_name}"
-                scene_key_to_pkl_map[scene_key] = scene_info.get('source_pkl', 'unknown')
+                scene_key_to_lance_map[scene_key] = scene_info.get('source_lance', 'unknown')
 
             cache_iterator.reset()
 
@@ -1289,7 +1320,7 @@ def run_cloze_fill_search(
             clip_batch_kwargs['cache_iterator'] = cache_iterator
             clip_batch_kwargs['threshold'] = clip_initial_threshold
             clip_batch_kwargs['use_diskcache'] = True
-            clip_batch_kwargs['cache_dir'] = pkl_batch_lmdb_dir
+            clip_batch_kwargs['cache_dir'] = lance_batch_lmdb_dir
             clip_batch_kwargs['use_reranker'] = False
             clip_batch_kwargs['reranker'] = None
             clip_batch_kwargs['reranker_loader'] = None
@@ -1298,54 +1329,61 @@ def run_cloze_fill_search(
             clip_batch_kwargs['search_mode'] = 0
             clip_batch_kwargs['config_hash'] = None
             clip_batch_kwargs['append_to_lmdb_cache'] = True
+            clip_batch_kwargs['prompt_meta_lookup'] = prompt_meta_lookup
             batch_engine.search_with_batched_cache(**clip_batch_kwargs)
 
-            pkl_batch_lmdb.save_checkpoint({
-                'config_hash': pkl_batch_hash,
-                'last_completed_pkl_batch': batch_idx,
+            lance_batch_lmdb.save_checkpoint({
+                'config_hash': lance_batch_hash,
+                'last_completed_lance_batch': batch_idx,
                 'total_batches': total_batches,
-                'phase': 'pkl_batch',
+                'phase': 'lance_batch',
                 'timestamp': _time.time()
             })
-            print(f"[PKL批次 {batch_idx + 1}] 候选聚合完成")
+            print(f"[Lance批次 {batch_idx + 1}] 候选聚合完成")
 
             batch_engine._unload_merged_features()
             gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-        pkl_batch_lmdb.close()
+        lance_batch_lmdb.close()
 
         # 阶段2：统一执行一次候选后处理（可选 Reranker）
-        print("\n[选词填空搜索] 分批PKL候选聚合完成，开始统一后处理...")
+        print("\n[选词填空搜索] 分批Lance候选聚合完成，开始统一后处理...")
         rerank_search_kwargs = dict(search_kwargs)
         rerank_search_kwargs['cache_iterator'] = None
         rerank_search_kwargs['use_diskcache'] = True
-        rerank_search_kwargs['cache_dir'] = pkl_batch_lmdb_dir
+        rerank_search_kwargs['cache_dir'] = lance_batch_lmdb_dir
         rerank_search_kwargs['skip_clip_search'] = True
-        rerank_search_kwargs['result_top_k'] = None
-        rerank_search_kwargs['search_mode'] = 0
+        rerank_search_kwargs['result_top_k'] = top_k
+        rerank_search_kwargs['search_mode'] = search_mode
         rerank_search_kwargs['config_hash'] = None
-        all_batch_matches = batch_engine.search_with_batched_cache(**rerank_search_kwargs)
-        print(f"[选词填空搜索] 统一后处理完成，得到 {len(all_batch_matches)} 个候选结果")
+        rerank_search_kwargs['prompt_meta_lookup'] = prompt_meta_lookup
+        all_batch_view = batch_engine.search_with_batched_cache(**rerank_search_kwargs)
+        print(f"[选词填空搜索] 统一后处理完成，得到 {all_batch_view.count()} 个候选结果")
 
-        # 按 search_mode 分组取 Top-K
-        from A_coreUtils.search.auto_scene_search import AutoSceneSearcher
-        best_matches = AutoSceneSearcher._apply_search_mode_grouping(
-            all_batch_matches, search_mode, top_k, batch_engine, scene_key_to_pkl_map
+        # 按 search_mode 分组取 Top-K（流式版）
+        from A_coreUtils.search.batch_text_search import apply_search_mode_grouping_lmdb
+        grouping_cache = os.path.join(lance_merge_cache_dir or str(resolver.project_root / 'temp' / 'cache'), 'cloze_grouping')
+        result_view = apply_search_mode_grouping_lmdb(
+            all_batch_view, search_mode, top_k,
+            scene_key_to_lance_map, cache_dir=grouping_cache
         )
     
     search_time = time.time() - start_time
-    print(f"[选词填空搜索] 搜索完成! 耗时 {search_time:.2f}s, 找到 {len(best_matches)} 个结果")
+    print(f"[选词填空搜索] 搜索完成! 耗时 {search_time:.2f}s, 找到 {result_view.count()} 个结果")
     
     # ========== 向量去重（视频导出前）==========
     scene_features = {}  # {scene_key: np.ndarray}
-    scene_pkl_map = {}  # {scene_key: source_pkl}
-    if vector_dedup_threshold is not None and best_matches and batch_engine.all_features_gpu is not None:
+    scene_lance_map = {}  # {scene_key: source_lance}
+    if vector_dedup_threshold is not None and result_view.count() > 0 and batch_engine.all_features_gpu is not None:
         print(f"[选词填空搜索] 提取场景特征向量用于去重...")
         
-        # 构建 best_matches 中的 scene_key 集合
-        best_match_keys = set(best_matches.keys())
+        # 从 result_view 收集 scene_key 集合
+        result_keys = set()
+        for _batch in result_view.iter_batches(batch_size=2000):
+            for _sk, _ in _batch:
+                result_keys.add(_sk)
         
         all_features_cpu = batch_engine.all_features_gpu.float().cpu().numpy()
         feat_idx = 0
@@ -1354,30 +1392,29 @@ def run_cloze_fill_search(
             scene_key = f"{scene_info['start_frame']}_{video_name}"
             count = batch_engine.feature_counts[scene_idx]
             
-            # 只保存 best_matches 中存在的场景的向量
-            if scene_key in best_match_keys:
-                # 保留该场景的所有帧向量（通常是3帧）用于去重比较
+            if scene_key in result_keys:
                 scene_vectors = all_features_cpu[feat_idx:feat_idx + count]
-                scene_features[scene_key] = scene_vectors  # 保留所有帧向量 [count, D]
-                # 记录 source_pkl
-                scene_pkl_map[scene_key] = scene_info.get('source_pkl', 'unknown')
+                scene_features[scene_key] = scene_vectors
+                scene_lance_map[scene_key] = scene_info.get('source_lance', 'unknown')
             
             feat_idx += count
-        print(f"[选词填空搜索] 提取了 {len(scene_features)} 个场景的特征向量（共 {len(best_match_keys)} 个搜索结果）")
+        print(f"[选词填空搜索] 提取了 {len(scene_features)} 个场景的特征向量（共 {len(result_keys)} 个搜索结果）")
     
-    # 释放资源
-    elif vector_dedup_threshold is not None and best_matches and not batch_engine._preload_all:
+    elif vector_dedup_threshold is not None and result_view.count() > 0 and not batch_engine._preload_all:
         print("[选词填空搜索] 提取场景特征向量用于去重...")
-        best_match_keys = set(best_matches.keys())
-        pkl_bs = batch_engine.pkl_batch_size
-        total_pkls = len(batch_engine.index_paths)
-        total_batches = (total_pkls + pkl_bs - 1) // pkl_bs
+        result_keys = set()
+        for _batch in result_view.iter_batches(batch_size=2000):
+            for _sk, _ in _batch:
+                result_keys.add(_sk)
+        lance_bs = batch_engine.lance_batch_size
+        total_lances = len(batch_engine.index_paths)
+        total_batches = (total_lances + lance_bs - 1) // lance_bs
 
         for batch_idx in range(total_batches):
-            batch_start_idx = batch_idx * pkl_bs
-            batch_end_idx = min(batch_start_idx + pkl_bs, total_pkls)
+            batch_start_idx = batch_idx * lance_bs
+            batch_end_idx = min(batch_start_idx + lance_bs, total_lances)
             batch_paths = batch_engine.index_paths[batch_start_idx:batch_end_idx]
-            batch_engine._load_pkl_batch_to_merged(batch_paths)
+            batch_engine._load_lance_batch_to_merged(batch_paths)
 
             if batch_engine.all_features_gpu is None:
                 batch_engine._unload_merged_features()
@@ -1390,18 +1427,18 @@ def run_cloze_fill_search(
                 scene_key = f"{scene_info['start_frame']}_{video_name}"
                 count = batch_engine.feature_counts[scene_idx]
 
-                if scene_key in best_match_keys and scene_key not in scene_features:
+                if scene_key in result_keys and scene_key not in scene_features:
                     scene_vectors = all_features_cpu[feat_idx:feat_idx + count]
                     scene_features[scene_key] = scene_vectors
-                    scene_pkl_map[scene_key] = scene_info.get('source_pkl', 'unknown')
+                    scene_lance_map[scene_key] = scene_info.get('source_lance', 'unknown')
 
                 feat_idx += count
 
             batch_engine._unload_merged_features()
-            if len(scene_features) >= len(best_match_keys):
+            if len(scene_features) >= len(result_keys):
                 break
 
-        print(f"[选词填空搜索] 提取了 {len(scene_features)} 个场景的特征向量（共 {len(best_match_keys)} 个搜索结果）")
+        print(f"[选词填空搜索] 提取了 {len(scene_features)} 个场景的特征向量（共 {len(result_keys)} 个搜索结果）")
 
     batch_engine.cleanup()
     del batch_engine
@@ -1410,33 +1447,38 @@ def run_cloze_fill_search(
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
     
-    # 向量去重（如果启用）- 同PKL内去重
+    # 向量去重（如果启用）- 同Lance内去重
     if vector_dedup_threshold is not None and scene_features:
-        print(f"\n[向量去重] 开始向量去重，阈值={vector_dedup_threshold}，模式=同PKL内去重")
-        from .batch_text_search import deduplicate_by_vector_similarity
-        best_matches = deduplicate_by_vector_similarity(
-            best_matches=best_matches,
+        print(f"\n[向量去重] 开始向量去重，阈值={vector_dedup_threshold}，模式=同Lance内去重")
+        from .batch_text_search import deduplicate_by_vector_lmdb
+        dedup_cache = os.path.join(str(resolver.project_root / 'temp' / 'cache'), 'cloze_dedup')
+        result_view = deduplicate_by_vector_lmdb(
+            result_view=result_view,
             scene_features=scene_features,
             video_name_format=video_name_format,
             similarity_threshold=vector_dedup_threshold,
-            scene_pkl_map=scene_pkl_map  # 传递 PKL 映射用于同PKL内去重
+            scene_lance_map=scene_lance_map,
+            cache_dir=dedup_cache
         )
     
     # 相邻片段合并（视频导出前）
     if adjacent_merge_frames is not None and adjacent_merge_frames >= 0:
         from A_coreUtils.search.auto_scene_search import merge_adjacent_scenes
-        best_matches = merge_adjacent_scenes(
-            best_matches=best_matches,
+        merged = merge_adjacent_scenes(
+            result_source=result_view,
             adjacent_merge_frames=adjacent_merge_frames,
             video_name_format=video_name_format
         )
+        if merged is not result_view and hasattr(result_view, 'close'):
+            result_view.close()
+        result_view = merged
     
     # 视频导出（与 Prompt 模式一致）
-    if best_matches:
-        print(f"\n📹 视频导出: {len(best_matches)} 个场景")
+    if result_view.count() > 0:
+        print(f"\n📹 视频导出: {result_view.count()} 个场景")
         
         export_stats, video_output_directory = export_video_matches(
-            best_matches=best_matches,
+            result_source=result_view,
             resolver=resolver,
             output_directory=output_directory,
             video_output_directory=video_output_directory,
@@ -1455,7 +1497,7 @@ def run_cloze_fill_search(
     
     print("\n✅ 选词填空搜索完成!")
     
-    return best_matches
+    return result_view
 
 
 # 测试代码
