@@ -398,7 +398,7 @@ Thanks to all contributors to this project.
 
 Core contributors:
 
-- @彩绘的图案丶 — [Bilibili](https://space.bilibili.com/4854520) | [YouTube](https://www.youtube.com/@TuanAMV)
+- @彩绘的图案丶 [Bilibili](https://space.bilibili.com/4854520) | [YouTube](https://www.youtube.com/@TuanAMV)
 
 Special thanks:
 
