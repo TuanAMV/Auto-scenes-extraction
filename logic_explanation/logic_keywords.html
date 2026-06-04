@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>logic_keywords.json 设计与结构</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: "Segoe UI","Microsoft YaHei",sans-serif; background: #f0f2f5; color: #333; line-height: 1.75; }
+.container { max-width: 1000px; margin: 0 auto; padding: 30px 20px; }
+h1 { text-align: center; color: #6a1b9a; font-size: 2em; margin-bottom: 8px; }
+.subtitle { text-align: center; color: #888; margin-bottom: 35px; font-size: 0.95em; }
+h2 { color: #2c3e50; border-left: 4px solid #6a1b9a; padding-left: 12px; margin: 40px 0 15px; font-size: 1.35em; }
+h3 { color: #555; margin: 20px 0 10px; font-size: 1.1em; }
+.card { background: #fff; border-radius: 10px; padding: 24px; margin: 18px 0; box-shadow: 0 2px 8px rgba(0,0,0,0.05); word-break: break-word; }
+table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.92em; }
+th, td { padding: 10px 14px; text-align: left; border-bottom: 1px solid #e0e0e0; word-break: break-word; }
+th { background: #f3e5f5; color: #6a1b9a; font-weight: 600; white-space: nowrap; }
+tr:hover { background: #fafafa; }
+code { background: #f3e5f5; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; color: #7b1fa2; }
+pre { background: #fafafa; padding: 16px 20px; border-radius: 8px; overflow-x: auto; font-size: 0.88em; line-height: 1.5; }
+.note { background: #fff3cd; border-left: 4px solid #ffc107; padding: 14px; margin: 14px 0; border-radius: 0 8px 8px 0; font-size: 0.93em; }
+.principle { background: #ede7f6; border-left: 4px solid #6a1b9a; padding: 14px; margin: 14px 0; border-radius: 0 8px 8px 0; font-size: 0.93em; }
+.key { display: inline-block; background: #f3e5f5; color: #6a1b9a; padding: 2px 8px; border-radius: 4px; font-size: 0.9em; margin: 1px 3px; }
+.flow-inline { font-family: "Consolas",monospace; background: #f5f5f5; padding: 2px 8px; border-radius: 3px; font-size: 0.88em; }
+.tree { margin: 10px 0 10px 20px; border-left: 2px dashed #ce93d8; padding-left: 16px; }
+.tree-item { padding: 4px 0; }
+.tree-label { color: #6a1b9a; font-weight: 600; }
+.tree-desc { color: #888; font-size: 0.9em; }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>logic_keywords.json 设计原理与结构</h1>
+<p class="subtitle">视觉原型 + 物理逻辑约束 &nbsp;|&nbsp; 四大类标签树 &nbsp;|&nbsp; 自动提纯 prompt 模板</p>
+
+<!-- ==================== 1. 设计哲学 ==================== -->
+<h2>1. 设计哲学</h2>
+<div class="card">
+<p>抛弃关键词堆砌，采用"视觉原型 + 物理逻辑 + 介词流"的生成模式，确保每条 prompt 都符合物理常识且被 CLIP 模型准确理解。</p>
+
+<h3>三大原则</h3>
+
+<div class="principle"><b>视觉原型化</b> — 将抽象概念映射为视觉特征明确的英文单词。社会身份归类为通用视觉词（如"警察"→ <code>man</code>），武器型号映射为形态词（如"步枪"→ <code>gun</code>）。</div>
+
+<div class="principle"><b>去时序化</b> — 剔除 CLIP 无法理解的剪辑概念（时间变化、转场、镜头拉伸），只保留强视觉特征的瞬间状态（如 <code>burning</code>、<code>floating</code>）。</div>
+
+<div class="principle"><b>物理逻辑约束</b> — 标签分属四大类，各自有不同的行为合法性：</div>
+
+<table>
+<tr><th>类别</th><th>示例</th><th>允许的动作</th><th>禁止的组合</th></tr>
+<tr><td>生物/器官</td><td>人、怪物、手、心脏</td><td>情绪行为 + 姿态 + 运动 + 物理状态</td><td>—</td></tr>
+<tr><td>物体</td><td>建筑、树木、武器、载具</td><td>运动状态 + 物理状态</td><td>情绪/生物行为（枪不会哭）</td></tr>
+<tr><td>场景</td><td>城市、森林、星空</td><td>—（被动存在）</td><td>—</td></tr>
+<tr><td>情绪</td><td>恐怖、浪漫、悲伤</td><td>—（氛围定义）</td><td>—</td></tr>
+</table>
+</div>
+
+<!-- ==================== 2. JSON 结构 ==================== -->
+<h2>2. JSON 顶层结构</h2>
+<div class="card">
+<div class="tree">
+<div class="tree-item"><span class="tree-label">标签</span> — 标签树（四大类 + 子类 + 孙类）</div>
+<div class="tree-item" style="margin-left:20px;"><span class="tree-label">主体</span><span class="tree-desc"> → 生物（男人/女人/怪物...）、物体（建筑/武器/载具...）</span></div>
+<div class="tree-item" style="margin-left:20px;"><span class="tree-label">动作</span><span class="tree-desc"> → 生物行为（奔跑/战斗/哭泣...）、物理运动（燃烧/爆炸/飘动...）</span></div>
+<div class="tree-item" style="margin-left:20px;"><span class="tree-label">场景</span><span class="tree-desc"> → 所有场景（城市/森林/星空...）</span></div>
+<div class="tree-item" style="margin-left:20px;"><span class="tree-label">情绪</span><span class="tree-desc"> → 所有情绪（恐怖/浪漫/悲伤/希望...）</span></div>
+<div class="tree-item"><span class="tree-label">自动提纯prompt</span> — 每大类的中/英文 prompt 模板</div>
+<div class="tree-item"><span class="tree-label">其他参数设置</span> — 输出命名格式、必有标签、MiniCPM 验证 prompt</div>
+</div>
+</div>
+
+<!-- ==================== 3. 标签树详解 ==================== -->
+<h2>3. 标签树三级结构</h2>
+<div class="card">
+<table>
+<tr><th>层级</th><th>用途</th><th>JSON 结构</th><th>示例</th></tr>
+<tr><td><b>大类</b></td><td>模板分类键、交叉验证维度</td><td>标签对象的一级 key</td><td><code>"主体"</code>、<code>"动作"</code></td></tr>
+<tr><td><b>子类</b></td><td>物理逻辑分组</td><td>大类 value 的二级 key</td><td><code>"生物"</code>、<code>"物理运动"</code></td></tr>
+<tr><td><b>孙类</b></td><td>实际标签值</td><td>子类 value 的键值对</td><td><span class="key">奔跑</span>: <code>"running"</code></td></tr>
+</table>
+
+<h3>格式规则</h3>
+<ul>
+<li>孙类 = <code>"中文键": "英文值;"</code>。分号分隔的英文值已拆分为独立条目（v2026.06）。</li>
+<li>子类名如 <span class="key">生物行为</span> 和 <span class="key">物理运动</span> 仅为结构分组，<b>不参与 prompt 填充</b>。</li>
+<li>模板中的占位符 <code>{生物}</code>、<code>{物理运动}</code> 由代码从子类键名自动匹配。</li>
+</ul>
+</div>
+
+<!-- ==================== 4. 自动提纯模板 ==================== -->
+<h2>4. 自动提纯 Prompt 模板</h2>
+<div class="card">
+<p>每个大类有对应模板，占位符 <code>{子类名}</code> 从标签树动态解析。当前使用"动画风格插画"统一主题。</p>
+
+<table>
+<tr><th>类别</th><th>模板 (zh → en)</th><th>生成数</th></tr>
+<tr>
+  <td>主体</td>
+  <td><code>一张以{主体}为主体的动画风格插画</code><br>→ <code>An animated-style photo featuring a {主体} as the main subject</code></td>
+  <td>~192</td>
+</tr>
+<tr>
+  <td>动作</td>
+  <td><code>一张{生物}在{动作}的动画风格插画</code><br>→ <code>An animated-style photo of a {生物} {动作}</code><br><br><code>一张{物体}在{物理运动}的动画风格插画</code><br>→ <code>An animated-style photo of a {物体} {物理运动}</code></td>
+  <td>~12,224</td>
+</tr>
+<tr>
+  <td>场景</td>
+  <td><code>一张以{所有场景}为背景的动画风格插画</code><br>→ <code>An animated-style photo with a {所有场景} backdrop</code></td>
+  <td>~48</td>
+</tr>
+<tr>
+  <td>情绪</td>
+  <td><code>一张有{所有情绪}氛围的动画风格插画</code><br>→ <code>An animated-style photo with a {所有情绪} mood</code></td>
+  <td>~37</td>
+</tr>
+<tr><td><b>合计</b></td><td></td><td><b>~12,500</b></td></tr>
+</table>
+
+<div class="note">占位符解析规则：模板中 <code>{生物}</code> → 遍历标签树中 <code>主体.生物</code> 下的翁类（男人/女人/怪物...）；<code>{动作}</code> → 遍历 <code>动作.生物行为</code> 下翁类。一个模板可有多组占位符，各组笛卡尔积。</div>
+</div>
+
+<!-- ==================== 5. 其他参数 ==================== -->
+<h2>5. 其他参数设置</h2>
+<div class="card">
+
+<h3>输出视频命名格式</h3>
+<pre>{情绪}_{场景}_{主体}_{动作}_{起始帧}_{视频解析名}</pre>
+<p>各占位符从最终结果的 <code>_cn</code> 字段填充。MiniCPM 判否的标签被剥离后自动从文件名消失。</p>
+
+<h3>必有标签</h3>
+<p><code>["主体", "动作", "场景", "情绪"]</code> — 场景必须同时命中这 4 个类别才通过交集过滤。可选 <b>必有子类</b> / <b>必有孙类</b> 做更严格约束。</p>
+
+<h3>MiniCPM 验证 Prompt</h3>
+<p>每个大类有专用验证句式，根据 <code>use_chinese</code> 选择中文或英文版：</p>
+<table>
+<tr><th>类别</th><th>中文验证句</th><th>英文验证句</th></tr>
+<tr><td>主体</td><td>以{val}为主体</td><td>a {val} as the main subject</td></tr>
+<tr><td>动作</td><td>主体正在{val}</td><td>the subject is {val}</td></tr>
+<tr><td>场景</td><td>以{val}为背景</td><td>with a {val} backdrop</td></tr>
+<tr><td>情绪</td><td>画面渲染{val}情绪</td><td>with a {val} mood</td></tr>
+</table>
+<p>MiniCPM 返回 JSON <code>{"主体": "是", "动作": "否", ...}</code>，解析后用于标签剥离（判否 → 从结果中删除）。</p>
+
+</div>
+
+<!-- ==================== 6. 修改指南 ==================== -->
+<h2>6. 修改与扩展指南</h2>
+<div class="card">
+<table>
+<tr><th>操作</th><th>方法</th><th>影响</th></tr>
+<tr>
+  <td>添加翁类标签</td>
+  <td>在对应子类中加 <code>"中文": "english"</code></td>
+  <td>自动纳入模板、prompt 总数增加、缓存自动失效</td>
+</tr>
+<tr>
+  <td>添加子类</td>
+  <td>在大类下加子类字典，模板中加对应占位符</td>
+  <td>需同步修改模板</td>
+</tr>
+<tr>
+  <td>添加大类</td>
+  <td><b>标签树</b> + <b>自动提纯prompt</b> + <b>必有标签</b> 三处同步</td>
+  <td>交集过滤要求同步更新</td>
+</tr>
+<tr>
+  <td>修改命名格式</td>
+  <td>改 <code>输出视频命名格式</code></td>
+  <td>所有视频重命名</td>
+</tr>
+<tr>
+  <td>修改模板主题</td>
+  <td>改 <code>自动提纯prompt</code> 中/英文本</td>
+  <td>Prompt 缓存自动失效重建</td>
+</tr>
+</table>
+</div>
+
+</div>
+</body>
+</html>
