@@ -21,16 +21,13 @@ import pickle
 import numpy as np
 import torch
 import torch.nn.functional as F
-from typing import List, Dict, Optional, Tuple, Generator, Union, Any, Callable, Iterator, Iterable
+from typing import List, Dict, Optional, Tuple, Union, Any, Callable, Iterator, Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
 # 导入 LMDB（必需）
 try:
     import lmdb
-
-    LMDB_AVAILABLE = True
 except ImportError:
-    LMDB_AVAILABLE = False
     lmdb = None
     raise ImportError("LMDB 未安装，请运行: pip install lmdb")
 
@@ -405,7 +402,6 @@ if _cut_detect_scene_dir not in sys.path:
 # 导入路径解析器
 from path_resolver import PathResolver
 # 导入视频工具
-from A_coreUtils.video_processing.video_utils import VideoMetaHelper, SceneFeatureExtractor
 from A_coreUtils.lance_index_io import read_lance_index_raw
 # 全局设备
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -613,7 +609,7 @@ class BatchTextSearchEngine:
                             norms = np.linalg.norm(features_np, axis=1, keepdims=True)
                             features_np = features_np / (norms + 1e-8)
                         # 送入 GPU
-                        dtype = torch.float16 if self.use_fp16 else torch.float32
+                        dtype = torch.float16
                         features_gpu = torch.tensor(features_np, device=DEVICE, dtype=dtype)
                         # 构建场景索引张量
                         scene_indices = []
@@ -722,7 +718,7 @@ class BatchTextSearchEngine:
             print("[警告] 没有加载到任何特征数据")
             return
         # 按视频构建 GPU 张量
-        dtype = torch.float16 if self.use_fp16 else torch.float32
+        dtype = torch.float16
         total_scenes = 0
         total_vectors = 0
         for video_path, vdata in video_data.items():
@@ -730,7 +726,7 @@ class BatchTextSearchEngine:
                 continue
 
             # 合并该视频的所有特征
-            features_np = np.vstack(vdata['features']).astype(np.float32)
+            features_np = np.vstack(vdata['features']).astype(np.float16)
             # 维度截断
             truncate_dim = self.truncate_dim
             if truncate_dim is not None and features_np.shape[1] > truncate_dim:
@@ -782,16 +778,6 @@ class BatchTextSearchEngine:
             format_dict["prompt_cn"] = self._sanitize_filename(str(meta.get("prompt_cn", "")))
         if "prompt_en" in format_dict:
             format_dict["prompt_en"] = self._sanitize_filename(str(meta.get("prompt_en", "")))
-        pl_category_mapping = {
-            "镜头": "lens_cn",
-            "情绪": "mood_cn",
-            "场景": "scene_cn",
-            "主体": "subject_cn",
-            "动作": "action_cn",
-        }
-        for category_name, meta_key in pl_category_mapping.items():
-            if category_name in format_dict:
-                format_dict[category_name] = self._sanitize_filename(str(meta.get(meta_key, "")))
         for key, value in meta.items():
             if key.endswith("_cn"):
                 category_name = key[:-3]
@@ -799,9 +785,12 @@ class BatchTextSearchEngine:
                     format_dict[category_name] = self._sanitize_filename(str(value))
         labels = meta.get("labels", {})
         if isinstance(labels, dict):
-            for subcat_name, label_tuple in labels.items():
-                if subcat_name in format_dict and isinstance(label_tuple, (tuple, list)) and len(label_tuple) >= 1:
-                    format_dict[subcat_name] = self._sanitize_filename(str(label_tuple[0]))
+            for subcat_name, label_val in labels.items():
+                if subcat_name in format_dict:
+                    if isinstance(label_val, (tuple, list)) and len(label_val) >= 1:
+                        format_dict[subcat_name] = self._sanitize_filename(str(label_val[0]))
+                    elif isinstance(label_val, str):
+                        format_dict[subcat_name] = self._sanitize_filename(label_val)
         result_name = self.video_name_format.format(**format_dict)
         separators = re.findall(r"\}([^\{]+)\{", self.video_name_format)
         for sep in set(separators):
@@ -831,11 +820,13 @@ class BatchTextSearchEngine:
                                    search_mode: int = 0,
                                    result_top_k: Optional[int] = None,
                                    config_hash: str = None,
-                                   candidate_batch_size: Optional[int] = None,
-                                   skip_clip_search: bool = False,
-                                   append_to_lmdb_cache: bool = False,
-                                   prompt_meta_lookup: Any = None,
-                                   result_flush_threshold: Optional[int] = DEFAULT_BATCH_RESULT_FLUSH_THRESHOLD) -> LMDBResultView:
+                                           candidate_batch_size: Optional[int] = None,
+                                           skip_clip_search: bool = False,
+                                           append_to_lmdb_cache: bool = False,
+                                    prompt_meta_lookup: Any = None,
+                                    result_flush_threshold: Optional[int] = DEFAULT_BATCH_RESULT_FLUSH_THRESHOLD,
+                                    required_categories: Optional[list] = None,
+                                    rerank_per_cat_top_k: int = 3) -> LMDBResultView:
         """
         统一入口：执行批量搜索并返回 LMDBResultView（result:* 流式视图）。
         """
@@ -878,6 +869,8 @@ class BatchTextSearchEngine:
             append_to_lmdb_cache=append_to_lmdb_cache,
             prompt_meta_lookup=prompt_meta_lookup,
             result_flush_threshold=result_flush_threshold,
+            required_categories=required_categories,
+            rerank_per_cat_top_k=rerank_per_cat_top_k,
         )
 
     def _search_with_batched_cache_stream(self,
@@ -900,8 +893,10 @@ class BatchTextSearchEngine:
                                           candidate_batch_size: Optional[int] = None,
                                           skip_clip_search: bool = False,
                                           append_to_lmdb_cache: bool = False,
-                                          prompt_meta_lookup: Any = None,
-                                          result_flush_threshold: Optional[int] = DEFAULT_BATCH_RESULT_FLUSH_THRESHOLD) -> LMDBResultView:
+                                   prompt_meta_lookup: Any = None,
+                                   result_flush_threshold: Optional[int] = DEFAULT_BATCH_RESULT_FLUSH_THRESHOLD,
+                                    required_categories: Optional[list] = None,
+                                    rerank_per_cat_top_k: int = 3) -> LMDBResultView:
         import heapq
         rerank_top_k = _normalize_optional_positive_int(
             rerank_top_k,
@@ -986,6 +981,20 @@ class BatchTextSearchEngine:
                 'total_batches': getattr(cache_iterator, 'num_batches', 0),
             })
         start_time = time.time()
+        # 分类别 Top-K: rerank_top_k 是每个大类保留的候选数
+        per_cat_heap: Dict[str, dict] = {}
+        per_cat_limit = rerank_top_k  # 不除以类别数，每个大类各保留 rerank_top_k 个
+        prompt_idx_cat_cache: Dict[int, str] = {}
+
+        def _get_cat(pidx: int) -> str:
+            if pidx in prompt_idx_cat_cache:
+                return prompt_idx_cat_cache[pidx]
+            cat = '__unknown__'
+            if prompt_meta_lookup is not None and hasattr(prompt_meta_lookup, 'get_many'):
+                meta = prompt_meta_lookup.get_many([pidx])
+                cat = meta.get(pidx, {}).get('category', '__unknown__')
+            prompt_idx_cat_cache[pidx] = cat
+            return cat
         if not skip_clip_search:
             compute_dtype = self.all_features_gpu.dtype
             device = self.all_features_gpu.device
@@ -1061,13 +1070,30 @@ class BatchTextSearchEngine:
                         similarity = float(scene_sims[batch_prompt_idx])
                         best_frame_for_prompt = int(scene_best_frames[batch_prompt_idx])
                         global_prompt_idx = batch_start + int(batch_prompt_idx)
-                        # light candidate tuple: (sim, prompt_idx, frame_idx)
                         if rerank_top_k is None:
                             candidates.append((similarity, global_prompt_idx, best_frame_for_prompt))
-                        elif len(candidates) < rerank_top_k:
-                            heapq.heappush(candidates, (similarity, global_prompt_idx, best_frame_for_prompt))
-                        elif similarity > candidates[0][0]:
-                            heapq.heapreplace(candidates, (similarity, global_prompt_idx, best_frame_for_prompt))
+                        else:
+                            # 分类别 Top-K: 确保每类都有候选
+                            cat = _get_cat(global_prompt_idx)
+                            cat_heap = per_cat_heap.setdefault(scene_key, {}).setdefault(cat, [])
+                            item = (similarity, global_prompt_idx, best_frame_for_prompt)
+                            if len(cat_heap) < per_cat_limit:
+                                heapq.heappush(cat_heap, item)
+                            elif similarity > cat_heap[0][0]:
+                                heapq.heapreplace(cat_heap, item)
+                    if per_cat_heap.get(scene_key):
+                        # 提前过滤：CLIP 阶段淘汰缺失必有大类的场景
+                        if required_categories and not set(per_cat_heap[scene_key].keys()) >= set(required_categories):
+                            del per_cat_heap[scene_key]
+                            continue
+                        # 合并分类别堆为候选列表
+                        all_candidates = []
+                        for cat_heap in per_cat_heap[scene_key].values():
+                            all_candidates.extend(cat_heap)
+                        candidates = list(set(all_candidates))
+                    # 清理该场景的分类别堆（下一批合并可能还有相同场景）
+                    if scene_key in per_cat_heap:
+                        del per_cat_heap[scene_key]
                     if candidates:
                         best_candidate = max(candidates, key=lambda x: x[0])
                         best_frame_idx = int(best_candidate[2])
@@ -1263,8 +1289,11 @@ class BatchTextSearchEngine:
             }
             if 'prompt' in best_meta:
                 result_data['prompt'] = best_meta.get('prompt', '')
+            # 存储分类名和单标签值（MiniRerank 需要 label_cn/label_en）
+            if 'category' in best_meta:
+                result_data['category'] = best_meta.get('category', '')
             for key, value in best_meta.items():
-                if key in ('prompt_cn', 'prompt_en', 'labels') or key.endswith('_cn') or key.endswith('_en'):
+                if key in ('prompt_cn', 'prompt_en', 'labels', 'label_cn', 'label_en') or key.endswith('_cn') or key.endswith('_en'):
                     result_data[key] = value
             return result_data
 
@@ -1303,21 +1332,27 @@ class BatchTextSearchEngine:
                 if frame_extractor is not None:
                     scenes_to_extract = []
                     for data in batch_candidate_data.values():
-                        scene_info = {
+                        base = {
                             'video_path': data.get('video_path', ''),
                             'start_frame': int(data.get('start_frame', 0) or 0),
                             'end_frame': int(data.get('end_frame', 0) or 0),
                             'fps': float(data.get('fps', 25.0) or 25.0),
                         }
-                        best_frame_idx = int(data.get('best_frame_idx', 1) or 1)
-                        scenes_to_extract.append({
-                            'video_path': scene_info['video_path'],
-                            'start_frame': scene_info['start_frame'],
-                            'end_frame': scene_info['end_frame'],
-                            'fps': scene_info['fps'],
-                            'target_frame_idx': best_frame_idx,
-                        })
-                    frame_paths = frame_extractor.extract_batch(scenes_to_extract)
+                        for fidx in (0, 1, 2):
+                            s = dict(base)
+                            s['target_frame_idx'] = fidx
+                            scenes_to_extract.append(s)
+                    raw_list = frame_extractor.extract_batch(scenes_to_extract)
+                    # key 格式: {start_frame}_{video_name}_{frame_idx}，用于后续消费
+                    # scene_key 格式: {start_frame}_{frame_idx}_{video_name}，用于 extract_batch 返回字典查找
+                    for s in scenes_to_extract:
+                        fidx = s['target_frame_idx']
+                        key = f"{s['start_frame']}_{os.path.basename(s['video_path'])}_{fidx}"
+                        scene_key = RerankerFrameExtractor.get_scene_key(
+                            s['video_path'], s['start_frame'], fidx
+                        )
+                        if scene_key in raw_list:
+                            frame_paths[key] = raw_list[scene_key]
                 # 帧提取完成后再懒加载 Reranker，避免与 decord 同时占用大量内存
                 if use_reranker and reranker is None and callable(reranker_loader):
                     reranker = reranker_loader()
@@ -1336,67 +1371,108 @@ class BatchTextSearchEngine:
                         'fps': float(data.get('fps', 25.0) or 25.0),
                         'source_lance': data.get('source_lance', 'unknown'),
                     }
-                    best_sim = float('-inf')
-                    best_prompt_idx = None
+                    # 按类别分组的最佳 (sim, prompt_idx)
+                    best_per_category: Dict[str, Tuple[float, int]] = {}
+
                     if frame_extractor is None:
-                        best_candidate = max(candidates, key=lambda x: x[0])
-                        best_sim = float(best_candidate[0])
-                        best_prompt_idx = int(best_candidate[1])
+                        # 无 Reranker: 每类取 CLIP 最高分
+                        for candidate in candidates:
+                            simp = float(candidate[0])
+                            pidx = int(candidate[1])
+                            meta = prompt_meta_map.get(pidx, {})
+                            cat = meta.get('category', '__unknown__')
+                            if cat not in best_per_category or simp > best_per_category[cat][0]:
+                                best_per_category[cat] = (simp, pidx)
                     else:
-                        frame_key = f"{scene_info['start_frame']}_{os.path.basename(scene_info['video_path'])}"
-                        frame_path = frame_paths.get(frame_key)
-                        before_best_candidate = max(candidates, key=lambda x: x[0])
-                        before_best_sim = float(before_best_candidate[0])
-                        before_best_prompt_idx = int(before_best_candidate[1])
-                        if not frame_path or not os.path.exists(frame_path):
-                            best_sim = before_best_sim
-                            best_prompt_idx = before_best_prompt_idx
+                        # Reranker: 每类用自己的最佳帧
+                        # 1) 找每类最佳候选的 frame_idx
+                        cat_best_frame: Dict[str, int] = {}
+                        for candidate in candidates:
+                            cat = prompt_meta_map.get(int(candidate[1]), {}).get('category', '__unknown__')
+                            if cat not in cat_best_frame or float(candidate[0]) > next(
+                                (float(c[0]) for c in candidates if int(c[1]) == int(candidate[1])), 0
+                            ):
+                                # 简化: 直接取该类别里 CLIP 最高分候选的帧
+                                pass
+                        # 改进: 对每类取 CLIP top-K（跨帧合并，不按帧分组）
+                        # 每类挑 CLIP 最高 K 条 prompt，统一用中间帧做 reranker 精排
+                        cat_topk: Dict[str, list] = {}  # cat → [(sim, prompt_idx), ...]
+                        for candidate in candidates:
+                            simp = float(candidate[0])
+                            pidx = int(candidate[1])
+                            meta = prompt_meta_map.get(pidx, {})
+                            cat = meta.get('category', '__unknown__')
+                            entry = (simp, pidx)
+                            lst = cat_topk.setdefault(cat, [])
+                            lst.append(entry)
+                            lst.sort(key=lambda x: x[0], reverse=True)
+                            if len(lst) > rerank_per_cat_top_k:
+                                lst.pop()
+
+                        # 取中间帧路径
+                        scene_key_prefix = f"{scene_info['start_frame']}_{os.path.basename(scene_info['video_path'])}"
+                        mid_frame_path = frame_paths.get(f"{scene_key_prefix}_1", '')
+                        if not mid_frame_path or not os.path.exists(mid_frame_path):
+                            # 回退: 任意可用帧
+                            for fk, fp in frame_paths.items():
+                                if os.path.exists(fp):
+                                    mid_frame_path = fp
+                                    break
+
+                        if not mid_frame_path or not os.path.exists(mid_frame_path):
+                            # 无帧 → 退化为纯 CLIP
+                            for cat, entries in cat_topk.items():
+                                simp, pidx = entries[0]
+                                if cat not in best_per_category or simp > best_per_category[cat][0]:
+                                    best_per_category[cat] = (simp, pidx)
                         else:
-                            sorted_candidates = sorted(candidates, key=lambda x: x[0], reverse=True)
+                            # 组装 documents: 每类 top-K 的 prompt 文本
                             documents = []
-                            for candidate in sorted_candidates:
-                                prompt_idx = int(candidate[1])
-                                meta = prompt_meta_map.get(prompt_idx, {})
-                                documents.append({'text': meta.get('prompt', '')})
+                            cat_order = []  # (cat, simp, pidx) 按文档顺序
+                            for cat, entries in cat_topk.items():
+                                for simp, pidx in entries:
+                                    meta = prompt_meta_map.get(pidx, {})
+                                    documents.append({'text': meta.get('prompt', '')})
+                                    cat_order.append((cat, simp, pidx))
+
+                            print(f"\n  [Reranker] 场景={scene_key}  中间帧={mid_frame_path}  候选数={len(documents)}  (每类top-{rerank_per_cat_top_k})")
+                            for cat, simp, pidx in cat_order:
+                                meta = prompt_meta_map.get(pidx, {})
+                                print(f"    CLIP: {simp:.4f}  cat={cat}  prompt={meta.get('prompt','?')[:55]}")
+                            t0 = time.time()
                             try:
                                 rerank_scores = reranker.process(
-                                    {'query': {'image': frame_path}, 'documents': documents},
+                                    {'query': {'image': mid_frame_path}, 'documents': documents},
                                     batch_size=(rerank_batch_size if rerank_batch_size is not None else max(1, len(documents)))
                                 )
-                                for candidate, rerank_score in zip(sorted_candidates, rerank_scores):
-                                    clip_sim = float(candidate[0])
-                                    prompt_idx = int(candidate[1])
-                                    final_score = clip_sim * (1 - reranker_weight) + float(rerank_score) * 100.0 * reranker_weight
-                                    if final_score > best_sim:
-                                        best_sim = final_score
-                                        best_prompt_idx = prompt_idx
-                                # 打印 Reranker 前后最佳 prompt 对比
-                                before_meta = prompt_meta_map.get(before_best_prompt_idx, {})
-                                after_meta = prompt_meta_map.get(best_prompt_idx, {})
-                                before_prompt_text = before_meta.get('prompt', f'idx={before_best_prompt_idx}')
-                                after_prompt_text = after_meta.get('prompt', f'idx={best_prompt_idx}')
-                                if best_prompt_idx != before_best_prompt_idx:
-                                    print(f"    [Reranker] {scene_key}: "
-                                          f"前=[{before_best_prompt_idx}] {before_prompt_text[:60]} (sim={before_best_sim:.1f}) → "
-                                          f"后=[{best_prompt_idx}] {after_prompt_text[:60]} (sim={best_sim:.1f})")
-                                else:
-                                    print(f"    [Reranker] {scene_key}: "
-                                          f"最佳prompt不变 [{best_prompt_idx}] {after_prompt_text[:60]} "
-                                          f"(sim: {before_best_sim:.1f} → {best_sim:.1f})")
+                                t1 = time.time()
+                                print(f"    Rerank 耗时={t1-t0:.2f}s:")
+                                for (cat, simp, pidx), rerank_score in zip(cat_order, rerank_scores):
+                                    final_score = simp * (1 - reranker_weight) + float(rerank_score) * 100.0 * reranker_weight
+                                    meta = prompt_meta_map.get(pidx, {})
+                                    print(f"      {cat}: CLIP={simp:.4f}  rerank={float(rerank_score):.4f}  final={final_score:.4f}  {meta.get('prompt','')[:40]}")
+                                    if cat not in best_per_category or final_score > best_per_category[cat][0]:
+                                        best_per_category[cat] = (final_score, pidx)
                             except Exception as e:
-                                print(f"  [Reranker错误] 场景 {scene_key} 推理失败: {e}")
-                                best_sim = before_best_sim
-                                best_prompt_idx = before_best_prompt_idx
-                    if best_prompt_idx is None or best_sim < threshold:
+                                print(f"  [Reranker错误] 场景 {scene_key}: {e}")
+                                for cat, simp, pidx in cat_order:
+                                    if cat not in best_per_category or simp > best_per_category[cat][0]:
+                                        best_per_category[cat] = (simp, pidx)
+
+                    if not best_per_category:
                         continue
 
-                    result_data = _build_result_data(
-                        scene_info=scene_info,
-                        best_sim=best_sim,
-                        best_prompt_idx=best_prompt_idx,
-                        prompt_meta_map=prompt_meta_map
-                    )
-                    _add_result(scene_key, result_data)
+                    for cat, (sim, pidx) in best_per_category.items():
+                        if sim < threshold:
+                            continue
+                        result_data = _build_result_data(
+                            scene_info=scene_info,
+                            best_sim=sim,
+                            best_prompt_idx=pidx,
+                            prompt_meta_map=prompt_meta_map
+                        )
+                        cat_scene_key = f"{scene_key}_{cat}"
+                        _add_result(cat_scene_key, result_data)
                 if frame_extractor is not None:
                     frame_extractor.cleanup(remove_files=False)
                 print(f"  [候选处理] 批次 {batch_idx + 1}/{num_batches} 完成, 已处理 {batch_end_idx}/{total_keys}")
@@ -1430,7 +1506,7 @@ class BatchTextSearchEngine:
                 'timestamp': time.time(),
             })
         total_time = time.time() - start_time
-        print(f"[分批搜索] 完成! 总耗时 {total_time:.2f}s, {result_count} 个场景")
+        print(f"[分批搜索] 完成! 总耗时 {total_time:.2f}s")
         lmdb_cache.close()
         return LMDBResultView(cache_dir)
 
@@ -1465,7 +1541,7 @@ class BatchTextSearchEngine:
                             norms = np.linalg.norm(features_np, axis=1, keepdims=True)
                             features_np = features_np / (norms + 1e-8)
                         # 送入 GPU
-                        dtype = torch.float16 if self.use_fp16 else torch.float32
+                        dtype = torch.float16
                         features_gpu = torch.tensor(features_np, device=DEVICE, dtype=dtype)
                         batch_lance_features[lance_path] = features_gpu
                         batch_lance_scene_maps[lance_path] = scene_map
@@ -1591,100 +1667,6 @@ class BatchTextSearchEngine:
 # ============================================================
 
 
-def apply_search_mode_grouping_lmdb(
-    result_view: 'LMDBResultView',
-    search_mode: int,
-    top_k: Optional[int],
-    scene_key_to_lance_map: Dict[str, str] = None,
-    cache_dir: str = None,
-    batch_size: int = 1000,
-) -> 'LMDBResultView':
-    """
-    对 LMDBResultView 中的搜索结果按 search_mode 分组取 Top-K（流式版）。
-    替代 AutoSceneSearcher._apply_search_mode_grouping（dict 版）。
-
-    Args:
-        result_view: 输入结果视图
-        search_mode: -1=按视频, 0=按Lance, 1=跨Lance全局
-        top_k: 每组最大结果数，None 或 <=0 不限制
-        scene_key_to_lance_map: {scene_key: source_lance} 映射（search_mode=0 时需要）
-        cache_dir: 输出 LMDB 目录，None 则自动生成
-        batch_size: 迭代批大小
-
-    Returns:
-        过滤后的 LMDBResultView
-    """
-    import heapq as _heapq
-
-    # 归一化 top_k
-    if top_k is not None:
-        top_k = int(top_k)
-        if top_k <= 0:
-            top_k = None
-    if top_k is None:
-        return result_view
-
-    # Pass 1: 分组堆排序，收集每组 top_k 个 scene_key
-    grouped_heaps: Dict[str, list] = defaultdict(list)
-    for batch in result_view.iter_batches(batch_size=batch_size):
-        for scene_key, data in batch:
-            similarity = float(data.get('similarity', 0))
-            if search_mode == -1:
-                group_key = str(data.get('video_path', ''))
-            elif search_mode == 0:
-                group_key = (scene_key_to_lance_map or {}).get(scene_key, 'unknown')
-            else:
-                group_key = '__global__'
-            heap = grouped_heaps[group_key]
-            if len(heap) < top_k:
-                _heapq.heappush(heap, (similarity, scene_key))
-            elif similarity > heap[0][0]:
-                _heapq.heapreplace(heap, (similarity, scene_key))
-
-    keep_keys = set()
-    for heap in grouped_heaps.values():
-        for _, scene_key in heap:
-            keep_keys.add(scene_key)
-    del grouped_heaps
-
-    total_in = result_view.count()
-    print(f"[Grouping LMDB] mode={search_mode}, top_k={top_k}, {total_in} -> {len(keep_keys)}")
-
-    if len(keep_keys) == total_in:
-        return result_view
-
-    # Pass 2: 过滤写入新 LMDB
-    if cache_dir is None:
-        from path_resolver import PathResolver
-        _resolver = PathResolver()
-        cache_dir = os.path.join(str(_resolver.project_root), 'temp', 'cache', 'search_results', 'grouping')
-    os.makedirs(cache_dir, exist_ok=True)
-    out_cache = LMDBCache(cache_dir, map_size=10 * 1024 * 1024 * 1024)
-    out_cache.clear_results()
-    out_buffer = {}
-    for batch in result_view.iter_batches(batch_size=batch_size):
-        for scene_key, data in batch:
-            if scene_key in keep_keys:
-                out_buffer[f"result:{scene_key}"] = data
-                if len(out_buffer) >= batch_size:
-                    out_cache.put_many(out_buffer)
-                    out_buffer.clear()
-    if out_buffer:
-        out_cache.put_many(out_buffer)
-        out_buffer.clear()
-    out_cache.close()
-
-    result_view.close()
-    return LMDBResultView(cache_dir)
-
-
-# ============================================================
-#  向量去重工具函数
-
-
-# ============================================================
-
-
 def extract_label_key_from_result_name(
     result_name: str,
     video_name_format: str,
@@ -1693,11 +1675,11 @@ def extract_label_key_from_result_name(
     """
     从 `result_name` 中提取标签组合键（用于分组）。
     Args:
-        result_name: 例如 `P模式_男人_跑步_城市_开心_1234_视频名`
-        video_name_format: 例如 `P模式_{主体}_{动作}_{场景}_{情绪}_{起始帧}_{视频解析名}`
+        result_name: 例如 `城市_奔跑_男人_恐怖_1234_视频名`
+        video_name_format: 例如 `{场景}_{动作}_{主体}_{情绪}_{起始帧}_{视频解析名}`
         exclude_fields: 排除字段，默认 `['起始帧', '视频解析名']`
     Returns:
-        标签组合键，例如 `P模式_男人_跑步_城市_开心`
+        标签组合键，例如 `城市_奔跑_男人_恐怖`
     """
     import re
 
@@ -1706,7 +1688,6 @@ def extract_label_key_from_result_name(
     # 解析格式字符串中的全部占位符
     placeholders = re.findall(r'\{([^}]+)\}', video_name_format)
     # 将格式模板转换为正则表达式
-    # 例如：'P模式_{主体}_{动作}' -> 'P模式_(.+?)_(.+?)'
     pattern = video_name_format
     for ph in placeholders:
         pattern = pattern.replace(f'{{{ph}}}', '(.+?)')
@@ -1731,10 +1712,10 @@ def extract_video_parsed_name(
     """
     从 `result_name` 中提取视频解析名。
     Args:
-        result_name: 例如 `P模式_男人_跑步_城市_开心_1234_视频名_OP`
-        video_name_format: 例如 `P模式_{主体}_{动作}_{场景}_{情绪}_{起始帧}_{视频解析名}`
+        result_name: 例如 `城市_奔跑_男人_恐怖_1234_视频名`
+        video_name_format: 例如 `{场景}_{动作}_{主体}_{情绪}_{起始帧}_{视频解析名}`
     Returns:
-        视频解析名，例如 `视频名_OP`
+        视频解析名，例如 `视频名`
     """
     import re
 
@@ -1747,7 +1728,7 @@ def extract_video_parsed_name(
     if not match:
         return ''
 
-    # 找到“视频解析名”占位符的位置
+    # 找到"视频解析名"占位符的位置
     for i, ph in enumerate(placeholders):
         if ph == "视频解析名":
             return match.group(i + 1)
@@ -1790,60 +1771,6 @@ def is_op_ed_video(video_parsed_name: str) -> bool:
     return False
 
 
-def _deduplicate_vectors_matrix(
-    scene_vectors_list: list,
-    threshold: float
-) -> list:
-    """
-    用矩阵运算执行余弦相似度去重（支持多帧向量）。
-    比较两个场景时，计算两者所有帧向量间的最大相似度。
-    例如：场景 A 有 [a1,a2,a3]，场景 B 有 [b1,b2,b3]。
-    计算 3x3=9 个相似度，取最大值作为两个场景的相似度。
-    Args:
-        scene_vectors_list: 场景向量列表，每个元素是 [k, D]（k 帧向量）
-        threshold: 余弦相似度阈值
-    Returns:
-        保留的索引列表
-    """
-    n = len(scene_vectors_list)
-    if n <= 1:
-        return list(range(n))
-
-    # 获取每个场景的帧数
-    frame_counts = [v.shape[0] for v in scene_vectors_list]
-    total_frames = sum(frame_counts)
-    # 展平所有向量为 [total_frames, D]
-    all_vectors = np.vstack(scene_vectors_list).astype(np.float32)
-    # 向量已归一化，可直接计算相似度矩阵 [total_frames, total_frames]
-    similarity_matrix = all_vectors @ all_vectors.T
-    # 构建场景边界索引
-    scene_boundaries = [0]
-    for count in frame_counts:
-        scene_boundaries.append(scene_boundaries[-1] + count)
-    # 计算场景间最大相似度矩阵 [N, N]
-    scene_max_sim = np.zeros((n, n), dtype=np.float32)
-    for i in range(n):
-        i_start, i_end = scene_boundaries[i], scene_boundaries[i+1]
-        for j in range(i, n):
-            j_start, j_end = scene_boundaries[j], scene_boundaries[j+1]
-            # 取场景 i 和场景 j 之间所有帧向量的最大相似度
-            block = similarity_matrix[i_start:i_end, j_start:j_end]
-            max_sim = block.max()
-            scene_max_sim[i, j] = max_sim
-            scene_max_sim[j, i] = max_sim
-    # 贪心去重：遍历上三角
-    keep_mask = np.ones(n, dtype=bool)
-    for i in range(n):
-        if not keep_mask[i]:
-            continue
-
-        # 标记与场景 i 相似度超过阈值的后续场景为重复
-        for j in range(i + 1, n):
-            if keep_mask[j] and scene_max_sim[i, j] > threshold:
-                keep_mask[j] = False
-    return np.where(keep_mask)[0].tolist()
-
-
 def _deduplicate_vectors_matrix_cross_video(
     scene_vectors_list: list,
     scene_video_ids: list,
@@ -1858,12 +1785,12 @@ def _deduplicate_vectors_matrix_cross_video(
         return list(range(n))
 
     frame_counts = [vectors.shape[0] for vectors in scene_vectors_list]
-    all_vectors = np.vstack(scene_vectors_list).astype(np.float32)
+    all_vectors = np.vstack(scene_vectors_list).astype(np.float16)
     similarity_matrix = all_vectors @ all_vectors.T
     scene_boundaries = [0]
     for count in frame_counts:
         scene_boundaries.append(scene_boundaries[-1] + count)
-    scene_max_sim = np.zeros((n, n), dtype=np.float32)
+    scene_max_sim = np.zeros((n, n), dtype=np.float16)
     for i in range(n):
         i_start, i_end = scene_boundaries[i], scene_boundaries[i + 1]
         for j in range(i, n):
@@ -1887,114 +1814,6 @@ def _deduplicate_vectors_matrix_cross_video(
             if scene_max_sim[i, j] > threshold:
                 keep_mask[j] = False
     return np.where(keep_mask)[0].tolist()
-
-
-def deduplicate_by_vector_similarity(
-    best_matches: dict,
-    scene_features: dict,
-    video_name_format: str,
-    similarity_threshold: float = 0.95,
-    exclude_fields: list = None,
-    scene_pkl_map: dict = None
-) -> dict:
-    """
-    在视频导出前进行同标签向量去重（同 Lance 内、跨视频）。
-    优先规则：
-    - 若同标签组中存在 OP/ED 视频，仅保留 OP/ED 视频，并跳过向量去重
-    - 否则执行常规向量相似度去重
-    去重范围：
-    - 仅在同一 Lance 内去重，不跨 Lance
-    - 同一 Lance + 同一标签组下，仅做跨视频去重（同视频内不去重）
-    Args:
-        best_matches: 搜索结果字典 {scene_key: {...}}
-        scene_features: 场景特征向量 {scene_key: np.ndarray}
-        video_name_format: 视频命名格式
-        similarity_threshold: 余弦相似度阈值（0-1），超过则去重
-        exclude_fields: 去重时排除的字段，默认 ['起始帧', '视频解析名']
-        scene_pkl_map: 场景到 Lance 的映射 {scene_key: source_lance}，用于同 Lance 内去重
-    Returns:
-        去重后的结果字典
-    """
-    if exclude_fields is None:
-        exclude_fields = ["起始帧", "视频解析名"]
-    if not best_matches or similarity_threshold is None:
-        return best_matches
-
-    # Step 1: 按 (Lance, 标签组合) 分组，实现同 Lance 内跨视频去重
-    # 格式: {(lance_path, label_key): [scene_key, ...]}
-    groups = defaultdict(list)
-    for scene_key, data in best_matches.items():
-        result_name = data.get('result_name', '')
-        label_key = extract_label_key_from_result_name(
-            result_name, video_name_format, exclude_fields
-        )
-        # 获取该场景的 Lance 来源
-        source_path = scene_pkl_map.get(scene_key, 'unknown') if scene_pkl_map else 'unknown'
-        # 使用 (source_path, label_key) 作为分组键，实现同 Lance 内去重
-        group_key = (source_path, label_key)
-        groups[group_key].append(scene_key)
-    # Step 2: 对每个分组执行去重
-    keep_scene_keys = set()
-    op_ed_priority_count = 0
-    vector_dedup_count = 0
-    for group_key, scene_keys in groups.items():
-        if len(scene_keys) == 1:
-            # 只有一个候选，直接保留
-            keep_scene_keys.add(scene_keys[0])
-            continue
-
-        # ========== OP/ED 优先规则 ==========
-        # 检查组内是否存在 OP/ED 视频
-        op_ed_keys = []
-        non_op_ed_keys = []
-        for sk in scene_keys:
-            data = best_matches[sk]
-            result_name = data.get('result_name', '')
-            video_parsed_name = extract_video_parsed_name(result_name, video_name_format)
-            if is_op_ed_video(video_parsed_name):
-                op_ed_keys.append(sk)
-            else:
-                non_op_ed_keys.append(sk)
-        # 如果有 OP/ED 视频，只保留 OP/ED 视频（并跳过向量去重）
-        if op_ed_keys:
-            keep_scene_keys.update(op_ed_keys)
-            op_ed_priority_count += len(non_op_ed_keys)
-            continue
-
-        # ========== 向量相似度去重（场景级 + 跨视频） ==========
-        scene_vectors_list = []
-        valid_keys = []
-        valid_video_ids = []
-        for sk in scene_keys:
-            vectors = scene_features.get(sk)
-            if vectors is None:
-                # 无向量无法判重，直接保留
-                keep_scene_keys.add(sk)
-                continue
-
-            scene_vectors_list.append(vectors)
-            valid_keys.append(sk)
-            valid_video_ids.append(best_matches[sk].get('video_path') or '__unknown_video__')
-        if len(scene_vectors_list) <= 1:
-            keep_scene_keys.update(valid_keys)
-            continue
-
-        before_count = len(valid_keys)
-        keep_indices = _deduplicate_vectors_matrix_cross_video(
-            scene_vectors_list,
-            valid_video_ids,
-            similarity_threshold
-        )
-        after_count = len(keep_indices)
-        vector_dedup_count += (before_count - after_count)
-        for idx in keep_indices:
-            keep_scene_keys.add(valid_keys[idx])
-    # 打印统计信息
-    total_removed = len(best_matches) - len(keep_scene_keys)
-    print(f"[向量去重] OP/ED优先过滤: {op_ed_priority_count}, 向量相似度去重: {vector_dedup_count}")
-    print(f"[向量去重] 总计去除: {total_removed}, 保留: {len(keep_scene_keys)}")
-    # Step 3: 返回去重后的结果
-    return {k: v for k, v in best_matches.items() if k in keep_scene_keys}
 
 
 def deduplicate_by_vector_lmdb(

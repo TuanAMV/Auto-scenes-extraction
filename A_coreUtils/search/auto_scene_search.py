@@ -1,30 +1,28 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 # 本文件使用 UTF-8 编码，请勿使用 GBK 或其他编码打开/保存
 # auto_scene_search.py
 # 自动化场景搜索器 - 遍历所有合理的关键词组合进行文搜图
-# 基于 logic_Prompt.py 的逻辑，系统性遍历所有组合
+# 基于 logic_keywords.json，按自动提纯模板生成 prompt
 # v1.0: 初始版本
 # v1.1: 添加去重功能 - 同一场景保留相似度最高的prompt结果
 
 import json
 import os
+import re
 import sys
 import time
 import itertools
-from typing import List, Dict, Generator, Optional, Callable, Tuple, Iterator, Any
-from datetime import datetime
-
-# ============================================================
+from typing import List, Dict, Optional, Callable, Tuple, Iterator, Any# ============================================================
 #  路径设置 - 确保能找到项目根目录的模块
 # ============================================================
 _current_file = os.path.abspath(__file__)
 _search_dir = os.path.dirname(_current_file)
 _a_core_utils_dir = os.path.dirname(_search_dir)
-_project_root_dir = os.path.dirname(_a_core_utils_dir)
-if _project_root_dir not in sys.path:
-    sys.path.insert(0, _project_root_dir)
+_cut_detect_scene_dir = os.path.dirname(_a_core_utils_dir)
+if _cut_detect_scene_dir not in sys.path:
+    sys.path.insert(0, _cut_detect_scene_dir)
 # 导入路径解析器
-from path_resolver import PathResolver, get_project_root, resolve_path
+from path_resolver import PathResolver
 
 # 导入视频名称解析器
 from A_coreUtils.video_processing.video_name_parser import VideoNameParser
@@ -163,55 +161,6 @@ def validate_prompt_video_name_format(video_name_format: str, categories: List[s
     return True, ""
 
 
-def validate_prompt_template(prompt_template: str, categories: List[str]) -> Tuple[bool, str]:
-    """
-        验证 prompt_template 是否合法
-        
-        检查模板字符串中的占位符是否都是有效的大类名称。
-        
-        Args:
-            prompt_template: prompt 模板字符串
-            categories: 有效的大类名称列表（如 ['主体', '动作', '场景', '情绪']）
-        
-        Returns:
-            (是否合法, 错误信息)
-        
-    """
-    import re
-
-    # 提取所有占位符
-    placeholders = re.findall(r'\{(\w+)\}', prompt_template)
-
-    # 检查每个占位符
-    invalid_placeholders = []
-    for ph in placeholders:
-        if ph not in categories:
-            invalid_placeholders.append(ph)
-
-    if invalid_placeholders:
-        return False, f"prompt_template 中存在无效占位符: {invalid_placeholders}，有效占位符: {list(categories)}"
-
-    return True, ""
-
-
-def generate_default_prompt_video_name_format(categories: List[str], prefix: str = "") -> str:
-    """
-        动态生成 Prompt 模式的默认 video_name_format
-        
-        Args:
-            categories: 大类名称列表
-            prefix: 前缀字符串
-        
-        Returns:
-            默认的 video_name_format 字符串
-        
-    """
-    format_parts = [prefix] if prefix else []
-    format_parts.extend([f"{{{cat}}}" for cat in categories])
-    format_parts.extend(["{\u8d77\u59cb\u5e27}", "{\u89c6\u9891\u89e3\u6790\u540d}"])
-    return "_".join(format_parts)
-
-
 def _cleanup_gpu_memory():
     """清理 GPU 显存"""
     import gc
@@ -242,16 +191,14 @@ class PromptGenerator:
     """
 
     # 系统保留字段（不作为大类处理）
-    RESERVED_KEYS = {"\u5206\u914d\u89c4\u5219", "\u9009\u8bcd\u586b\u7a7a\u89c4\u5219"}
+    RESERVED_KEYS = {"自动提纯prompt", "其他参数设置"}
 
-    def __init__(self, keywords_path: str = None, prompt_template: str = None, use_chinese: bool = False):
+    def __init__(self, keywords_path: str = None, use_chinese: bool = False):
         """
                 初始化Prompt生成器
                 
                 Args:
                     keywords_path: logic_keywords.json的路径，None则使用默认路径
-                    prompt_template: 自定义prompt模板，None则根据JSON中的大类动态生成
-                        支持占位符: JSON中定义的任何大类（使用中文键名）
                     use_chinese: 是否使用中文模式
                         - False（默认）: 使用英文标签值生成prompt
                         - True: 使用中文标签键名生成prompt
@@ -267,112 +214,66 @@ class PromptGenerator:
         with open(keywords_path, 'r', encoding='utf-8') as f:
             full_data = json.load(f)
 
-        # 从 "PL标签" 下提取数据（必须存在）
-        if "PL\u6807\u7b7e" not in full_data:
-            raise KeyError("logic_keywords.json must contain key \"PL标签\"")
-        self.data = full_data["PL\u6807\u7b7e"]
-
-        # 从JSON动态获取第一个大类的子类列表（用于分配规则）
-        first_category = self._get_first_category_with_subcategories()
-        self._category_list = list(self.data.get(first_category, {}).keys()) if first_category else []
-
-        # 从JSON读取分配规则（必须在JSON中定义，没有默认规则）
-        # 过滤掉以 _ 开头的说明字段
-        raw_rules = self.data.get("\u5206\u914d\u89c4\u5219", {})
-        self._allocation_rules = {k: v for k, v in raw_rules.items() if not k.startswith("_")}
-
-        # 预计算每个类别的动作池（基于分配规则）
-        self._action_pools = self._build_action_pools()
+        # 从 "标签" 下提取数据（必须存在）
+        if "\u6807\u7b7e" not in full_data:
+            raise KeyError("logic_keywords.json must contain key \"标签\"")
+        self.data = full_data["\u6807\u7b7e"]
+        self._full_data = full_data  # 保留完整JSON引用，读取顶层键
 
         # 动态发现JSON中的所有大类
         self._simple_categories = self._discover_simple_categories()
 
-        # 设置prompt模板（如果未提供，则根据JSON中的大类动态生成）
-        if prompt_template is None:
-            self._prompt_template = self._generate_default_template()
-        else:
-            self._prompt_template = prompt_template
+        # 统一模式的分类prompt模板（从JSON读取）
+        raw_templates = self._full_data.get("自动提纯prompt", {})
+        self._per_cat_templates = {k: v for k, v in raw_templates.items() if not k.startswith("_")}
 
-    def _get_first_category_with_subcategories(self) -> Optional[str]:
-        """获取第一个有子类别的大类名称（用于分配规则）"""
-        for key, value in self.data.items():
-            if key in self.RESERVED_KEYS or key.startswith("_"):
-                continue
-            if isinstance(value, dict) and value:
-                first_value = next(iter(value.values()), None)
-                if isinstance(first_value, dict):
-                    return key
-        return None
+        # 其他参数设置
+        other = self._full_data.get("其他参数设置", {})
+        self._video_name_format = other.get("输出视频命名格式", "{主体}_{动作}_{场景}_{情绪}_{起始帧}_{视频解析名}")
+        self._required_categories = [c for c in other.get("必有标签", []) if isinstance(c, str)]
+        self._required_subcategories = other.get("必有子类", []) or []
+        self._required_labels = other.get("必有孙类", []) or []
 
-    @property
-    def CATEGORY_LIST(self) -> List[str]:
-        """Return dynamic subject category list loaded from keywords JSON."""
-        return self._category_list
+        # 构建子类→父类+标签查找索引
+        self._subcategory_index = self._build_subcategory_index()
 
-    def _build_action_pools(self) -> Dict[str, Dict[str, str]]:
-        """
-                构建每个主体类别对应的动作池
-                
-                基于通用分配规则，从 分配规则.主体.动作 中读取规则。
-                支持：
-                1. 新增主体类别自动适配
-                2. 通过JSON中的"分配规则"自定义规则
-                
-        """
-        action_pools = {}
-        action_data = self.data.get("\u52a8\u4f5c", {})
+        # 一致性校验
+        self._warnings = self._validate_consistency()
+        for w in self._warnings:
+            print(f"\u26a0\ufe0f\u26a0\ufe0f\u26a0\ufe0f [logic_keywords] {w}")
 
-        # 获取 主体->动作 的分配规则
-        subject_action_rules = self._allocation_rules.get("\u4e3b\u4f53", {}).get("\u52a8\u4f5c", {})
+    def _validate_consistency(self) -> list:
+        """校验 必有标签 ↔ 标签.* ↔ MiniCPM验证Prompt 的一致性，返回警告列表。"""
+        warnings = []
+        special = self.RESERVED_KEYS | {'_说明'}
+        all_cats = {k for k in self.data if k not in special and not k.startswith('_')
+                    and isinstance(self.data.get(k), dict)}
+        required_set = set(self._required_categories)
 
-        for category in self._category_list:
-            # 获取该类别的动作规则
-            action_subcategories = subject_action_rules.get(category)
+        for cat in required_set - all_cats:
+            warnings.append(f"必有标签 '{cat}' 在 标签.* 中未定义，MiniRerank 验证将失败")
+        for cat in all_cats - required_set:
+            warnings.append(f"大类 '{cat}' 未加入 必有标签，MiniRerank 将跳过该类别验证")
 
-            if action_subcategories is None:
-                # 未定义规则的新类别，默认使用所有动作
-                action_subcategories = list(action_data.keys())
+        verify_cfg = self._full_data.get('其他参数设置', {}).get('MiniCPM验证Prompt', {})
+        zh_tpl = verify_cfg.get('zh', {}) if isinstance(verify_cfg, dict) else {}
+        tpl_keys = {k for k in zh_tpl if not k.startswith('_')}
+        for cat in tpl_keys - all_cats:
+            warnings.append(f"MiniCPM验证Prompt 中的 '{cat}' 在 标签.* 中未定义")
+        for cat in required_set & all_cats - tpl_keys:
+            warnings.append(f"大类 '{cat}' 缺少 MiniCPM验证Prompt 模板，将使用通用占位符")
 
-            # 合并所有指定的动作子类别
-            pool = {}
-            for subcat in action_subcategories:
-                if subcat in action_data:
-                    pool.update(action_data[subcat])
-
-            # 如果池为空，使用所有动作作为后备
-            if not pool:
-                for subcat_data in action_data.values():
-                    pool.update(subcat_data)
-
-            action_pools[category] = pool
-
-        return action_pools
+        return warnings
 
     def _discover_simple_categories(self) -> Dict[str, Dict[str, str]]:
-        """
-                动态发现JSON中的所有大类
-                
-                大类是指除了保留字段（分配规则）之外的所有键。
-                这些大类会被用于生成默认模板和遍历组合。
-                例如：主体、动作、场景、情绪等。
-                
-                Returns:
-                    Dict[str, Dict[str, str]]: {大类名: {中文: 英文, ...}}
-                
-        """
+        """动态发现JSON中的所有大类，返回 {大类名: {中文: 英文}}。"""
         simple_categories = {}
-
         for key, value in self.data.items():
-            # 跳过保留字段和以 _ 开头的说明字段
             if key in self.RESERVED_KEYS or key.startswith("_"):
                 continue
-
-            # 检查是否是有效的大类（包含子类别或直接是 {中文: 英文} 映射）
             if isinstance(value, dict) and value:
-                # 检查是否是嵌套结构（有子类别）
                 first_value = next(iter(value.values()), None)
                 if isinstance(first_value, dict):
-                    # 嵌套结构，合并所有子类别
                     merged = {}
                     for subcat_name, subcat_data in value.items():
                         if isinstance(subcat_data, dict) and not subcat_name.startswith("_"):
@@ -380,515 +281,119 @@ class PromptGenerator:
                     if merged:
                         simple_categories[key] = merged
                 elif isinstance(first_value, str):
-                    # 直接是 {中文: 英文} 映射
                     simple_categories[key] = value
-
         return simple_categories
 
-    def _analyze_allocation_dependencies(self) -> Dict[str, List[str]]:
-        """
-                分析分配规则中的依赖关系
-                
-                Returns:
-                    Dict[目标大类, List[源大类]]: 每个目标大类依赖哪些源大类
-                
-        """
-        dependencies = {}
+    def _build_subcategory_index(self) -> Dict[str, tuple]:
+        """构建子类→(标签字典, 父大类名) 索引，用于 prompt 占位符解析。
 
-        for source_cat, target_rules in self._allocation_rules.items():
-            if not isinstance(target_rules, dict):
+        Returns: {"生物": ({"男人":"man",...}, "主体"), "生物行为": ({"奔跑":"running",...}, "动作"), ...}
+        """
+        index = {}
+        for cat_name, cat_data in self.data.items():
+            if cat_name in self.RESERVED_KEYS or cat_name.startswith("_"):
                 continue
+            if not isinstance(cat_data, dict):
+                continue
+            for sub_name, sub_data in cat_data.items():
+                if not sub_name.startswith("_") and isinstance(sub_data, dict):
+                    index[sub_name] = (sub_data, cat_name)
+        # 同时注册大类名本身（如 {主体}）→ 合并该大类下所有子类的标签
+        for key in self._simple_categories:
+            if key not in index:
+                index[key] = (self._simple_categories[key], key)
+        return index
 
-            for target_cat in target_rules.keys():
-                if target_cat.startswith("_"):
+    def _resolve_placeholder(self, placeholder: str) -> Tuple[Dict[str, str], str, str]:
+        """解析占位符 {名称} → (标签dict, 标签_display_name, 所属大类)。
+
+        Returns None 若无法解析。
+        """
+        if placeholder in self._subcategory_index:
+            labels, parent = self._subcategory_index[placeholder]
+            return labels, placeholder, parent
+        # 尝试模糊匹配
+        for key in self._subcategory_index:
+            if placeholder in key:
+                labels, parent = self._subcategory_index[key]
+                return labels, key, parent
+        return None
+
+    def iterate_all_labels_flat(self):
+        """按\"自动提纯prompt\"模板生成独立按类别提示词。
+
+        模板格式: {zh_prompt: en_prompt}，与标签的 zh:en 结构一致。
+        根据 self.use_chinese 选择中文或英文模板，占位符用对应语言的标签值填充。
+        """
+        for cat_name, templates in self._per_cat_templates.items():
+            if not isinstance(templates, list):
+                templates = [templates]
+            for template_entry in templates:
+                # 解析 zh:en 模板对
+                if isinstance(template_entry, str):
+                    # 兼容旧格式纯字符串
+                    zh_tpl = template_entry
+                    en_tpl = template_entry
+                elif isinstance(template_entry, dict) and template_entry:
+                    zh_tpl = list(template_entry.keys())[0]
+                    en_tpl = list(template_entry.values())[0]
+                else:
                     continue
-                if target_cat not in dependencies:
-                    dependencies[target_cat] = []
-                dependencies[target_cat].append(source_cat)
 
-        return dependencies
-
-    def _get_excluded_categories(self) -> set:
-        """
-                获取需要从简单大类遍历中排除的大类
-                
-                排除：
-                1. 第一个有子类别的大类（如"主体"）- 通过 get_subjects() 单独处理
-                2. 分配规则中作为目标的大类（如"动作"）- 通过 get_actions() 单独处理
-                
-                这些大类在 iterate_all_combinations() 中已经通过专门的方法处理，
-                不应该再次包含在简单大类的笛卡尔积遍历中。
-                
-                Returns:
-                    需要排除的大类名称集合
-                
-        """
-        excluded = set()
-
-        # 1. 第一个有子类别的大类（如"主体"）
-        first_category = self._get_first_category_with_subcategories()
-        if first_category:
-            excluded.add(first_category)
-
-        # 2. 分配规则中作为目标的大类（如"动作"）
-        for source_cat, target_rules in self._allocation_rules.items():
-            if isinstance(target_rules, dict):
-                for target_cat in target_rules.keys():
-                    if not target_cat.startswith("_"):
-                        excluded.add(target_cat)
-
-        return excluded
-
-    def _generate_default_template(self) -> str:
-        """
-                根据JSON中实际存在的大类动态生成默认模板
-                
-                模板格式: "A {情绪} photo of a {主体} {动作} in {场景}"
-                如果某个大类不存在，则不包含在模板中。
-                
-                Returns:
-                    动态生成的模板字符串
-                
-        """
-        # 基础模板部分
-        parts = ["A"]
-
-        # 检查情绪是否存在
-        if "\u60c5\u7eea" in self._simple_categories:
-            parts.append("{\u60c5\u7eea}")
-
-        # 检查镜头是否存在
-        if "\u955c\u5934" in self._simple_categories:
-            parts.append("{\u955c\u5934}")
-
-        parts.append("photo of a {\u4e3b\u4f53} {\u52a8\u4f5c}")
-
-        # 检查场景是否存在
-        if "\u573a\u666f" in self._simple_categories:
-            parts.append("in {\u573a\u666f}")
-
-        # 添加其他简单大类（排除已处理的）
-        handled = {"\u60c5\u7eea", "\u955c\u5934", "\u573a\u666f"}
-        for cat_name in self._simple_categories:
-            if cat_name not in handled:
-                parts.append(f"with {{{cat_name}}}")
-
-        return " ".join(parts)
-
-    def get_allocated_values_for_category(self, target_cat: str,
-                                          source_values: Dict[str, str]) -> Dict[str, str]:
-        """
-                根据分配规则获取目标大类的允许值
-                
-                Args:
-                    target_cat: 目标大类名称
-                    source_values: {源大类名: 当前源子类名} 的映射
-                
-                Returns:
-                    Dict[str, str]: {中文: 英文, ...} 允许的目标值
-                
-        """
-        # 检查是否有针对该目标大类的分配规则
-        target_data = self.data.get(target_cat, {})
-
-        # 收集所有允许的子类别
-        allowed_subcats = set()
-        has_rule = False
-
-        for source_cat, source_subcat in source_values.items():
-            if source_cat in self._allocation_rules:
-                target_rules = self._allocation_rules[source_cat].get(target_cat, {})
-                if target_rules and source_subcat in target_rules:
-                    has_rule = True
-                    allowed_subcats.update(target_rules[source_subcat])
-
-        if not has_rule:
-            # 没有规则，返回目标大类的所有值
-            return self._simple_categories.get(target_cat, {})
-
-        # 根据允许的子类别合并值
-        result = {}
-        for subcat_name in allowed_subcats:
-            if subcat_name in target_data:
-                subcat_data = target_data[subcat_name]
-                if isinstance(subcat_data, dict):
-                    result.update(subcat_data)
-
-        # 如果结果为空，返回所有值作为后备
-        if not result:
-            return self._simple_categories.get(target_cat, {})
-
-        return result
-
-    @property
-    def prompt_template(self) -> str:
-        """获取当前 prompt 模板。"""
-        return self._prompt_template
-
-    @prompt_template.setter
-    def prompt_template(self, template: str):
-        """设置 prompt 模板。"""
-        self._prompt_template = template or self._generate_default_template()
-
-    def get_subjects(self, category: str) -> Dict[str, str]:
-        """Return all subjects for a given category with fallback."""
-        subjects_data = self.data.get("\u4e3b\u4f53", {})
-        if category in subjects_data:
-            return subjects_data[category]
-        # 回退到第一个可用类别
-        if subjects_data:
-            first_category = list(subjects_data.keys())[0]
-            return subjects_data[first_category]
-        return {}
-
-    def get_actions(self, category: str) -> Dict[str, str]:
-        """获取指定类别的所有合法动作（完全动态）"""
-        if category in self._action_pools:
-            return self._action_pools[category]
-        # 回退到第一个可用类别
-        if self._action_pools:
-            first_category = list(self._action_pools.keys())[0]
-            return self._action_pools[first_category]
-        return {}
-
-    def reload_keywords(self, keywords_path: str = None, prompt_template: str = None):
-        """
-                重新加载关键词文件（支持热更新）
-                
-                Args:
-                    keywords_path: 新的关键词文件路径，None则使用原路径
-                    prompt_template: 新的prompt模板，None则保持原模板
-                
-        """
-        if keywords_path is None:
-            resolver = PathResolver()
-            keywords_path = str(resolver.project_root / 'logic_keywords.json')
-
-        with open(keywords_path, 'r', encoding='utf-8') as f:
-            full_data = json.load(f)
-
-        # 从 "PL标签" 下提取数据（必须存在）
-        if "PL\u6807\u7b7e" not in full_data:
-            raise KeyError("logic_keywords.json must contain key \"PL标签\"")
-        self.data = full_data["PL\u6807\u7b7e"]
-
-        # 重新计算
-        first_category = self._get_first_category_with_subcategories()
-        self._category_list = list(self.data.get(first_category, {}).keys()) if first_category else []
-        raw_rules = self.data.get("\u5206\u914d\u89c4\u5219", {})
-        self._allocation_rules = {k: v for k, v in raw_rules.items() if not k.startswith("_")}
-        self._action_pools = self._build_action_pools()
-        self._simple_categories = self._discover_simple_categories()
-
-        # 更新模板（如果提供）
-        if prompt_template is not None:
-            self._prompt_template = prompt_template
-
-    def iterate_all_combinations(self,
-                                  categories: List[str] = None) -> Generator[Dict, None, None]:
-        """
-                遍历所有合理的组合
-                
-                动态支持JSON中定义的所有大类（主体、动作 + 简单大类如场景、情绪、镜头等）。
-                大类会根据JSON文件动态检测，无需硬编码。
-                支持分配规则：任意大类之间的约束关系。
-                
-                Args:
-                    categories: 要遍历的主体类别列表，None则遍历所有类别
-                
-                Yields:
-                    包含组合信息的字典，包括:
-                    - prompt: 生成的prompt
-                    - category: 主体类别
-                    - subject_cn/en, action_cn/en: 必需的核心大类
-                    - {simple_category}_cn/en: 简单大类（如场景、情绪、镜头等，根据JSON动态生成）
-                
-        """
-        if categories is None:
-            categories = self.CATEGORY_LIST
-
-        # 分析分配规则依赖关系
-        dependencies = self._analyze_allocation_dependencies()
-
-        # 获取需要排除的大类（主体、动作等已单独处理的大类）
-        excluded_cats = self._get_excluded_categories()
-
-        # 获取简单大类名称（排除已单独处理的大类）
-        simple_cat_names = [cat for cat in self._simple_categories.keys() if cat not in excluded_cats]
-
-        # 分离独立大类和依赖大类
-        # 独立大类：不依赖其他大类的（不在 dependencies 中作为目标）
-        # 依赖大类：依赖其他大类的（在 dependencies 中作为目标）
-        independent_cats = [cat for cat in simple_cat_names if cat not in dependencies]
-        dependent_cats = [cat for cat in simple_cat_names if cat in dependencies]
-
-        for category in categories:
-            subjects = self.get_subjects(category)
-            actions = self.get_actions(category)
-
-            # 如果没有主体或动作，跳过
-            if not subjects or not actions:
-                continue
-
-            # 遍历??和动作的组合
-            for (subj_cn, subj_en) in subjects.items():
-                for (act_cn, act_en) in actions.items():
-                    # 构建当前源值（用于分配规则查询）
-                    # 注意：主体的子类是 category（如"生物"、"载具"等）
-                    source_values = {"\u4e3b\u4f53": category}
-
-                    # 遍历独立大类的组合
-                    for independent_combo in self._iterate_categories_product(independent_cats):
-                        # 更新源值（独立大类的值可能影响依赖大类）
-                        current_source_values = source_values.copy()
-                        for cat_name, (cat_cn, cat_en) in independent_combo.items():
-                            current_source_values[cat_name] = cat_cn
-
-                        # 遍历依赖大类的组合（基于分配规则）
-                        for dependent_combo in self._iterate_dependent_categories(
-                            dependent_cats, current_source_values
-                        ):
-                            # 合并所有简单大类的值
-                            simple_combo = {**independent_combo, **dependent_combo}
-
-                            # 根据 use_chinese 选择使用中文或英文标签
-                            if self.use_chinese:
-                                # 中文模式：使用中文标签键名
-                                prompt_kwargs = {cat_name: values[0] for cat_name, values in simple_combo.items()}
-                                prompt = self._generate_prompt_dynamic(
-                                    subj_cn, act_cn, **prompt_kwargs
-                                )
-                            else:
-                                # 英文模式：使用英文标签值
-                                prompt_kwargs = {cat_name: values[1] for cat_name, values in simple_combo.items()}
-                                prompt = self._generate_prompt_dynamic(
-                                    subj_en, act_en, **prompt_kwargs
-                                )
-
-                            # 构建结果字典
-                            result = {
-                                "prompt": prompt,
-                                "category": category,
-                                "subject_cn": subj_cn,
-                                "subject_en": subj_en,
-                                "action_cn": act_cn,
-                                "action_en": act_en,
-                            }
-
-                            # 添加简单大类到结果（向后兼容：同时添加旧字段名）
-                            for cat_name, (cat_cn, cat_en) in simple_combo.items():
-                                result[f"{cat_name}_cn"] = cat_cn
-                                result[f"{cat_name}_en"] = cat_en
-                                # 向后兼容：为常见大类添加英文字段名
-                                if cat_name == "\u573a\u666f":
-                                    result["scene_cn"] = cat_cn
-                                    result["scene_en"] = cat_en
-                                elif cat_name == "\u60c5\u7eea":
-                                    result["mood_cn"] = cat_cn
-                                    result["mood_en"] = cat_en
-                                elif cat_name == "\u955c\u5934":
-                                    result["lens_cn"] = cat_cn
-                                    result["lens_en"] = cat_en
-
-                            yield result
-
-
-    def _iterate_categories_product(self,
-                                    cat_names: List[str]) -> Generator[Dict[str, tuple], None, None]:
-        """
-                遍历指定大类的笛卡尔积
-                
-                Args:
-                    cat_names: 大类名称列表
-                
-                Yields:
-                    Dict[大类名, (中文, 英文)]
-                
-        """
-        if not cat_names:
-            yield {}
-            return
-
-        # 构建每个大类的值列表
-        all_values = []
-        for cat_name in cat_names:
-            values_dict = self._simple_categories.get(cat_name, {})
-            if values_dict:
-                cat_values = [(cat_name, cn, en) for cn, en in values_dict.items()]
-                all_values.append(cat_values)
-            else:
-                # 空大类，跳过
-                all_values.append([(cat_name, "", "")])
-
-        # 使用笛卡尔积遍历所有组合
-        for combo in itertools.product(*all_values):
-            result = {}
-            for cat_name, cn, en in combo:
-                if cn or en:  # 跳过空值
-                    result[cat_name] = (cn, en)
-            yield result
-
-    def _iterate_dependent_categories(self,
-                                      cat_names: List[str],
-                                      source_values: Dict[str, str]) -> Generator[Dict[str, tuple], None, None]:
-        """
-                遍历依赖大类的组合（基于分配规则）
-                
-                Args:
-                    cat_names: 依赖大类名称列表
-                    source_values: {源大类名: 当前源子类名} 的映射
-                
-                Yields:
-                    Dict[大类名, (中文, 英文)]
-                
-        """
-        if not cat_names:
-            yield {}
-            return
-
-        # 构建每个依赖大类的允许值列表
-        all_values = []
-        for cat_name in cat_names:
-            # 根据分配规则获取允许的值
-            allowed_values = self.get_allocated_values_for_category(cat_name, source_values)
-            if allowed_values:
-                cat_values = [(cat_name, cn, en) for cn, en in allowed_values.items()]
-                all_values.append(cat_values)
-            else:
-                # 没有允许的值，使用空值
-                all_values.append([(cat_name, "", "")])
-
-        # 使用笛卡尔积遍历所有组合
-        for combo in itertools.product(*all_values):
-            result = {}
-            for cat_name, cn, en in combo:
-                if cn or en:  # 跳过空值
-                    result[cat_name] = (cn, en)
-            yield result
-
-    def _generate_prompt_dynamic(self, subject: str, action: str, **simple_values) -> str:
-        """
-                动态生成prompt（支持任意简单大类）
-                
-                Args:
-                    subject: 主体（英文）
-                    action: 动作（英文）
-                    **simple_values: 简单大类的值，键为大类名（中文），值为英文
-                
-                Returns:
-                    生成的prompt字符串
-                
-        """
-        # 构建替换字典（使用中文键名）
-        values = {
-            "\u4e3b\u4f53": subject,
-            "\u52a8\u4f5c": action,
-        }
-        # 添加简单大类的值
-        values.update(simple_values)
-
-        # 使用模板格式化
-        try:
-            return self._prompt_template.format(**values)
-        except KeyError as e:
-            # 如果模板中有未提供的占位符，尝试用空字符串替换
-            print(f"[Warning] 模板占位符 {e} 未提供值，使用空字符串")
-            # 找出模板中的所有占位符
-            import re
-            placeholders = re.findall(r'\{(\w+)\}', self._prompt_template)
-            for ph in placeholders:
-                if ph not in values:
-                    values[ph] = ""
-            return self._prompt_template.format(**values)
-
-    def count_total_combinations(self, categories: List[str] = None) -> int:
-        """
-                计算总组合数
-                
-                动态计算主体、动作和所有简单大类的组合数。
-                排除已通过 get_subjects() 和 get_actions() 单独处理的大类。
-                
-        """
-        if categories is None:
-            categories = self.CATEGORY_LIST
-
-        # 获取需要排除的大类（主体、动作等已单独处理的大类）
-        excluded_cats = self._get_excluded_categories()
-
-        # 计算简单大类的组合数（排除已单独处理的大类）
-        simple_count = 1
-        for cat_name, values in self._simple_categories.items():
-            if cat_name not in excluded_cats and values:
-                simple_count *= len(values)
-
-        total = 0
-        for category in categories:
-            subjects_count = len(self.get_subjects(category))
-            actions_count = len(self.get_actions(category))
-            total += subjects_count * actions_count * simple_count
-
-        return total
-
-    def iterate_prompts_only(self, categories: List[str] = None) -> Generator[str, None, None]:
-        """
-                轻量版遍历：只生成 prompt 字符串，不创建完整字典
-                
-                用于保存 prompts.pkl 时避免内存爆炸。
-                与 iterate_all_combinations() 生成相同顺序的 prompt，但不创建 metadata 字典。
-                
-                Args:
-                    categories: 要遍历的主体类别列表，None则遍历所有类别
-                
-                Yields:
-                    prompt 字符串
-                
-        """
-        if categories is None:
-            categories = self.CATEGORY_LIST
-
-        # 分析分配规则依赖关系
-        dependencies = self._analyze_allocation_dependencies()
-
-        # 获取需要排除的大类（主体、动作等已单独处理的大类）
-        excluded_cats = self._get_excluded_categories()
-
-        # 获取简单大类名称（排除已单独处理的大类）
-        simple_cat_names = [cat for cat in self._simple_categories.keys() if cat not in excluded_cats]
-
-        # 分离独立大类和依赖大类
-        independent_cats = [cat for cat in simple_cat_names if cat not in dependencies]
-        dependent_cats = [cat for cat in simple_cat_names if cat in dependencies]
-
-        for category in categories:
-            subjects = self.get_subjects(category)
-            actions = self.get_actions(category)
-
-            if not subjects or not actions:
-                continue
-
-            for (subj_cn, subj_en) in subjects.items():
-                for (act_cn, act_en) in actions.items():
-                    source_values = {"\u4e3b\u4f53": category}
-
-                    for independent_combo in self._iterate_categories_product(independent_cats):
-                        current_source_values = source_values.copy()
-                        for cat_name, (cat_cn, cat_en) in independent_combo.items():
-                            current_source_values[cat_name] = cat_cn
-
-                        for dependent_combo in self._iterate_dependent_categories(
-                            dependent_cats, current_source_values
-                        ):
-                            simple_combo = {**independent_combo, **dependent_combo}
-
-                            # 根据 use_chinese 选择使用中文或英文标签
-                            if self.use_chinese:
-                                prompt_kwargs = {cat_name: values[0] for cat_name, values in simple_combo.items()}
-                                prompt = self._generate_prompt_dynamic(subj_cn, act_cn, **prompt_kwargs)
-                            else:
-                                prompt_kwargs = {cat_name: values[1] for cat_name, values in simple_combo.items()}
-                                prompt = self._generate_prompt_dynamic(subj_en, act_en, **prompt_kwargs)
-
-                            yield prompt
+                tpl = zh_tpl if self.use_chinese else en_tpl
+                if not tpl or not tpl.strip():
+                    continue
+
+                # 解析占位符
+                phs = re.findall(r'\{([^}]+)\}', tpl)
+                if not phs:
+                    continue
+
+                # 解析每个占位符 → 标签集
+                label_sets = []      # [(ph_name, ph_display, {cn: en}, parent_cat)]
+                for ph in phs:
+                    resolved = self._resolve_placeholder(ph)
+                    if resolved is None:
+                        continue
+                    labels, display, parent = resolved
+                    if not labels:
+                        continue
+                    label_sets.append((ph, display, labels, parent))
+
+                if not label_sets:
+                    continue
+
+                # 笛卡尔积
+                label_dicts = [list(ls[2].items()) for ls in label_sets]  # [[(cn,en),...], ...]
+                for combo in itertools.product(*label_dicts):
+                    fmt = {}
+                    meta = {}    # {display_name: cn_string}
+                    # 向后兼容字段：映射到旧格式的大类名
+                    compat = {}
+                    for i, (label_cn, label_en) in enumerate(combo):
+                        ph_name = label_sets[i][0]
+                        display = label_sets[i][1]
+                        parent = label_sets[i][3]
+                        # 占位符填充值
+                        fmt[ph_name] = label_cn if self.use_chinese else label_en
+                        meta[display] = label_cn
+                        # 动态字段：{大类名}_cn / {大类名}_en（只写当前模板所属大类）
+                        if parent == cat_name:
+                            compat[f"{parent}_cn"] = label_cn
+                            compat[f"{parent}_en"] = label_en
+
+                    prompt = tpl.format(**fmt)
+                    result = {
+                        "prompt": prompt,
+                        "prompt_cn": prompt if self.use_chinese else "",
+                        "prompt_en": "" if self.use_chinese else prompt,
+                        "category": cat_name,
+                        "label_cn": list(meta.values())[0] if len(meta) == 1 else "",
+                        "label_en": list(compat.values())[1] if len(compat) >= 2 else "",
+                        "labels": meta,
+                    }
+                    result.update(compat)
+                    yield result
 
 def extract_model_name_from_index(index_path: str) -> str:
     """从索引路径名中解析模型名称。"""
@@ -908,12 +413,12 @@ def extract_model_name_from_index(index_path: str) -> str:
     if dim_match:
         remaining = remaining[:dim_match.start()]
 
-    # 找到第一个下划线后的部分作为模型名
-    first_underscore = remaining.find('_')
-    if first_underscore == -1:
+    # 找到最后一个下划线后的部分作为模型名（模型名不含下划线）
+    last_underscore = remaining.rfind('_')
+    if last_underscore == -1:
         return None
 
-    return remaining[first_underscore + 1:]
+    return remaining[last_underscore + 1:]
 
 
 def detect_truncate_dim_from_index_paths(index_paths) -> int:
@@ -969,7 +474,6 @@ class AutoSceneSearcher:
                  io_workers: int = 8,
                  use_fp16: bool = False,
                  cache_dir: str = None,
-                 prompt_template: str = None,
                  video_name_format: str = None,
                  use_chinese: bool = False):
         """
@@ -979,8 +483,6 @@ class AutoSceneSearcher:
                     io_workers: I/O工作线程数
                     use_fp16: 是否使用FP16精度
                     cache_dir: 缓存目录
-                    prompt_template: 自定义prompt模板，支持占位符: {情绪}, {镜头}, {主体}, {动作}, {场景}
-                        以及JSON中定义的任何扩展大类（使用中文键名）。默认: "A {情绪} {镜头} of a {主体} {动作} in {场景}"
                     video_name_format: 自定义视频名称格式模板，支持占位符: {镜头}, {情绪}, {场景}, {主体}, {动作}, {起始帧}, {视频解析名}
                         以及JSON中定义的任何扩展大类（使用中文键名）。默认: "{镜头}_{情绪}_{场景}_{主体}_{动作}_{起始帧}_{视频解析名}"
                     use_chinese: 是否使用中文模式
@@ -995,7 +497,7 @@ class AutoSceneSearcher:
         self.use_chinese = use_chinese
 
         # 初始化Prompt生成器（传递 use_chinese 参数）
-        self.prompt_generator = PromptGenerator(prompt_template=prompt_template, use_chinese=use_chinese)
+        self.prompt_generator = PromptGenerator(use_chinese=use_chinese)
 
         # 保存配置，延迟加载模型
         self.io_workers = io_workers
@@ -1013,6 +515,97 @@ class AutoSceneSearcher:
 
         # 模型相关（延迟初始化）
         self.processor = None
+
+    def _apply_per_category_intersection(self, result_view, prompt_cache, model_name):
+        """对搜索结果做跨类别交集过滤（流式分批，不一次性加载全部结果）。
+
+        每个场景现在存储多条结果（每条对应一个类别），取每类最高相似度。
+        场景必须命中"必有标签"中配置的所有类别才保留。
+        """
+        cat_idx_map = prompt_cache.get_category_idx_map(model_name)
+        if not cat_idx_map or len(cat_idx_map) < 2:
+            return result_view
+
+        required = getattr(self.prompt_generator, '_required_categories', [])
+        all_categories = set(required) if required else set(cat_idx_map.keys())
+        req_sub = getattr(self.prompt_generator, '_required_subcategories', [])
+        req_lbl = getattr(self.prompt_generator, '_required_labels', [])
+
+        # 流式分批读取，每批大小跟随 lmdb_write_batch_size
+        from .batch_text_search import LMDBCache, LMDBResultView
+        import pickle
+        batch_size = getattr(self, '_lmdb_write_batch_size', 1000) or 1000
+        pending: Dict[str, dict] = {}  # scene_base → {category: data}
+
+        # 创建新 LMDB 用于写过滤结果
+        import tempfile
+        new_cache_dir = os.path.join(
+            os.path.dirname(result_view.cache_dir),
+            'intersection_filtered_' + str(int(time.time()))
+        )
+        new_cache = LMDBCache(new_cache_dir, map_size=1 * 1024 * 1024 * 1024)
+        filtered_count = 0
+
+        try:
+            for batch in result_view.iter_batches(batch_size=batch_size):
+                for key, data in batch:
+                    if not isinstance(data, dict):
+                        continue
+                    prompt_idx = data.get('prompt_idx', -1)
+                    cat = data.get('category')
+                    if cat is None:
+                        for c, idxs in cat_idx_map.items():
+                            if prompt_idx in idxs:
+                                cat = c
+                                break
+                    if cat is None:
+                        continue
+                    video_name = os.path.basename(data.get('video_path', '')) or ''
+                    scene_base = f"{data.get('start_frame', 0)}_{video_name}"
+                    if scene_base not in pending:
+                        pending[scene_base] = {}
+                    existing = pending[scene_base].get(cat)
+                    if existing is None or data.get('similarity', 0) > existing.get('similarity', 0):
+                        pending[scene_base][cat] = data
+
+                # 每批处理完检查哪些场景已收集齐全
+                completed = []
+                for scene_base, cats in pending.items():
+                    if set(cats.keys()) >= all_categories:
+                        completed.append(scene_base)
+                for scene_base in completed:
+                    cats = pending.pop(scene_base)
+                    best_cat = max(cats.keys(), key=lambda c: cats[c].get('similarity', 0))
+                    merged = dict(cats[best_cat])
+                    all_lbl = {}
+                    for c in cats:
+                        lbl = cats[c].get('labels', {})
+                        if isinstance(lbl, dict):
+                            all_lbl.update(lbl)
+                        for key, value in cats[c].items():
+                            if key.endswith('_cn') or key.endswith('_en'):
+                                merged.setdefault(key, value)
+                    merged['all_labels'] = all_lbl
+                    merged['result_name'] = _generate_merged_result_name(merged, self.video_name_format)
+                    if req_sub and not set(req_sub).issubset(all_lbl.keys()):
+                        continue
+                    if req_lbl and not set(req_lbl).issubset(all_lbl.values()):
+                        continue
+                    new_cache.put_result(scene_base, merged)
+                    filtered_count += 1
+
+        finally:
+            new_cache.close()
+
+        if filtered_count == 0:
+            import shutil
+            shutil.rmtree(new_cache_dir, ignore_errors=True)
+            # 不凑齐就不输出，与 OpenAI CLIP 行为一致
+            return LMDBResultView(new_cache_dir)
+
+        result_view.close()
+        result_view._cache.destroy()
+        return LMDBResultView(new_cache_dir)
 
     def find_index_files(self, index_dir: str = None) -> List[str]:
         """
@@ -1168,6 +761,7 @@ class AutoSceneSearcher:
             field_name='lance_batch_size',
         )
         top_k = normalize_top_k(top_k)
+        self._lmdb_write_batch_size = lmdb_write_batch_size
         if index_paths is None:
             index_paths = self.find_index_files()
         if not index_paths:
@@ -1206,10 +800,9 @@ class AutoSceneSearcher:
             from A_coreUtils.prompt.prompt_vector_cache import PromptVectorCache
             effective_prompt_cache_batch_size = prompt_cache_batch_size
             if effective_prompt_cache_batch_size is None:
-                effective_prompt_cache_batch_size = max(1, int(self.prompt_generator.count_total_combinations() or 0))
+                effective_prompt_cache_batch_size = max(1, sum(1 for _ in self.prompt_generator.iterate_all_labels_flat()))
             prompt_cache = PromptVectorCache(
                 processor=None,
-                prompt_template=self.prompt_generator.prompt_template,
                 batch_size=effective_prompt_cache_batch_size,
                 use_chinese=self.use_chinese
             )
@@ -1273,7 +866,6 @@ class AutoSceneSearcher:
             'lance_batch_size': lance_batch_size,
             'use_diskcache': use_diskcache,
             'vector_dedup_threshold': vector_dedup_threshold,
-            'prompt_template': self.prompt_generator.prompt_template,
             'use_chinese': self.use_chinese,
             'index_files': sorted([os.path.basename(p) for p in index_paths]),
         }
@@ -1318,11 +910,13 @@ class AutoSceneSearcher:
             reranker_weight=SimilarityThresholdConfig.RERANKER_WEIGHT,
             reranker_output_resolution=reranker_output_resolution,
             rerank_batch_size=rerank_batch_size,
+            rerank_per_cat_top_k=3,
             candidate_batch_size=candidate_batch_size,
             search_mode=search_mode,
             result_top_k=top_k,
             config_hash=config_hash,
             prompt_meta_lookup=prompt_meta_lookup,
+            required_categories=getattr(self.prompt_generator, '_required_categories', None),
         )
         if batch_engine._preload_all:
             if batch_engine.all_features_gpu is None:
@@ -1362,6 +956,7 @@ class AutoSceneSearcher:
                     continue
                 cache_iterator.reset()
                 clip_batch_kwargs = dict(search_kwargs)
+                clip_batch_kwargs['required_categories'] = None  # 分批CLIP不提前过滤
                 clip_batch_kwargs['cache_iterator'] = cache_iterator
                 clip_batch_kwargs['threshold'] = clip_initial_threshold
                 clip_batch_kwargs['use_diskcache'] = True
@@ -1397,7 +992,10 @@ class AutoSceneSearcher:
             result_view = batch_engine.search_with_batched_cache(**rerank_search_kwargs)
         if result_view is None:
             return None
-        print(f"[优化搜索] 批量搜索完成! 耗时 {time.time() - start_time:.2f}s, 结果数: {result_view.count()}")
+        # 跨类别交集过滤
+        if result_view.count() > 0:
+            result_view = self._apply_per_category_intersection(result_view, prompt_cache, model_name)
+            print(f"[交集过滤] 过滤后结果数: {result_view.count()}")
         if vector_dedup_threshold is not None and result_view.count() > 0:
             print(f"[向量去重] 开始, 阈值: {vector_dedup_threshold}")
             result_scene_keys = set()
@@ -1492,19 +1090,7 @@ class AutoSceneSearcher:
         format_dict['起始帧'] = str(start_frame)
         format_dict['视频解析名'] = _sanitize_filename(video_parsed_name)
 
-        # 4. 填充标准大类（从 combo 的 xxx_cn 字段）
-        pl_category_mapping = {
-            '\u955c\u5934': 'lens_cn',
-            '\u60c5\u7eea': 'mood_cn',
-            '\u573a\u666f': 'scene_cn',
-            '\u4e3b\u4f53': 'subject_cn',
-            '\u52a8\u4f5c': 'action_cn',
-        }
-        for category_name, combo_key in pl_category_mapping.items():
-            if category_name in format_dict:
-                format_dict[category_name] = _sanitize_filename(combo.get(combo_key, ""))
-
-        # 5. 填充扩展大类的中文值（从 combo 的 xxx_cn 字段）
+        # 4. 填充大类中文值（从 combo 的 xxx_cn 动态字段）
         for key, value in combo.items():
             if key.endswith('_cn'):
                 category_name = key[:-3]
@@ -1790,7 +1376,7 @@ def merge_adjacent_scenes(
         merged_buffer.clear()
     merged_count = merged_cache.count_results()
     print(f"[相邻合并] 完成: {original_count} -> {merged_count} 个片段 (合并了 {original_count - merged_count} 个)")
-    stage_cache.close()
+    stage_cache.destroy()
     merged_cache.close()
     return LMDBResultView(merged_cache_dir)
 
@@ -1895,7 +1481,7 @@ def _generate_merged_result_name(merged_data: Dict, video_name_format: str = Non
 
     # 使用默认格式（如果未指定）
     if video_name_format is None:
-        video_name_format = "{\u4e3b\u4f53}_{\u52a8\u4f5c}_{\u573a\u666f}_{\u60c5\u7eea}_{\u8d77\u59cb\u5e27}_{\u89c6\u9891\u89e3\u6790\u540d}"
+        video_name_format = "{\u8d77\u59cb\u5e27}_{\u89c6\u9891\u89e3\u6790\u540d}"
 
     # 1. 从 video_name_format 中动态解析所有占位符
     placeholders = re.findall(r'\{(\w+)\}', video_name_format)
@@ -1907,26 +1493,11 @@ def _generate_merged_result_name(merged_data: Dict, video_name_format: str = Non
     format_dict['起始帧'] = str(merged_data.get('start_frame', 0))
     format_dict['视频解析名'] = _sanitize_filename(parsed_name)
 
-    # 4. 填充标准大类（从 merged_data 的 xxx_cn 字段）
-    pl_category_mapping = {
-        '\u955c\u5934': ['\u955c\u5934_cn', 'lens_cn'],
-        '\u60c5\u7eea': ['\u60c5\u7eea_cn', 'mood_cn'],
-        '\u573a\u666f': ['\u573a\u666f_cn', 'scene_cn'],
-        '\u4e3b\u4f53': ['\u4e3b\u4f53_cn', 'subject_cn'],
-        '\u52a8\u4f5c': ['\u52a8\u4f5c_cn', 'action_cn'],
-    }
-    for category_name, keys in pl_category_mapping.items():
-        if category_name in format_dict:
-            for key in keys:
-                if merged_data.get(key):
-                    format_dict[category_name] = _sanitize_filename(merged_data.get(key, ""))
-                    break
-
-    # 5. 填充扩展大类的中文值（从 merged_data 的 xxx_cn 字段）
+    # 4. 填充大类中文值（从 merged_data 的 xxx_cn 动态字段）
     for key, value in merged_data.items():
         if key.endswith('_cn'):
             category_name = key[:-3]
-            if category_name in format_dict and not format_dict[category_name]:
+            if category_name in format_dict:
                 format_dict[category_name] = _sanitize_filename(str(value))
 
     # 6. 使用格式模板生成名称（所有占位符都已预设默认值，不会 KeyError）
@@ -2058,10 +1629,11 @@ class VideoExporter:
 
     def export_deduplicated_results(
         self,
-        result_source,
+        result_source: Any,
         output_dir: str,
-        progress_callback: Callable[[int, int, str], None] = None,
-        debug_similarity: bool = False
+        progress_callback: Optional[Callable] = None,
+        debug_similarity: bool = False,
+        post_export_hook: Optional[Callable] = None,
     ) -> Dict:
         """
                 导出去重后的搜索结果
@@ -2105,10 +1677,19 @@ class VideoExporter:
                     stats['skipped'] += 1
                     continue
                 ext = self._get_video_extension(video_path)
+                shot = item.get('shot_type', '')
+                move = item.get('camera_movement', '')
+                prefix = ''
+                if shot and shot != '未知':
+                    prefix += shot
+                if move and move != '未知':
+                    prefix += f"_{move}" if prefix else move
+                if prefix:
+                    prefix += '_'
                 if self._debug_similarity:
-                    output_filename = f"{similarity:.4f}_{_sanitize_filename(result_name)}{ext}"
+                    output_filename = f"{similarity:.4f}_{prefix}{_sanitize_filename(result_name)}{ext}"
                 else:
-                    output_filename = f"{_sanitize_filename(result_name)}{ext}"
+                    output_filename = f"{prefix}{_sanitize_filename(result_name)}{ext}"
                 output_path = os.path.join(output_dir, output_filename)
                 if progress_callback:
                     progress_callback(current, total_items, output_filename)
@@ -2126,6 +1707,8 @@ class VideoExporter:
                 )
                 if success:
                     stats['success'] += 1
+                    if post_export_hook:
+                        post_export_hook(output_path, item)
                 else:
                     stats['failed'] += 1
                     stats['failed_files'].append(output_filename)
@@ -2155,7 +1738,8 @@ def export_video_matches(
     video_copy_mode: bool = False,
     start_frame_offset: int = None,
     end_frame_offset: int = None,
-    debug_similarity: bool = False
+    debug_similarity: bool = False,
+    post_export_hook: Optional[Callable] = None,
 ):
     resolved_output_dir = resolve_video_output_directory(
         resolver=resolver,
@@ -2172,9 +1756,338 @@ def export_video_matches(
         result_source=result_source,
         output_dir=resolved_output_dir,
         progress_callback=None,
-        debug_similarity=debug_similarity
+        debug_similarity=debug_similarity,
+        post_export_hook=post_export_hook,
     )
     return export_stats, resolved_output_dir
+
+
+def attach_shot_analysis(result_view, temp_dir: str = None):
+    """对去重后的结果做景别和镜头运动分析，结果写回原 LMDB。
+
+    双线并行：DinoV2 (GPU 景别) + OpticalFlow (CPU 镜头运动)
+    """
+    import cv2
+    from concurrent.futures import ThreadPoolExecutor
+    from A_coreUtils.aftertreatment.shot_type_classifier import DinoV2ShotClassifier
+    from A_coreUtils.aftertreatment.optical_flow_analyzer import OpticalFlowAnalyzer
+    from A_coreUtils.search.reranker_frame_extractor import RerankerFrameExtractor
+
+    if result_view is None or result_view.count() == 0:
+        return result_view
+
+    resolver = PathResolver()
+    if temp_dir is None:
+        temp_dir = str(resolver.project_root / 'temp' / 'cache' / 'shot_analysis')
+    os.makedirs(temp_dir, exist_ok=True)
+
+    shot_clf = DinoV2ShotClassifier()
+    shot_clf.load()
+    of_analyzer = OpticalFlowAnalyzer(
+        sample_interval=1,
+        static_threshold=0.35,
+        radial_threshold=0.22,
+        tracking_threshold=0.50,
+        pan_tilt_ratio=0.35,
+        push_symmetry_threshold=0.15,
+        push_vote_ratio=0.15,
+        tracking_vote_ratio=0.20,
+    )
+    shot_extractor = RerankerFrameExtractor(
+        output_resolution='384', cache_dir=os.path.join(temp_dir, 'midframe'),
+    )
+    flow_extractor = RerankerFrameExtractor(
+        output_resolution='384', cache_dir=os.path.join(temp_dir, 'flow'),
+    )
+
+    # 直接用导出前用的 result_view 的 LMDB，不新建
+    cache = getattr(result_view, '_cache', None)
+    if cache is None:
+        return result_view
+
+    total = result_view.count()
+    print(f"\n[景别分析] 开始分析 {total} 个场景...")
+    pool = ThreadPoolExecutor(max_workers=2)
+    buffer = {}
+
+    try:
+        for batch in result_view.iter_batches(batch_size=16):
+            for scene_key, item in batch:
+                video_path = item.get('video_path', '')
+                start_f = int(item.get('start_frame', 0) or 0)
+                end_f = int(item.get('end_frame', 0) or 0)
+
+                mid_frame_path = None
+                flow_result = None
+
+                if video_path and os.path.exists(video_path):
+                    try:
+                        frame_paths = shot_extractor.extract_batch([{
+                            'video_path': video_path,
+                            'start_frame': start_f, 'end_frame': end_f,
+                            'target_frame_idx': 1,
+                        }])
+                        mid_frame_path = list(frame_paths.values())[0] if frame_paths else None
+                    except Exception:
+                        pass
+
+                if start_f < end_f:
+                    try:
+                        scene_duration = end_f - start_f
+                        flow_sample_count = min(30, scene_duration)
+                        # 取中点附近连续帧，避免均匀采样导致帧间位移过大
+                        mid_frame = (start_f + end_f) // 2
+                        first = max(start_f, mid_frame - flow_sample_count // 2)
+                        flow_scenes = []
+                        for i in range(flow_sample_count):
+                            fn = min(end_f, first + i)
+                            flow_scenes.append({
+                                'video_path': video_path,
+                                'start_frame': fn, 'end_frame': fn,
+                                'target_frame_idx': 0,
+                            })
+                        flow_frame_paths = flow_extractor.extract_batch(flow_scenes)
+                        flow_frame_paths_sorted = [
+                            flow_frame_paths[k]
+                            for k in sorted(flow_frame_paths.keys())
+                            if os.path.exists(flow_frame_paths[k])
+                        ]
+                        flow_frames_bgr = []
+                        for fp in flow_frame_paths_sorted:
+                            img = cv2.imread(fp)
+                            if img is not None:
+                                flow_frames_bgr.append(img)
+                        if len(flow_frames_bgr) >= 2:
+                            flow_result = of_analyzer.analyze_frames(flow_frames_bgr)
+                        else:
+                            flow_result = None
+                    except Exception:
+                        flow_result = None
+
+                f_shot = pool.submit(shot_clf.analyze, mid_frame_path) if mid_frame_path else None
+
+                shot = '未知'
+                move = '未知'
+                if f_shot:
+                    try:
+                        sr = f_shot.result()
+                        shot = sr.get('景别', '未知') if isinstance(sr, dict) else '未知'
+                    except Exception:
+                        pass
+                if flow_result:
+                    oi = flow_result
+                    move = oi.get('镜头运动', '未知') if isinstance(oi, dict) else '未知'
+
+                item['shot_type'] = shot
+                item['camera_movement'] = move
+                buffer[cache.RESULT_PREFIX + scene_key] = item
+                if len(buffer) >= 16:
+                    cache.put_many(buffer)
+                    buffer.clear()
+
+        if buffer:
+            cache.put_many(buffer)
+    finally:
+        pool.shutdown(wait=True)
+        shot_clf.unload()
+
+    print(f"[景别分析] 完成 {total} 个场景\n")
+    return result_view
+
+
+def _strip_false_labels(item: dict, false_cats: set) -> dict:
+    """从 item 中删除 MiniCPM 判定为否的标签，清理所有相关字段。
+
+    Args:
+        item: LMDB 中的一条结果
+        false_cats: MiniCPM 判定为 False 的类别名集合, 如 {'动作', '情绪'}
+
+    Returns:
+        原地修改后的 item
+    """
+    if not false_cats:
+        return item
+
+    # 1. 删除 _cn / _en
+    for cat in false_cats:
+        item.pop('%s_cn' % cat, None)
+        item.pop('%s_en' % cat, None)
+
+    # 2. 清理 labels dict — value 命中 false_cats 即删
+    if isinstance(item.get('labels'), dict):
+        item['labels'] = {
+            k: v for k, v in item['labels'].items()
+            if v not in false_cats
+        }
+
+    # 3. 清理 all_labels dict — key 直接对应类别名
+    if isinstance(item.get('all_labels'), dict):
+        for cat in false_cats:
+            item['all_labels'].pop(cat, None)
+
+    # 4. 保险: label_cn / label_en 若命中也清空
+    for key in ('label_cn', 'label_en'):
+        if item.get(key) and item[key] in false_cats:
+            item[key] = ''
+
+    return item
+
+
+def filter_by_mini_rerank(result_view, min_matches: int = 4, use_chinese: bool = False):
+    """MiniRerank: 用 MiniCPM 验证每类 CLIP 最佳标签是否真实存在于画面中。
+
+    流式分批处理，不一次性全扫内存。通过验证的场景中，MiniCPM 判定为否的标签会被
+    从结果中剥离，result_name 也会相应重建。"""
+    import cv2
+
+    if result_view is None or result_view.count() == 0:
+        return result_view
+
+    from A_coreUtils.aftertreatment.label_verifier import LabelVerifier
+    from A_coreUtils.search.reranker_frame_extractor import RerankerFrameExtractor
+
+    verifier = LabelVerifier()
+    resolver = PathResolver()
+    temp_dir = str(resolver.project_root / 'temp' / 'cache' / 'mini_rerank')
+    os.makedirs(temp_dir, exist_ok=True)
+    mid_extractor = RerankerFrameExtractor(
+        output_resolution='384', cache_dir=os.path.join(temp_dir, 'midframe'),
+    )
+
+    cache = getattr(result_view, '_cache', None)
+    if cache is None:
+        return result_view
+
+    kept_keys = set()
+    removed = 0
+    batch_size = 256
+    window_size = 1024  # 内存窗口上限
+
+    print(f"\n[MiniRerank] 开始分批验证...")
+
+    # 流式分组：每次收集 window_size 条后处理该批
+    window_groups = {}    # (vp, sf) → {items, labels}
+    window_items = 0
+
+    def _flush_window():
+        """处理当前窗口内的所有场景组，清空 window_groups."""
+        nonlocal removed
+        if not window_groups:
+            return
+        # 提取本窗口所有组的帧（一次 batch 调用）
+        window_scenes = []
+        window_key_order = []
+        for (vp, sf), group in window_groups.items():
+            window_scenes.append({
+                'video_path': vp, 'start_frame': sf, 'end_frame': sf,
+                'target_frame_idx': 1,
+            })
+            window_key_order.append((vp, sf))
+        try:
+            all_frame_paths = mid_extractor.extract_batch(window_scenes)
+        except Exception as e:
+            print(f"  [MiniRerank] 帧提取异常: {e}")
+            all_frame_paths = {}
+
+        for i, ((vp, sf), group) in enumerate(window_groups.items()):
+            items = group['items']
+            labels = group['labels']
+            if i < 3:
+                print(f"  [MiniRerank] 组#{i}: vp={os.path.basename(vp)[:30]} sf={sf} labels={labels}")
+            if not labels:
+                removed += len(items)
+                continue
+            try:
+                scene_key = RerankerFrameExtractor.get_scene_key(vp, sf)
+                mid_path = all_frame_paths.get(scene_key) if scene_key else None
+            except Exception:
+                mid_path = None
+            if not mid_path or not os.path.exists(mid_path):
+                for sk in items:
+                    kept_keys.add(sk)
+                continue
+            frame = cv2.imread(mid_path)
+            if frame is None:
+                for sk in items:
+                    kept_keys.add(sk)
+                continue
+            matches = verifier.verify(frame, labels, use_chinese=use_chinese)
+            matched_count = sum(1 for v in matches.values() if v)
+            false_cats = {k for k, v in matches.items() if not v}
+            if matched_count < min_matches:
+                removed += len(items)
+            else:
+                for sk in items:
+                    if false_cats:
+                        item = cache.get_result(sk)
+                        if item:
+                            item = _strip_false_labels(item, false_cats)
+                            item['result_name'] = _generate_merged_result_name(
+                                item, video_name_format)
+                            cache.put_result(sk, item)
+                    kept_keys.add(sk)
+            cats_str = ', '.join(f'{c}={labels[c]}(Y)' if matches.get(c) else f'{c}={labels[c]}(N)' for c in labels)
+            print(f"  [MiniRerank] sf={sf} vid={os.path.basename(vp)[:30]} 匹配{matched_count}/{min_matches} {cats_str}")
+        window_groups.clear()
+
+    try:
+        for batch in result_view.iter_batches(batch_size=batch_size):
+            for scene_key, item in batch:
+                vp = item.get('video_path', '')
+                sf = int(item.get('start_frame', 0) or 0)
+                if not vp or not os.path.exists(vp):
+                    continue
+                group_key = (vp, sf)
+                grp = window_groups.setdefault(group_key, {'items': {}, 'labels': {}})
+                grp['items'][scene_key] = item
+                # 只取 logic_keywords.json "必有标签" 中定义的大类名
+                import json as _json
+                valid_cats = getattr(filter_by_mini_rerank, '_valid_cats', None)
+                video_name_format = getattr(filter_by_mini_rerank, '_video_name_format', None)
+                if not valid_cats or video_name_format is None:
+                    try:
+                        r = PathResolver()
+                        with open(str(r.project_root / 'logic_keywords.json'), 'r', encoding='utf-8') as _f:
+                            _cfg = _json.loads(_f.read())
+                        other_cfg = _cfg.get('其他参数设置', {})
+                        valid_cats = set(other_cfg.get('必有标签', []))
+                        filter_by_mini_rerank._valid_cats = valid_cats
+                        video_name_format = other_cfg.get('输出视频命名格式', '')
+                        filter_by_mini_rerank._video_name_format = video_name_format
+                    except Exception:
+                        valid_cats = {'主体', '动作', '场景', '情绪'}
+                        video_name_format = ''
+                suffix = '_cn' if use_chinese else '_en'
+                for key, val in item.items():
+                    if key.endswith(suffix) and isinstance(val, str) and val.strip():
+                        cat_name = key[:-len(suffix)]
+                        if cat_name in valid_cats and cat_name not in grp['labels']:
+                            grp['labels'][cat_name] = val.strip()
+                window_items += 1
+
+                if window_items >= window_size:
+                    _flush_window()
+                    window_items = 0
+        _flush_window()
+    finally:
+        verifier.unload()
+        mid_extractor.cleanup(remove_files=True)
+
+    # 流式删除移除的条目
+    try:
+        for batch in result_view.iter_batches(batch_size=batch_size):
+            for sk, _ in batch:
+                if sk not in kept_keys:
+                    try:
+                        cache.delete(cache.RESULT_PREFIX + sk)
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+    kept = len(kept_keys)
+    print(f"[MiniRerank] 完成: 保留 {kept} 条, 移除 {removed} 条\n")
+    return result_view
 
 
 def cleanup_temp_after_export(resolver: PathResolver):
@@ -2198,12 +2111,12 @@ def run_interactive_search(
     video_copy_mode: bool = False,
     start_frame_offset: int = None,
     end_frame_offset: int = None,
+    post_export_hook: Optional[Callable] = None,
     prompt_search_batch_size: Optional[int] = DEFAULT_PROMPT_SEARCH_BATCH_SIZE,
     feature_fp16: Optional[bool] = None,
     lance_batch_size: Optional[int] = None,
     use_diskcache: bool = True,
     diskcache_dir: str = None,
-    prompt_template: str = None,
     video_name_format: str = None,
     debug_similarity: bool = False,
     search_mode: int = 0,
@@ -2212,9 +2125,14 @@ def run_interactive_search(
     use_chinese: bool = False,
     lance_load_workers: Optional[int] = DEFAULT_LANCE_LOAD_WORKERS,
     lmdb_write_batch_size: Optional[int] = DEFAULT_LMDB_WRITE_BATCH_SIZE,
-    vector_dedup_threshold: float = None,
-    adjacent_merge_frames: int = None
-) -> Dict:
+     vector_dedup_threshold: float = None,
+     adjacent_merge_frames: int = None,
+     use_shot_analysis: bool = False,
+     use_mini_rerank: bool = False,
+     mini_rerank_min_matches: int = 4,
+     search_threshold: float = None,
+     lance_indexes: Optional[list] = None,
+ ) -> Dict:
     resolver = PathResolver()
     if index_directory is None:
         index_directory = str(resolver.project_root / 'indexes')
@@ -2286,6 +2204,16 @@ def run_interactive_search(
             'error': '索引目录中没有 .lance 索引',
             'result_count': 0,
         }
+    # 如果指定了 lance_indexes，只保留选中的索引
+    if lance_indexes is not None:
+        index_set = set(lance_indexes)
+        index_paths = [p for p in index_paths if os.path.basename(p) in index_set]
+        if not index_paths:
+            return {
+                'success': False,
+                'error': '没有匹配的选中索引',
+                'result_count': 0,
+            }
     model_names = set()
     for index_path in index_paths:
         model_name = extract_model_name_from_index(index_path)
@@ -2304,27 +2232,22 @@ def run_interactive_search(
             'result_count': 0,
         }
     detected_model_type = detect_model_type_from_name(detected_model_name)
-    generator = PromptGenerator(prompt_template=prompt_template, use_chinese=use_chinese)
+    generator = PromptGenerator(use_chinese=use_chinese)
     all_categories = list(generator._simple_categories.keys())
-    if prompt_template is not None:
-        is_valid, error_msg = validate_prompt_template(prompt_template, all_categories)
-        if not is_valid:
-            raise ValueError(f"[Prompt搜索] {error_msg}")
-    if video_name_format is None:
-        video_name_format = generate_default_prompt_video_name_format(all_categories, prefix='')
-    else:
-        is_valid, error_msg = validate_prompt_video_name_format(video_name_format, all_categories)
-        if not is_valid:
-            raise ValueError(f"[Prompt搜索] {error_msg}")
+    video_name_format = generator._video_name_format
+    is_valid, err = validate_prompt_video_name_format(video_name_format, all_categories)
+    if not is_valid:
+        raise ValueError(f"[自动提纯] 输出视频命名格式无效: {err}")
     final_threshold = SimilarityThresholdConfig.get_threshold(detected_model_type, use_reranker)
     searcher = AutoSceneSearcher(
         use_fp16=use_fp16,
-        prompt_template=prompt_template,
         video_name_format=video_name_format,
         use_chinese=use_chinese,
     )
     start_time = time.time()
     result_view = None
+    merged_count = 0
+    export_succeeded = False
     export_stats = {
         'total': 0,
         'success': 0,
@@ -2372,11 +2295,19 @@ def run_interactive_search(
                 adjacent_merge_frames=adjacent_merge_frames,
                 video_name_format=video_name_format,
             )
-            if merged_view is not result_view and hasattr(result_view, 'close'):
+            if merged_view is not result_view and hasattr(result_view, '_cache') and hasattr(result_view._cache, 'destroy'):
+                result_view._cache.destroy()
+            elif merged_view is not result_view and hasattr(result_view, 'close'):
                 result_view.close()
             result_view = merged_view
         merged_count = int(result_view.count())
         if merged_count > 0:
+            if use_mini_rerank:
+                result_view = filter_by_mini_rerank(result_view, min_matches=mini_rerank_min_matches, use_chinese=use_chinese)
+                merged_count = int(result_view.count())
+            if use_shot_analysis:
+                result_view = attach_shot_analysis(result_view)
+                merged_count = int(result_view.count())
             print(f"\n[Export] exporting {merged_count} scenes...")
             export_stats, resolved_video_output_dir = export_video_matches(
                 result_source=result_view,
@@ -2387,15 +2318,18 @@ def run_interactive_search(
                 start_frame_offset=start_frame_offset,
                 end_frame_offset=end_frame_offset,
                 debug_similarity=debug_similarity,
+                post_export_hook=post_export_hook,
             )
-            cleanup_temp_after_export(resolver)
+            export_succeeded = True
         return {
             'success': True,
+            'export_succeeded': export_succeeded,
             'result_count': result_count,
             'merged_result_count': int(result_view.count()) if result_view is not None else 0,
             'export_stats': export_stats,
             'video_output_directory': resolved_video_output_dir,
             'elapsed_seconds': time.time() - start_time,
+            'validation_warnings': generator._warnings if hasattr(generator, '_warnings') else [],
         }
     except Exception as e:
         import traceback
@@ -2407,58 +2341,22 @@ def run_interactive_search(
             'elapsed_seconds': time.time() - start_time,
         }
     finally:
-        if result_view is not None and hasattr(result_view, 'close'):
-            result_view.close()
+        if result_view is not None:
+            if hasattr(result_view, '_cache') and hasattr(result_view._cache, 'destroy'):
+                result_view._cache.destroy()
+            elif hasattr(result_view, 'close'):
+                result_view.close()
+        if export_succeeded:
+            pass  # cleanup 由调用方 pipeline_app.py 在 shot_cleanup 后统一执行
 # ============================================================
 #  测试入口
 # ============================================================
 if __name__ == "__main__":
-    print("=" * 60)
-    print("自动化场景搜索器 - 模块测试")
-    print("基于 logic_Prompt.py 的逻辑约束")
-    print("=" * 60)
-
-    # 初始化路径解析器（不传参数，使用 path_resolver.py 所在目录作为项目根目录）
-    resolver = PathResolver()
-    print(f"项目根目录: {resolver.get_project_root()}")
-
-    # 初始化Prompt生成器并显示统计信息
     generator = PromptGenerator()
-
-    print("\n[关键词统计] (从JSON动态读取)")
-    for category in generator.CATEGORY_LIST:
-        subjects = generator.get_subjects(category)
-        actions = generator.get_actions(category)
-        print(f"  {category}: {len(subjects)} 主体 × {len(actions)} 动作")
-
-    # 动态显示所有简单大类的标签数
-    for cat_name, cat_labels in generator._simple_categories.items():
-        print(f"  {cat_name}: {len(cat_labels)}")
-
-    total = generator.count_total_combinations()
-    print(f"\n[总组合数] {total:,}")
-
-    # 显示示例组合
-    print("\n[示例组合] (前5个)")
-    for i, combo in enumerate(generator.iterate_all_combinations()):
-        if i >= 5:
-            break
-        print(f"  {i+1}. {combo['prompt']}")
-
-    # 显示阈值配置
-    print("\n[相似度阈值配置]")
-    thresholds = SimilarityThresholdConfig.get_all_thresholds()
-    print(f"  CLIP Large: {thresholds['clip_large']}")
-    print(f"  FG-CLIP2: {thresholds['fgclip2']}")
-    print(f"  Reranker: {thresholds['reranker']}")
-    print(f"  CLIP + Reranker: {thresholds['clip_with_reranker']:.1f}")
-    print(f"  FG-CLIP2 + Reranker: {thresholds['fgclip2_with_reranker']:.1f}")
-
-    print("\n" + "=" * 60)
-    print("使用方法:")
-    print("  运行主入口: python prompt_output_app.py")
-    print("")
-    print("  或使用API:")
-    print("    from auto_scene_search import run_interactive_search")
-    print("    results = run_interactive_search()")
-    print("=" * 60)
+    prompts = list(generator.iterate_all_labels_flat())
+    print(f"统一模式: {len(prompts)} prompts, {len(generator._per_cat_templates)} 模板类别")
+    for cat in generator._per_cat_templates:
+        count = sum(1 for p in prompts if p["category"] == cat)
+        print(f"  {cat}: {count} prompts")
+    print(f"命名格式: {generator._video_name_format}")
+    print(f"必有标签: {generator._required_categories}")

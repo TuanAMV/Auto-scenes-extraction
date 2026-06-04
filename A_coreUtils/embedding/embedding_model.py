@@ -22,9 +22,9 @@ logging.getLogger().setLevel(logging.ERROR)  # 只显示错误，不显示警告
 _current_file = os.path.abspath(__file__)
 _embedding_dir = os.path.dirname(_current_file)
 _a_core_utils_dir = os.path.dirname(_embedding_dir)
-_project_root_dir = os.path.dirname(_a_core_utils_dir)
-if _project_root_dir not in sys.path:
-    sys.path.insert(0, _project_root_dir)
+_cut_detect_scene_dir = os.path.dirname(_a_core_utils_dir)
+if _cut_detect_scene_dir not in sys.path:
+    sys.path.insert(0, _cut_detect_scene_dir)
 
 # ============================================================
 #  关键修复: 在所有导入之前设置离线环境变量
@@ -95,7 +95,8 @@ class VectorizerThread:
                  batch_size: int = 128, truncate_dim: int = None,
                  model_type: str = 'fgclip2', io_workers: int = 8,
                  prefetch: bool = True,
-                 brightness_threshold: float = None, black_pixel_ratio: float = 98):
+                 brightness_threshold: float = None, black_pixel_ratio: float = 98,
+                 white_threshold: float = None, white_pixel_ratio: float = 90):
         self.extractor = extractor
         self.model = model
         self.preprocess = preprocess
@@ -110,29 +111,42 @@ class VectorizerThread:
         self.error = None
         self._io_executor = ThreadPoolExecutor(max_workers=io_workers)
         self._prefetch_queue = Queue(maxsize=2)
-        # v3.1: 黑帧检测参数
+        # v3.1: 黑帧/白帧检测参数
         self.brightness_threshold = brightness_threshold
         self.black_pixel_ratio = black_pixel_ratio
-        self._black_frames_filtered = 0  # 统计过滤的黑帧数
+        self.white_threshold = white_threshold
+        self.white_pixel_ratio = white_pixel_ratio
+        self._black_frames_filtered = 0
+        self._white_frames_filtered = 0
         
     def start(self):
         thread = Thread(target=self._vectorize_worker, daemon=True)
         thread.start()
         return self
     
-    def _is_black_frame(self, img: Image.Image) -> bool:
-        """检测图像是否为黑帧 - 在预加载时调用，无额外IO开销"""
-        if self.brightness_threshold is None or self.brightness_threshold <= 0:
-            return False
+    def _is_invalid_frame(self, img: Image.Image) -> bool:
+        """检测黑帧/白帧 - 在预加载时调用，复用已加载图像，无额外IO开销"""
         try:
             gray = img.convert('L')
             pixels = np.array(gray)
-            black_pixels = np.sum(pixels < self.brightness_threshold)
-            total_pixels = pixels.size
-            black_percentage = black_pixels / total_pixels
-            return black_percentage >= (self.black_pixel_ratio / 100.0)
+            total = pixels.size
+
+            # 黑帧检测
+            if self.brightness_threshold is not None and self.brightness_threshold > 0:
+                black_ratio = np.sum(pixels < self.brightness_threshold) / total
+                if black_ratio >= (self.black_pixel_ratio / 100.0):
+                    self._black_frames_filtered += 1
+                    return True
+
+            # 白帧检测（复用同一张灰度图）
+            if self.white_threshold is not None and self.white_threshold > 0:
+                white_ratio = np.sum(pixels > self.white_threshold) / total
+                if white_ratio >= (self.white_pixel_ratio / 100.0):
+                    self._white_frames_filtered += 1
+                    return True
         except Exception:
-            return False
+            pass
+        return False
     
     def _load_single_image(self, filepath: str):
         try:
@@ -140,10 +154,9 @@ class VectorizerThread:
                 return None
             img = Image.open(filepath).convert('RGB')
             
-            # v3.1: 在加载时检测黑帧，跳过黑帧
-            if self._is_black_frame(img):
-                self._black_frames_filtered += 1
-                os.remove(filepath)  # 删除黑帧文件
+            # v3.1: 在加载时检测黑帧/白帧，跳过无效帧
+            if self._is_invalid_frame(img):
+                os.remove(filepath)
                 return None
             
             tensor = self.preprocess(img)
@@ -385,7 +398,7 @@ class _TransformersModelWrapper:
             else:
                 raise RuntimeError(f"不支持的图像输入类型: {type(image_inputs)}")
             features = output.pooler_output if hasattr(output, 'pooler_output') else output
-            return features.float()
+            return features
 
     def encode_text(self, text_inputs, walk_type="short"):
         """编码文本 - FG-CLIP2 支持 walk_type 参数，CLIP 忽略"""
@@ -402,7 +415,7 @@ class _TransformersModelWrapper:
                 else:
                     output = self.model.get_text_features(input_ids=text_inputs)
             features = output.pooler_output if hasattr(output, 'pooler_output') else output
-            return features.float()
+            return features
 
 
 class EmbeddingModelProcessor:
@@ -421,7 +434,7 @@ class EmbeddingModelProcessor:
         if model_path is not None and model_name is None:
             model_name = model_path
         if model_name is None:
-            model_name = 'qihoo360_fg-clip2-base'
+            model_name = 'qihoo360-fg-clip2-base'
         self.model_type = model_type
         if os.path.isabs(model_name) or os.path.exists(model_name):
             self.model_path = model_name
@@ -519,11 +532,29 @@ class EmbeddingModelProcessor:
             self.model_type = 'fgclip2'
             
             # 加载单个模型实例（与 CLIP transformers 一致）
+            # 加载单个模型实例（与 CLIP transformers 一致）
             self._model_raw = AutoModelForCausalLM.from_pretrained(
                 self.model_path,
                 trust_remote_code=True,
                 local_files_only=True
-            ).to(DEVICE)
+            )
+
+            # 直接修复 Fgclip2TextEmbeddings 中可能损坏的 position_ids/mask1/mask2
+            text_cfg = getattr(self._model_raw.config, 'text_config', None) or self._model_raw.config
+            keep_len = text_cfg.keep_len
+            longtext_len = text_cfg.longtext_len
+            for sub in self._model_raw.modules():
+                if sub.__class__.__name__ == 'Fgclip2TextEmbeddings':
+                    sub._buffers['position_ids'] = torch.arange(longtext_len).expand((1, -1))
+                    m1 = torch.zeros([longtext_len, 1])
+                    m1[:keep_len] = 1
+                    sub._buffers['mask1'] = m1
+                    m2 = torch.zeros([longtext_len, 1])
+                    m2[keep_len:] = 1
+                    sub._buffers['mask2'] = m2
+                    print(f"[Fix] Fgclip2TextEmbeddings buffers reset: position_ids=arange({longtext_len}), mask1/2 with keep_len={keep_len}")
+
+            self._model_raw = self._model_raw.to(DEVICE)
             self._model_raw = self._apply_fp16(self._model_raw)
             self._model_raw.eval()
             
@@ -853,7 +884,7 @@ class EmbeddingModelProcessor:
         finally:
             del features
 
-    def _extract_and_vectorize_parallel(self, video_path: str, sample_interval: int, output_resolution: str = '256', brightness_threshold: float = None, black_pixel_ratio: float = 98) -> tuple:
+    def _extract_and_vectorize_parallel(self, video_path: str, sample_interval: int, output_resolution: str = '256', brightness_threshold: float = None, black_pixel_ratio: float = 98, white_threshold: float = None, white_pixel_ratio: float = 90) -> tuple:
         """单实例模式：CPU-GPU 流水线并行"""
         # v3.1: 不在 ffmpeg 中做黑帧检测，改为在 VectorizerThread 预加载时检测
         extractor = FrameExtractorThread(video_path, sample_interval, output_resolution)
@@ -864,7 +895,8 @@ class EmbeddingModelProcessor:
         vectorizer = VectorizerThread(
             extractor, self._model, self._preprocess, self.batch_size, self.truncate_dim,
             self.model_type, io_workers=self.io_workers, prefetch=True,
-            brightness_threshold=brightness_threshold, black_pixel_ratio=black_pixel_ratio
+            brightness_threshold=brightness_threshold, black_pixel_ratio=black_pixel_ratio,
+            white_threshold=white_threshold, white_pixel_ratio=white_pixel_ratio
         )
         vectorizer.start()
         extractor.extraction_done.wait()
@@ -877,6 +909,8 @@ class EmbeddingModelProcessor:
         # v3.1: 打印黑帧过滤统计
         if vectorizer._black_frames_filtered > 0:
             print(f"[GPU] 黑帧检测: 过滤了 {vectorizer._black_frames_filtered} 个黑帧")
+        if vectorizer._white_frames_filtered > 0:
+            print(f"[GPU] 白帧检测: 过滤了 {vectorizer._white_frames_filtered} 个白帧")
         extractor.cleanup()
         actual_frame_indices = [i * sample_interval for i in frame_indices]
         return actual_frame_indices, features
@@ -886,7 +920,9 @@ class EmbeddingModelProcessor:
                   output_resolution: str = '512', min_scene_length: int = 7,
                   cosine_similarity_threshold: float = None,
                   brightness_threshold: float = 32,
-                  black_pixel_ratio: float = 98) -> list:
+                  black_pixel_ratio: float = 98,
+                  white_threshold: float = None,
+                  white_pixel_ratio: float = 90) -> list:
         """
         处理视频，检测场景边界并提取特征
         
@@ -902,6 +938,8 @@ class EmbeddingModelProcessor:
             cosine_similarity_threshold: 余弦相似度阈值
             brightness_threshold: 黑场检测亮度阈值 (0-255)
             black_pixel_ratio: 黑色像素占比阈值 (0-100)
+            white_threshold: 白场检测亮度阈值 (0-255)，None=禁用
+            white_pixel_ratio: 白色像素占比阈值 (0-100)
         
         Returns:
             场景列表
@@ -909,7 +947,7 @@ class EmbeddingModelProcessor:
         # [简化] 只保留三元组模式
         print(f"[处理] {os.path.basename(video_path)} (模式: 三元组, 检测: 余弦相似度)")
         
-        frame_indices, features = self._extract_and_vectorize_parallel(video_path, sample_interval, output_resolution, brightness_threshold=brightness_threshold, black_pixel_ratio=black_pixel_ratio)
+        frame_indices, features = self._extract_and_vectorize_parallel(video_path, sample_interval, output_resolution, brightness_threshold=brightness_threshold, black_pixel_ratio=black_pixel_ratio, white_threshold=white_threshold, white_pixel_ratio=white_pixel_ratio)
         if not len(frame_indices):
             print(f"[Error] 未提取到帧: {video_path}")
             return []
@@ -947,7 +985,7 @@ class EmbeddingModelProcessor:
                 if isinstance(f, torch.Tensor):
                     scene_data['features'].append(f.cpu())
                 else:
-                    scene_data['features'].append(torch.tensor(f, dtype=torch.float32))
+                    scene_data['features'].append(torch.tensor(f, dtype=torch.float16))
             results.append(scene_data)
         
         print(f"[结果] {os.path.basename(video_path)}: {len(results)} 个场景")
@@ -1029,7 +1067,7 @@ class SemanticSearchEngine:
         print(f"[Info] 相似度阈值: {similarity_threshold}")
         
         # 转换为 tensor
-        query_tensor = torch.tensor(query_vector, device=DEVICE, dtype=torch.float32)
+        query_tensor = torch.tensor(query_vector, device=DEVICE, dtype=torch.float16)
         
         print(f"[步骤B] 扫描 {len(valid_index_paths)} 个索引库...")
         all_results = []
@@ -1058,11 +1096,11 @@ class SemanticSearchEngine:
                     continue
                 
                 # 转换为 tensor 送入 GPU
-                image_features = torch.tensor(features_np, device=DEVICE, dtype=torch.float32)
+                image_features = torch.tensor(features_np, device=DEVICE, dtype=torch.float16)
                 
                 # 使用 logit_scale * (text_features @ image_features.T) 计算相似度
                 with torch.no_grad():
-                    similarities = (logit_scale * query_tensor @ image_features.T).squeeze(0)
+                    similarities = (logit_scale * query_tensor.to(logit_scale.dtype) @ image_features.to(logit_scale.dtype).T).squeeze(0)
                 
                 # 转换为 numpy 处理结果
                 similarities_np = similarities.cpu().numpy()
@@ -1125,6 +1163,8 @@ def create_video_index(source_paths: list, output_dir: str, sample_interval: int
                        cosine_similarity_threshold: float = None,
                        brightness_threshold: float = 32,
                        black_pixel_ratio: float = 98,
+                       white_threshold: float = None,
+                       white_pixel_ratio: float = 90,
                        resume_processing: bool = True,
                        use_fp16: bool = True):
     """
@@ -1202,7 +1242,9 @@ def create_video_index(source_paths: list, output_dir: str, sample_interval: int
                 min_scene_length=min_scene_length,
                 cosine_similarity_threshold=cosine_similarity_threshold,
                 brightness_threshold=brightness_threshold,
-                black_pixel_ratio=black_pixel_ratio
+                black_pixel_ratio=black_pixel_ratio,
+                white_threshold=white_threshold,
+                white_pixel_ratio=white_pixel_ratio
             )
             if scenes:
                 fps, total_frames, _, _ = VideoMetaHelper.get_video_meta(video_path)
@@ -1279,7 +1321,7 @@ if __name__ == "__main__":
     print(f"HF_HUB_OFFLINE: {os.environ.get('HF_HUB_OFFLINE', '未设置')}")
     print(f"transformers CLIP 支持: {'是' if HAS_TRANSFORMERS_CLIP else '否'}")
     # [简化] 移除 Chinese CLIP 支持
-    print(f"默认模型: qihoo360_fg-clip2-base")
+    print(f"默认模型: qihoo360-fg-clip2-base")
     print("支持的模型类型: clip, fgclip2, auto")
     # [简化] 只保留三元组模式
     print("\n存储模式: 三元组模式 (保存完整三帧向量)")

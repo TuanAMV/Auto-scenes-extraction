@@ -13,11 +13,12 @@ from types import ModuleType
 # Keep `path_resolver` importable as a top-level module for legacy modules.
 _current_file = os.path.abspath(__file__)
 _a_core_utils_dir = os.path.dirname(_current_file)
-_project_root_dir = os.path.dirname(_a_core_utils_dir)
-if _project_root_dir not in sys.path:
-    sys.path.insert(0, _project_root_dir)
+_cut_detect_scene_dir = os.path.dirname(_a_core_utils_dir)
+if _cut_detect_scene_dir not in sys.path:
+    sys.path.insert(0, _cut_detect_scene_dir)
 
 _SUBPACKAGE_EXPORTS = {
+    "aftertreatment": ".aftertreatment",
     "embedding": ".embedding",
     "qwen_models": ".qwen_models",
     "search": ".search",
@@ -27,13 +28,12 @@ _SUBPACKAGE_EXPORTS = {
 }
 
 # Backward compatibility for old flat module import paths.
+# Only includes modules that actually exist in this project.
 _LEGACY_MODULE_ALIASES = {
     "embedding_model": ".embedding.embedding_model",
     "qwen3_vl_reranker": ".qwen_models.qwen3_vl_reranker",
     "auto_scene_search": ".search.auto_scene_search",
     "batch_text_search": ".search.batch_text_search",
-    "label_traverse_search": ".search.label_traverse_search",
-    "cloze_fill_search": ".search.cloze_fill_search",
     "reranker_frame_extractor": ".search.reranker_frame_extractor",
     "ffmpeg_precision_cutter": ".video_processing.ffmpeg_precision_cutter",
     "video_utils": ".video_processing.video_utils",
@@ -41,6 +41,10 @@ _LEGACY_MODULE_ALIASES = {
     "Video_Scene_Analyzer": ".video_processing.Video_Scene_Analyzer",
     "video_name_parser": ".video_processing.video_name_parser",
     "prompt_vector_cache": ".prompt.prompt_vector_cache",
+    "label_verifier": ".aftertreatment.label_verifier",
+    "optical_flow_analyzer": ".aftertreatment.optical_flow_analyzer",
+    "shot_type_classifier": ".aftertreatment.shot_type_classifier",
+    "shot_analyzer": ".aftertreatment.shot_analyzer",
 }
 
 __all__ = sorted(set(_SUBPACKAGE_EXPORTS) | set(_LEGACY_MODULE_ALIASES))

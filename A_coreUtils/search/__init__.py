@@ -8,13 +8,13 @@ from __future__ import annotations
 import os
 import sys
 
-# Keep `path_resolver` importable as a top-level module.
+# Keep `path_resolver` importable as a top-level module for legacy modules.
 _current_file = os.path.abspath(__file__)
 _search_dir = os.path.dirname(_current_file)
 _a_core_utils_dir = os.path.dirname(_search_dir)
-_project_root_dir = os.path.dirname(_a_core_utils_dir)
-if _project_root_dir not in sys.path:
-    sys.path.insert(0, _project_root_dir)
+_cut_detect_scene_dir = os.path.dirname(_a_core_utils_dir)
+if _cut_detect_scene_dir not in sys.path:
+    sys.path.insert(0, _cut_detect_scene_dir)
 
 from .auto_scene_search import (  # noqa: E402
     AutoSceneSearcher,

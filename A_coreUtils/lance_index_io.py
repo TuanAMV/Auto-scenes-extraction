@@ -10,7 +10,7 @@
 #   end_frame: int32
 #   fps: float32
 #   feature_count: int32
-#   features_blob: large_binary  (numpy float32 数组的原始字节)
+#   features_blob: large_binary  (numpy float16 数组的原始字节)
 #
 # 元数据 (Lance metadata):
 #   format: "scene_index_lance_v1"
@@ -79,16 +79,16 @@ def scenes_to_lance_rows(video_path, scenes, fps):
         np_feats = []
         for f in feats:
             if isinstance(f, torch.Tensor):
-                np_feats.append(f.cpu().numpy().astype(np.float32))
+                np_feats.append(f.cpu().numpy().astype(np.float16))
             elif isinstance(f, np.ndarray):
-                np_feats.append(f.astype(np.float32))
+                np_feats.append(f.astype(np.float16))
             else:
-                np_feats.append(np.array(f, dtype=np.float32))
+                np_feats.append(np.array(f, dtype=np.float16))
 
         if not np_feats:
             continue
 
-        stacked = np.vstack(np_feats).astype(np.float32)
+        stacked = np.vstack(np_feats).astype(np.float16)
         rows.append(
             {
                 "video_path": video_path,
@@ -150,7 +150,7 @@ def read_lance_index_raw(lance_path):
 
     Returns:
         tuple: (features_np, scene_map, feature_counts)
-            - features_np: np.ndarray [M, dim] 所有特征向量（float32）
+            - features_np: np.ndarray [M, dim] 所有特征向量（float16）
             - scene_map: list[dict] 每个场景的元信息
             - feature_counts: list[int] 每个场景的向量数量
     """
@@ -174,7 +174,7 @@ def read_lance_index_raw(lance_path):
         if count <= 0 or not blob:
             continue
 
-        feats = np.frombuffer(blob, dtype=np.float32).copy()
+        feats = np.frombuffer(blob, dtype=np.float16).copy()
         dim = feats.shape[0] // count
         feats = feats.reshape(count, dim)
         all_features.append(feats)
@@ -193,7 +193,7 @@ def read_lance_index_raw(lance_path):
     if not all_features:
         return None, [], []
 
-    features_np = np.vstack(all_features).astype(np.float32)
+    features_np = np.vstack(all_features).astype(np.float16)
     return features_np, scene_map, feature_counts
 
 
@@ -228,7 +228,7 @@ def read_lance_index_for_reranker(lance_path, needed_scene_keys):
         if count <= 0 or not blob:
             continue
 
-        feats = np.frombuffer(blob, dtype=np.float32).copy()
+        feats = np.frombuffer(blob, dtype=np.float16).copy()
         dim = feats.shape[0] // count
         feats = feats.reshape(count, dim)
         scene_features[scene_key] = feats

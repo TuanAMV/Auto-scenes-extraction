@@ -33,9 +33,9 @@ from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 _current_file = os.path.abspath(__file__)
 _search_dir = os.path.dirname(_current_file)
 _a_core_utils_dir = os.path.dirname(_search_dir)
-_project_root_dir = os.path.dirname(_a_core_utils_dir)
-if _project_root_dir not in sys.path:
-    sys.path.insert(0, _project_root_dir)
+_cut_detect_scene_dir = os.path.dirname(_a_core_utils_dir)
+if _cut_detect_scene_dir not in sys.path:
+    sys.path.insert(0, _cut_detect_scene_dir)
 
 # 导入路径解析器
 from path_resolver import PathResolver
@@ -197,14 +197,14 @@ class RerankerFrameExtractor:
                 print(f"[帧提取] 清空缓存目录失败: {e}")
     
     @staticmethod
-    def get_scene_key(video_path: str, start_frame: int) -> str:
+    def get_scene_key(video_path: str, start_frame: int, target_frame_idx: int = 1) -> str:
         """
         生成场景唯一标识
         
-        格式: {start_frame}_{video_filename}
+        格式: {start_frame}_{target_frame_idx}_{video_filename}
         """
         video_name = os.path.basename(video_path)
-        return f"{start_frame}_{video_name}"
+        return f"{start_frame}_{target_frame_idx}_{video_name}"
     
     @staticmethod
     def get_mid_frame(start_frame: int, end_frame: int) -> int:
@@ -303,7 +303,7 @@ class RerankerFrameExtractor:
         # 检查缓存，过滤已提取的场景
         scenes_to_extract = []
         for scene in scenes:
-            scene_key = self.get_scene_key(scene['video_path'], scene['start_frame'])
+            scene_key = self.get_scene_key(scene['video_path'], scene['start_frame'], scene.get('target_frame_idx', 1))
             with self._cache_lock:
                 if scene_key in self.frame_cache:
                     cached_path = self.frame_cache[scene_key]
@@ -328,7 +328,7 @@ class RerankerFrameExtractor:
                 target_frame = end_frame
             else:
                 target_frame = self.get_mid_frame(start_frame, end_frame)
-            scene_key = self.get_scene_key(scene['video_path'], start_frame)
+            scene_key = self.get_scene_key(scene['video_path'], start_frame, scene.get('target_frame_idx', 1))
             target_frames_info.append((target_frame, scene_key, scene))
         
         # 按目标帧号排序（顺序读取减少 seek）
@@ -701,7 +701,9 @@ class RerankerFrameExtractor:
                 cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
-                universal_newlines=True
+                text=True,
+                encoding='utf-8',
+                errors='replace'
             )
             
             # 后台线程读取 stderr（参考 FrameExtractorThread）
@@ -769,7 +771,7 @@ class RerankerFrameExtractor:
         # 去重：同一场景只提取一次
         unique_scenes = {}
         for scene in scenes:
-            scene_key = self.get_scene_key(scene['video_path'], scene['start_frame'])
+            scene_key = self.get_scene_key(scene['video_path'], scene['start_frame'], scene.get('target_frame_idx', 1))
             if scene_key not in unique_scenes:
                 unique_scenes[scene_key] = scene
         

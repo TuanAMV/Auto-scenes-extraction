@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>视频向量化逻辑</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: "Segoe UI","Microsoft YaHei",sans-serif; background: #f0f2f5; color: #333; line-height: 1.7; }
+.container { max-width: 1200px; margin: 0 auto; padding: 30px 20px; }
+h1 { text-align: center; color: #1a73e8; font-size: 2em; margin-bottom: 10px; }
+.subtitle { text-align: center; color: #666; margin-bottom: 30px; font-size: 0.95em; }
+h2 { color: #2c3e50; border-left: 4px solid #1a73e8; padding-left: 12px; margin: 40px 0 15px; font-size: 1.4em; }
+h3 { color: #555; margin: 20px 0 10px; font-size: 1.1em; }
+  .card { background: #fff; border-radius: 10px; padding: 24px; margin: 20px 0; box-shadow: 0 2px 8px rgba(0,0,0,0.06); word-break: break-word; }
+  table { width: 100%; border-collapse: collapse; margin: 15px 0; font-size: 0.92em; }
+  th, td { padding: 10px 14px; text-align: left; border-bottom: 1px solid #e0e0e0; word-break: break-word; }
+  th { background: #e8f0fe; color: #1a73e8; font-weight: 600; white-space: nowrap; }
+  tr:hover { background: #f8f9fa; }
+  code { background: #f5f5f5; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; color: #d32f2f; word-break: break-all; }
+  .flow { background: linear-gradient(135deg,#e8f0fe,#e3f2fd); border-radius: 8px; padding: 20px; margin: 15px 0; font-family: "Consolas","Courier New",monospace; font-size: 0.85em; white-space: pre-wrap; overflow-x: auto; line-height: 1.5; word-break: break-all; }
+.note { background: #fff3cd; border-left: 4px solid #ffc107; padding: 14px; margin: 15px 0; border-radius: 0 8px 8px 0; font-size: 0.93em; }
+.info { background: #d1ecf1; border-left: 4px solid #17a2b8; padding: 14px; margin: 15px 0; border-radius: 0 8px 8px 0; font-size: 0.93em; }
+.tag { display: inline-block; background: #e3f2fd; color: #1565c0; padding: 2px 8px; border-radius: 4px; font-size: 0.85em; margin: 2px 4px; }
+.diagram-box { display: flex; gap: 10px; flex-wrap: wrap; margin: 15px 0; }
+.diagram-item { background: #fff; border: 2px solid #e0e0e0; border-radius: 8px; padding: 16px; text-align: center; min-width: 160px; flex: 1; }
+.diagram-item strong { display: block; color: #1a73e8; margin-bottom: 6px; }
+.arrow { color: #999; font-size: 1.5em; display: flex; align-items: center; }
+</style>
+</head>
+<body>
+<div class="container">
+<h1>视频向量化逻辑</h1>
+<p class="subtitle">更新时间: 2026-06-04 &nbsp;|&nbsp; 全链路 FP16 &nbsp;|&nbsp; FG-CLIP2 / OpenAI CLIP 双模型支持</p>
+
+<h2>1. 整体架构</h2>
+<div class="diagram-box">
+<div class="diagram-item"><strong>输入</strong>视频文件 (.mp4/.mkv等)</div>
+<div class="arrow">→</div>
+<div class="diagram-item"><strong>帧提取</strong>FFmpeg 短边缩放</div>
+<div class="arrow">→</div>
+<div class="diagram-item"><strong>向量化</strong>CLIP/FG-CLIP2 编码</div>
+<div class="arrow">→</div>
+<div class="diagram-item"><strong>场景检测</strong>余弦相似度边界</div>
+<div class="arrow">→</div>
+<div class="diagram-item"><strong>Lance 索引</strong>列式存储</div>
+</div>
+
+<h2>2. 帧提取</h2>
+<div class="card">
+<table>
+<tr><th>参数</th><th>默认值</th><th>作用</th></tr>
+<tr><td><code>output_resolution</code></td><td>256</td><td>短边缩放目标像素 (1920×1080 → 456×256)</td></tr>
+<tr><td><code>sample_interval</code></td><td>3</td><td>每 N 帧抽取一帧</td></tr>
+<tr><td><code>brightness_threshold</code></td><td>15</td><td>黑帧判定亮度阈值 (0-255)</td></tr>
+<tr><td><code>black_pixel_ratio</code></td><td>98</td><td>黑像素占比 (%)</td></tr>
+</table>
+<div class="flow">1920×1080 → FFmpeg scale (短边→256) → 456×256 (JPEG) → PIL 加载 RGB</div>
+<div class="note"><b>FG-CLIP2 不用 CenterCrop</b>：456×256 → Siglip2ImageProcessorFast 动态分块 (28×16 patch) → 完整画面入模</div>
+</div>
+
+<h2>3. 向量化流水线</h2>
+<div class="card">
+<p><b>双缓冲并行架构</b>：I/O 线程池 (<code>io_workers=8</code>) 加载图片 → GPU 批量推理 (<code>batch_size=512</code>) 并行执行，预加载掩盖 I/O 延迟。</p>
+
+<div class="flow">
+[I/O Threads] → 加载帧图片 (PIL) → 预处理 → 加入输入队列
+                                      ↓
+[Main Thread]  → 从队列取 batch → GPU 推理 → 特征归一化 → 加入输出队列
+                                      ↓
+[Writer Thread] → 从队列取特征 → AsyncLanceWriter → 落盘</div>
+</div>
+
+<h2>4. FP16 全链路 (v2026.06)</h2>
+<div class="card">
+<table>
+<tr><th>阶段</th><th>精度</th><th>改动</th></tr>
+<tr><td>模型权重</td><td><span class="tag">FP16</span></td><td><code>model.half()</code></td></tr>
+<tr><td>推理输出</td><td><span class="tag">FP16</span></td><td><b>已删除</b> <code>.float()</code> 强制转 FP32</td></tr>
+<tr><td>Lance 存储</td><td><span class="tag">FP16</span></td><td><code>.astype(np.float16)</code></td></tr>
+<tr><td>搜索加载</td><td><span class="tag">FP16</span></td><td>无条件 <code>torch.float16</code> (已删条件分支)</td></tr>
+</table>
+<div class="info"><b>效果</b>：Lance 文件减半 (768维×2字节)、GPU 显存减半、前端 FP16 开关已移除</div>
+</div>
+
+<h2>5. 场景检测</h2>
+<div class="card">
+<p><code>SceneBoundaryDetector.find_scene_boundaries()</code></p>
+<ol>
+<li>计算相邻帧向量的余弦相似度</li>
+<li>相似度 < <code>cosine_similarity_threshold</code> (默认 0.82) → 场景边界</li>
+<li><code>localmax_order=1</code> 局部极大值检测去噪声</li>
+<li>场景帧数 < <code>min_scene_length</code> (默认 7) → 与相邻最近场景合并</li>
+</ol>
+<p>每个场景保留 3 帧特征：<b>首帧、中间帧、尾帧</b>，用于后续搜索时提高召回。</p>
+</div>
+
+<h2>6. Lance 索引存储</h2>
+<div class="card">
+<table>
+<tr><th>字段</th><th>类型</th><th>说明</th></tr>
+<tr><td><code>video_path</code></td><td>string</td><td>视频源文件路径</td></tr>
+<tr><td><code>start_frame</code></td><td>int64</td><td>场景起始帧号</td></tr>
+<tr><td><code>end_frame</code></td><td>int64</td><td>场景结束帧号</td></tr>
+<tr><td><code>fps</code></td><td>float32</td><td>视频帧率</td></tr>
+<tr><td><code>feature_count</code></td><td>int64</td><td>特征向量数 (固定 3)</td></tr>
+<tr><td><code>features_blob</code></td><td>large_binary</td><td>FP16 特征向量原始字节 (3×768×2 bytes)</td></tr>
+</table>
+<p>命名格式: <code>{视频源名}_{模型名}.lance</code></p>
+</div>
+
+<h2>7. 前端参数 (Pipeline_control.html → indexer)</h2>
+<div class="card">
+<table>
+<tr><th>前端控件</th><th>后端参数</th><th>默认值</th><th>说明</th></tr>
+<tr><td><code>idx_model_name</code></td><td><code>model_name</code></td><td>openai-clip-vit-large-patch14</td><td>向量模型选择</td></tr>
+<tr><td><code>idx_input_directory</code></td><td><code>input_directory</code></td><td>—</td><td>视频输入目录</td></tr>
+<tr><td><code>idx_output_directory</code></td><td><code>output_directory</code></td><td>indexes/</td><td>索引输出目录</td></tr>
+<tr><td><code>idx_output_resolution</code></td><td><code>output_resolution</code></td><td>256</td><td>抽帧短边分辨率</td></tr>
+<tr><td><code>idx_batch_size</code></td><td><code>batch_size</code></td><td>512</td><td>GPU 推理批大小</td></tr>
+<tr><td><code>idx_workers</code></td><td><code>workers</code></td><td>2</td><td>异步写入线程</td></tr>
+<tr><td><code>idx_io_workers</code></td><td><code>io_workers</code></td><td>8</td><td>I/O 并发线程</td></tr>
+<tr><td><code>idx_cosine_similarity_threshold</code></td><td><code>cosine_similarity_threshold</code></td><td>0.82</td><td>场景切换阈值</td></tr>
+<tr><td><code>idx_sample_interval</code></td><td><code>sample_interval</code></td><td>3</td><td>采样间隔</td></tr>
+<tr><td><code>idx_min_scene_length</code></td><td><code>min_scene_length</code></td><td>7</td><td>最小场景帧数</td></tr>
+<tr><td><code>idx_localmax_order</code></td><td><code>localmax_order</code></td><td>1</td><td>局部极大值窗口</td></tr>
+<tr><td><code>idx_resume_processing</code></td><td><code>resume_processing</code></td><td>False</td><td>增量处理</td></tr>
+<tr><td><code>idx_truncate_dim</code></td><td><code>truncate_dim</code></td><td>None</td><td>向量截断维度</td></tr>
+<tr><td><code>idx_brightness_threshold</code></td><td><code>brightness_threshold</code></td><td>15</td><td>黑帧亮度阈值</td></tr>
+<tr><td><code>idx_black_pixel_ratio</code></td><td><code>black_pixel_ratio</code></td><td>98</td><td>黑像素占比</td></tr>
+</table>
+</div>
+
+<h2>8. 批量处理</h2>
+<div class="card">
+<p><code>batch_create_video_index()</code> 扫描输入目录下所有子文件夹，逐个调用 <code>create_video_index()</code>。</p>
+<p><code>resume_processing=True</code> 时跳过已索引视频，支持断点续建。</p>
+</div>
+
+<h2>9. 参数全表</h2>
+<div class="card">
+<table>
+<tr><th>参数</th><th>默认值</th><th>作用</th></tr>
+<tr><td><code>model_name</code></td><td>openai-clip-vit-large-patch14</td><td>向量模型名</td></tr>
+<tr><td><code>model_type</code></td><td>auto</td><td>自动检测 clip/fgclip2</td></tr>
+<tr><td><code>truncate_dim</code></td><td>None</td><td>向量截断维度</td></tr>
+<tr><td><code>output_resolution</code></td><td>256</td><td>抽帧短边分辨率</td></tr>
+<tr><td><code>batch_size</code></td><td>512</td><td>GPU 推理批大小</td></tr>
+<tr><td><code>workers</code></td><td>2</td><td>异步写入线程数</td></tr>
+<tr><td><code>io_workers</code></td><td>8</td><td>I/O 并发线程数</td></tr>
+<tr><td><code>cosine_similarity_threshold</code></td><td>0.82</td><td>场景切换阈值</td></tr>
+<tr><td><code>sample_interval</code></td><td>3</td><td>采样间隔</td></tr>
+<tr><td><code>min_scene_length</code></td><td>7</td><td>最小场景帧数</td></tr>
+<tr><td><code>localmax_order</code></td><td>1</td><td>局部极大值窗口</td></tr>
+<tr><td><code>resume_processing</code></td><td>False</td><td>增量处理</td></tr>
+</table>
+</div>
+</div>
+</body>
+</html>

@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>text_search 执行逻辑</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: "Segoe UI","Microsoft YaHei",sans-serif; background: #f0f2f5; color: #333; line-height: 1.7; }
+.container { max-width: 1100px; margin: 0 auto; padding: 30px 20px; }
+h1 { text-align: center; color: #e65100; font-size: 2em; margin-bottom: 10px; }
+.subtitle { text-align: center; color: #666; margin-bottom: 30px; font-size: 0.95em; }
+h2 { color: #2c3e50; border-left: 4px solid #e65100; padding-left: 12px; margin: 40px 0 15px; font-size: 1.4em; }
+h3 { color: #555; margin: 20px 0 10px; font-size: 1.1em; }
+  .card { background: #fff; border-radius: 10px; padding: 24px; margin: 20px 0; box-shadow: 0 2px 8px rgba(0,0,0,0.06); word-break: break-word; }
+  table { width: 100%; border-collapse: collapse; margin: 15px 0; font-size: 0.92em; }
+  th, td { padding: 10px 14px; text-align: left; border-bottom: 1px solid #e0e0e0; word-break: break-word; }
+  th { background: #fff3e0; color: #e65100; font-weight: 600; white-space: nowrap; }
+  tr:hover { background: #f8f9fa; }
+  code { background: #f5f5f5; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; color: #c62828; word-break: break-all; }
+  .flow { background: linear-gradient(135deg,#fff3e0,#fff8e1); border-radius: 8px; padding: 20px; margin: 15px 0; font-family: "Consolas","Courier New",monospace; font-size: 0.85em; white-space: pre-wrap; overflow-x: auto; line-height: 1.5; word-break: break-all; }
+.note { background: #fff3cd; border-left: 4px solid #ffc107; padding: 14px; margin: 15px 0; border-radius: 0 8px 8px 0; font-size: 0.93em; }
+.info { background: #d1ecf1; border-left: 4px solid #17a2b8; padding: 14px; margin: 15px 0; border-radius: 0 8px 8px 0; font-size: 0.93em; }
+.step { display: flex; align-items: flex-start; margin: 12px 0; gap: 12px; }
+.step-num { background: #e65100; color: #fff; border-radius: 50%; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; font-weight: bold; flex-shrink: 0; font-size: 0.9em; }
+.step-text { flex: 1; }
+.tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.85em; margin: 2px 4px; }
+.tag.orange { background: #fff3e0; color: #e65100; }
+.tag.blue { background: #e3f2fd; color: #1565c0; }
+.tag.green { background: #e8f5e9; color: #2e7d32; }
+</style>
+</head>
+<body>
+<div class="container">
+<h1>text_search 执行逻辑</h1>
+<p class="subtitle">代码依据: text_search.py + Frame_text_search.html &nbsp;|&nbsp; 单文本语义搜索 &nbsp;|&nbsp; 全链路 FP16</p>
+
+<h2>1. 请求链路</h2>
+<div class="card">
+<div class="step"><div class="step-num">1</div><div class="step-text">前端 <code>Frame_text_search.html</code> → 用户输入文本 + 选择 Lance 索引 → 点击搜索</div></div>
+<div class="step"><div class="step-num">2</div><div class="step-text">前端 <code>POST /search</code> → JSON 体含 <code>query</code>, <code>indices</code>, <code>threshold</code>, 重排/去重参数</div></div>
+<div class="step"><div class="step-num">3</div><div class="step-text">后端 <code>search_similar_scenes()</code> → 参数校验 → 多索引模型一致性检查 → 文本召回 → 可选重排/去重</div></div>
+<div class="step"><div class="step-num">4</div><div class="step-text">返回 JSON → 前端渲染缩略图 → 用户可预览(<code>/get_preview</code>)、导出(<code>/export_clips</code>)</div></div>
+</div>
+
+<h2>2. 搜索执行流程</h2>
+<div class="card">
+<div class="step"><div class="step-num">1</div><div class="step-text">读取 <code>request.json</code>，校验 <code>query</code> 和 <code>indices</code> 非空</div></div>
+<div class="step"><div class="step-num">2</div><div class="step-text">解析参数: <code>threshold</code> (默认 20.0), <code>use_fp16</code> (FP16 全链路固定生效), 重排/去重参数</div></div>
+<div class="step"><div class="step-num">3</div><div class="step-text"><b>模型名提取</b>: 从 Lance 目录名提取模型名，多索引要求同一模型，否则 400</div></div>
+<div class="step"><div class="step-num">4</div><div class="step-text"><b>模型加载/复用</b>: <code>get_or_create_processor()</code> 创建 <code>EmbeddingModelProcessor</code> + <code>SemanticSearchEngine</code>，模型切换时自动释放旧模型</div></div>
+<div class="step"><div class="step-num">5</div><div class="step-text"><b>初筛召回</b>: 遍历每个 Lance 索引 → <code>search_engine.search_by_text(...)</code> 做 CLIP 余弦相似度搜索</div></div>
+<div class="step"><div class="step-num">6</div><div class="step-text"><b>可选重排</b>: Reranker 启用时先释放 CLIP 显存 → 加载 Qwen3-VL-Reranker → 前 <code>rerank_top_k</code> 条重打分 → 融合分数 → 释放 Reranker</div></div>
+<div class="step"><div class="step-num">7</div><div class="step-text"><b>最终过滤</b>: <code>similarity >= threshold</code></div></div>
+<div class="step"><div class="step-num">8</div><div class="step-text"><b>可选去重</b>: 按 Lance 分组加载场景向量 → 余弦相似度去重 → OP/ED 优先保留</div></div>
+</div>
+
+<h2>3. 前端参数 (Frame_text_search.html → POST /search)</h2>
+<div class="card">
+<table>
+<tr><th>前端控件</th><th>JSON字段</th><th>默认值</th><th>说明</th></tr>
+<tr><td><code>text_query</code></td><td><code>query</code></td><td>必填</td><td>文本检索描述</td></tr>
+<tr><td><code>index_select</code></td><td><code>indices</code></td><td>—</td><td>Lance 索引路径(换行分隔)</td></tr>
+<tr><td><code>similarity_threshold</code></td><td><code>threshold</code></td><td>20.0</td><td>相似度阈值</td></tr>
+<tr><td><code>model_select</code></td><td>(自动检测)</td><td>—</td><td>从索引文件名推断模型</td></tr>
+<tr><td><code>use_reranker</code></td><td><code>use_reranker</code></td><td>False</td><td>Qwen3-VL 重排</td></tr>
+<tr><td><code>rerank_top_k</code></td><td><code>rerank_top_k</code></td><td>50</td><td>重排候选数</td></tr>
+<tr><td><code>rerank_batch_size</code></td><td><code>rerank_batch_size</code></td><td>4</td><td>Reranker 批大小</td></tr>
+<tr><td><code>rerank_weight</code></td><td><code>rerank_weight</code></td><td>0.6</td><td>融合权重</td></tr>
+<tr><td><code>reranker_output_resolution</code></td><td><code>reranker_output_resolution</code></td><td>384</td><td>重排抽帧分辨率</td></tr>
+<tr><td><code>use_mini_rerank</code></td><td><code>use_mini_rerank</code></td><td>False</td><td>MiniCPM 相似度重排</td></tr>
+<tr><td><code>use_dedup</code></td><td><code>use_dedup</code></td><td>False</td><td>跨视频去重</td></tr>
+<tr><td><code>dedup_threshold</code></td><td><code>dedup_threshold</code></td><td>0.95</td><td>去重余弦阈值</td></tr>
+<tr><td><code>startFrameOffset</code></td><td><code>start_frame_offset</code></td><td>-2</td><td>起始帧偏移</td></tr>
+<tr><td><code>endFrameOffset</code></td><td><code>end_frame_offset</code></td><td>2</td><td>结束帧偏移</td></tr>
+</table>
+</div>
+
+<h2>4. 后端参数表</h2>
+<div class="card">
+<h3>检索输入</h3>
+<table>
+<tr><th>参数</th><th>默认值</th><th>作用</th></tr>
+<tr><td><code>query</code></td><td>必填</td><td>文本检索描述</td></tr>
+<tr><td><code>indices</code></td><td>''</td><td>Lance 索引路径 (换行分隔)</td></tr>
+<tr><td><code>threshold</code></td><td>20.0</td><td>最终相似度阈值</td></tr>
+<tr><td><code>truncate_dim</code></td><td>None</td><td>向量截断维度</td></tr>
+</table>
+<h3>重排参数</h3>
+<table>
+<tr><th>参数</th><th>默认值</th><th>作用</th></tr>
+<tr><td><code>use_reranker</code></td><td>False</td><td>启用二阶段重排</td></tr>
+<tr><td><code>rerank_top_k</code></td><td>50</td><td>参与重排候选数</td></tr>
+<tr><td><code>rerank_batch_size</code></td><td>4</td><td>Reranker 批大小</td></tr>
+<tr><td><code>rerank_weight</code></td><td>0.6</td><td>融合权重: clip*(1-w) + rerank*100*w</td></tr>
+<tr><td><code>reranker_output_resolution</code></td><td>384</td><td>重排抽帧分辨率</td></tr>
+</table>
+<h3>去重参数</h3>
+<table>
+<tr><th>参数</th><th>默认值</th><th>作用</th></tr>
+<tr><td><code>use_dedup</code></td><td>False</td><td>跨视频去重</td></tr>
+<tr><td><code>dedup_threshold</code></td><td>0.95</td><td>余弦相似度阈值</td></tr>
+</table>
+</div>
+
+<h2>5. 关键子逻辑</h2>
+<div class="card">
+<table>
+<tr><th>函数</th><th>作用</th></tr>
+<tr><td><code>detect_model_type()</code></td><td>自动识别 clip / fgclip2 模型类型</td></tr>
+<tr><td><code>extract_model_name_from_index()</code></td><td>从 Lance 索引目录名提取模型名</td></tr>
+<tr><td><code>get_or_create_processor()</code></td><td>创建/复用嵌入模型 + 搜索引擎，切换时清理旧模型释放显存</td></tr>
+<tr><td><code>release_clip_model()</code></td><td>释放 CLIP 模型 + torch.cuda.empty_cache()</td></tr>
+<tr><td><code>release_reranker_model()</code></td><td>释放 Reranker 模型</td></tr>
+<tr><td><code>get_or_create_reranker()</code></td><td>获取/创建 Qwen3-VL Reranker，路径/分辨率变化时自动重建</td></tr>
+</table>
+</div>
+
+<h2>6. 重排公式</h2>
+<div class="card">
+<div class="flow">final_score = CLIP_sim x (1 - rerank_weight) + rerank_score x 100.0 x rerank_weight</div>
+<p>步骤: 1) 取初筛前 <code>rerank_top_k</code> 条 → 2) 批量抽取帧 → 3) Reranker 打分 → 4) 融合排序 → 5) 释放 Reranker 模型</p>
+</div>
+
+<h2>7. 搜索引擎</h2>
+<div class="card">
+<ol>
+<li><b>Lance 直读</b>: 直接从 Lance 索引读取 FP16 特征向量，无需 NPZ 缓存层</li>
+<li><b>文本编码</b>: 查询文本 → CLIP/FG-CLIP2 → L2 归一化向量</li>
+<li><b>相似度计算</b>: <code>logit_scale * query @ image_features.T</code></li>
+<li><b>logit_scale</b>: OpenAI CLIP ≈ 100 (<code>logit_scale.exp()</code>); FG-CLIP2 用相同 100.0 硬编码</li>
+</ol>
+</div>
+
+<h2>8. 返回结构</h2>
+<div class="card">
+<table>
+<tr><th>字段</th><th>说明</th></tr>
+<tr><td><code>success</code></td><td>固定 True</td></tr>
+<tr><td><code>matches</code></td><td>结果列表 (视频路径、帧区间、相似度)</td></tr>
+<tr><td><code>rerank_used</code></td><td>是否执行了重排</td></tr>
+<tr><td><code>rerank_info</code></td><td>重排统计 {reranked, total}</td></tr>
+<tr><td><code>dedup_info</code></td><td>去重统计 {before, after, removed}</td></tr>
+<tr><td><code>model_used</code></td><td>实际使用的模型名</td></tr>
+</table>
+</div>
+
+<h2>9. 相关接口</h2>
+<div class="card">
+<table>
+<tr><th>接口</th><th>方法</th><th>作用</th></tr>
+<tr><td><code>/search</code></td><td>POST</td><td>文本语义搜索</td></tr>
+<tr><td><code>/clear_cache</code></td><td>POST</td><td>清理临时文件 + 释放显存</td></tr>
+<tr><td><code>/list_models</code></td><td>GET</td><td>列出可用模型</td></tr>
+<tr><td><code>/get_preview</code></td><td>GET</td><td>提取/缓存缩略帧</td></tr>
+<tr><td><code>/get_clip</code></td><td>GET</td><td>临时预览片段</td></tr>
+<tr><td><code>/export_clips</code></td><td>POST</td><td>批量导出视频片段</td></tr>
+<tr><td><code>/save_ffmpeg_config</code></td><td>POST</td><td>保存 FFmpeg 参数到 config.json</td></tr>
+<tr><td><code>/list_presets</code></td><td>GET</td><td>列出预设</td></tr>
+</table>
+</div>
+</div>
+</body>
+</html>

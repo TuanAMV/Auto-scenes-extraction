@@ -15,9 +15,9 @@ import sys
 _current_file = os.path.abspath(__file__)
 _embedding_dir = os.path.dirname(_current_file)
 _a_core_utils_dir = os.path.dirname(_embedding_dir)
-_project_root_dir = os.path.dirname(_a_core_utils_dir)
-if _project_root_dir not in sys.path:
-    sys.path.insert(0, _project_root_dir)
+_cut_detect_scene_dir = os.path.dirname(_a_core_utils_dir)
+if _cut_detect_scene_dir not in sys.path:
+    sys.path.insert(0, _cut_detect_scene_dir)
 
 from .embedding_model import (
     EmbeddingModelProcessor,

@@ -17,9 +17,9 @@ import datetime
 _current_file = os.path.abspath(__file__)
 _video_processing_dir = os.path.dirname(_current_file)
 _a_core_utils_dir = os.path.dirname(_video_processing_dir)
-_project_root_dir = os.path.dirname(_a_core_utils_dir)
-if _project_root_dir not in sys.path:
-    sys.path.insert(0, _project_root_dir)
+_cut_detect_scene_dir = os.path.dirname(_a_core_utils_dir)
+if _cut_detect_scene_dir not in sys.path:
+    sys.path.insert(0, _cut_detect_scene_dir)
 
 # 导入路径解析器
 from path_resolver import PathResolver
@@ -62,6 +62,56 @@ class VideoNameParser:
            - 独立数字
            - 保底 PV+时间戳
         """
+        # ========== 第零优先级：OP/ED 完整检测（优先于 guessit） ==========
+        
+        oped_result = None
+        
+        # ① S数字+OP/ED 紧凑格式，带数字+可选字母后缀（如 S2OP1A → S02OP1A, S1NCED2 → S01NCED2）
+        s_oped = re.search(r'(?<![A-Za-z])S(\d+)((?:NC)?(?:OP|ED))(\d+[A-Za-z]*)', filename, re.IGNORECASE)
+        if s_oped:
+            season = int(s_oped.group(1))
+            type_ = s_oped.group(2).upper()
+            suffix = s_oped.group(3)
+            return f"S{season:02d}{type_}{suffix}"
+        
+        # ① S数字+OP/ED 紧凑格式，无后缀（如 S2OP → S02OP）
+        s_oped = re.search(r'(?<![A-Za-z])S(\d+)((?:NC)?(?:OP|ED))(?![A-Za-z0-9])', filename, re.IGNORECASE)
+        if s_oped:
+            season = int(s_oped.group(1))
+            type_ = s_oped.group(2).upper()
+            return f"S{season:02d}{type_}"
+        
+        # ② OP/ED/NCOP/NCED 带数字+可选字母后缀（如 OP1A, NCED2B）
+        oped_match = re.search(r'(?<![A-Za-z])(NC)?(OP|ED)(\d+[A-Za-z]*)', filename, re.IGNORECASE)
+        if oped_match:
+            nc = (oped_match.group(1) or '').upper()
+            type_ = oped_match.group(2).upper()
+            suffix = oped_match.group(3)
+            oped_result = f"{nc}{type_}{suffix}"
+        
+        # ③ 纯 OP/ED/NCOP/NCED（无后缀）
+        if not oped_result:
+            oped_match = re.search(r'(?<![A-Za-z])(NC)?(OP|ED)(?![A-Za-z0-9])', filename, re.IGNORECASE)
+            if oped_match:
+                nc = (oped_match.group(1) or '').upper()
+                type_ = oped_match.group(2).upper()
+                oped_result = f"{nc}{type_}"
+        
+        # ④ Opening/Ending 全拼
+        if not oped_result:
+            if re.search(r'\bOpening\b', filename, re.IGNORECASE):
+                oped_result = "OP"
+            elif re.search(r'\bEnding\b', filename, re.IGNORECASE):
+                oped_result = "ED"
+        
+        # 如果检测到 OP/ED，尝试拼接 season 信息
+        if oped_result:
+            season_match = re.search(r'(?:S|Season)[\s_\-]*(\d+)', filename, re.IGNORECASE)
+            if season_match:
+                season = int(season_match.group(1))
+                return f"S{season:02d}{oped_result}"
+            return oped_result
+        
         # ========== 第一优先级：guessit ==========
         if HAS_GUESSIT:
             try:
@@ -83,13 +133,6 @@ class VideoNameParser:
                         return f"E{episode}"
                     return f"E{int(episode):02d}"
                 
-                # 检查 guessit 的 other 字段是否有 OP/ED
-                other = guess.get('other')
-                if other:
-                    other_str = str(other).upper() if not isinstance(other, list) else ' '.join(str(x).upper() for x in other)
-                    oped_match = re.search(r'(NC)?(OP|ED)(\d*)', other_str)
-                    if oped_match:
-                        return f"{oped_match.group(1) or ''}{oped_match.group(2)}{oped_match.group(3) or ''}"
             except Exception:
                 pass
         
@@ -106,21 +149,27 @@ class VideoNameParser:
         if ep_match:
             return f"E{int(ep_match.group(1)):02d}"
         
-        # ② OP/ED/NCOP/NCED
-        oped = re.search(r'\b(NC)?(OP|ED)(\d*)\b', filename, re.IGNORECASE)
-        if oped:
-            nc = (oped.group(1) or '').upper()
-            type_ = oped.group(2).upper()
-            num = oped.group(3) or ''
-            return f"{nc}{type_}{num}"
+        # ①b 小数集数（如 "- 12.5" → E12.5）
+        decimal_ep = re.search(r'(?:^|[\s\-])(\d+\.\d+)(?:$|[\s\-])', filename)
+        if decimal_ep:
+            ep_val = decimal_ep.group(1)
+            if season_match:
+                return f"S{int(season_match.group(1)):02d}E{ep_val}"
+            return f"E{ep_val}"
         
-        # Opening/Ending 全拼
-        if re.search(r'\bOpening\b', filename, re.IGNORECASE):
-            return "OP"
-        if re.search(r'\bEnding\b', filename, re.IGNORECASE):
-            return "ED"
+        # ①c S数字 [数字] 格式（如 S3 [01] → S03E01）
+        s_bracket = re.search(r'[Ss](\d+)\s*\[(\d+)\]', filename)
+        if s_bracket:
+            return f"S{int(s_bracket.group(1)):02d}E{int(s_bracket.group(2)):02d}"
         
-        # ③ OVA/OAD/SP/Special
+        # ①d S数字 分隔符 数字 格式（如 S1 - 01, S1_01 → S01E01）
+        s_sep_ep = re.search(r'[Ss](\d+)[\s_\-]+(\d+)', filename)
+        if s_sep_ep:
+            ep_num = int(s_sep_ep.group(2))
+            if ep_num not in self.EXCLUDED_NUMBERS and ep_num < 500:
+                return f"S{int(s_sep_ep.group(1)):02d}E{ep_num:02d}"
+        
+        # ② OVA/OAD/SP/Special
         special = re.search(r'\b(OVA|OAD|SP|Special)[\s_\-]*(\d*)\b', filename, re.IGNORECASE)
         if special:
             type_ = "SP" if special.group(1).upper() == "SPECIAL" else special.group(1).upper()
@@ -133,7 +182,14 @@ class VideoNameParser:
             num = movie.group(2) or ''
             return f"Movie{num}"
         
-        # ⑤ PV/MV/Trailer/Preview/CM（所有 PV/MV 类型都加时间戳）
+        # ⑤ Music Video / PV/MV/Trailer/Preview/CM（所有 PV/MV 类型都加时间戳）
+        music_video = re.search(r'\bMusic[\s_\-]*Video[\s_\-]*(\d*)\b', filename, re.IGNORECASE)
+        if music_video:
+            num = music_video.group(1) or ''
+            if num:
+                return f"MV{num}"
+            return f"MV{datetime.datetime.now().strftime('%Y%m%d%H%M')}"
+        
         pv = re.search(r'\b(PV|MV|Trailer|Preview|CM)(\d*)\b', filename, re.IGNORECASE)
         if pv:
             type_ = pv.group(1).upper()

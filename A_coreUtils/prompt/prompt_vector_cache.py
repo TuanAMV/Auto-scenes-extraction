@@ -38,9 +38,9 @@ import torch
 _current_file = os.path.abspath(__file__)
 _prompt_dir = os.path.dirname(_current_file)
 _a_core_utils_dir = os.path.dirname(_prompt_dir)
-_project_root_dir = os.path.dirname(_a_core_utils_dir)
-if _project_root_dir not in sys.path:
-    sys.path.insert(0, _project_root_dir)
+_cut_detect_scene_dir = os.path.dirname(_a_core_utils_dir)
+if _cut_detect_scene_dir not in sys.path:
+    sys.path.insert(0, _cut_detect_scene_dir)
 
 from path_resolver import PathResolver  # noqa: E402
 
@@ -58,7 +58,6 @@ class PromptVectorCache:
     def __init__(
         self,
         processor=None,
-        prompt_template: str = None,
         keywords_path: str = None,
         cache_dir: str = None,
         batch_size: int = 512,
@@ -76,7 +75,6 @@ class PromptVectorCache:
         self.cache_dir = cache_dir
         os.makedirs(self.cache_dir, exist_ok=True)
 
-        self.prompt_template = prompt_template or "A {mood} {lens} of a {subject} {action} in {scene}"
         self.processor = processor
         self.batch_size = int(batch_size)
 
@@ -101,7 +99,7 @@ class PromptVectorCache:
         with open(self.keywords_path, "r", encoding="utf-8") as f:
             keywords_content = f.read()
         lang_mode = "chinese" if self.use_chinese else "english"
-        combined = f"{self.prompt_template}\n{keywords_content}\n{lang_mode}"
+        combined = f"prompt_vector_cache_v7\n{keywords_content}\n{lang_mode}"
         return hashlib.md5(combined.encode("utf-8")).hexdigest()[:8]
 
     def get_cache_path(self, model_name: str = None) -> str:
@@ -115,6 +113,22 @@ class PromptVectorCache:
 
     def get_lance_path(self, model_name: str = None) -> str:
         return self.get_cache_path(model_name) + ".lance"
+
+    def get_category_idx_map(self, model_name: str = None) -> Dict[str, List[int]]:
+        """从 Lance 缓存中读取每个类别的 prompt 索引列表。
+        Returns: {"主体": [0,1,2,...], "动作": [...], "场景": [...], "情绪": [...]}
+        """
+        lance_path = self.get_lance_path(model_name)
+        if not os.path.exists(lance_path):
+            return {}
+        import lance, pickle
+        ds = lance.dataset(lance_path)
+        cat_map = {}
+        for i, row in enumerate(ds.to_table(columns=["metadata"]).column(0)):
+            meta = pickle.loads(row.as_py()) if hasattr(row, 'as_py') else pickle.loads(row)
+            cat = meta.get("category", "?")
+            cat_map.setdefault(cat, []).append(i)
+        return cat_map
 
     def cache_exists(self, model_name: str = None) -> bool:
         lance_path = self.get_lance_path(model_name)
@@ -147,11 +161,10 @@ class PromptVectorCache:
 
         generator = PromptGenerator(
             keywords_path=self.keywords_path,
-            prompt_template=self.prompt_template,
             use_chinese=self.use_chinese,
         )
 
-        for combo in generator.iterate_all_combinations():
+        for combo in generator.iterate_all_labels_flat():
             yield combo["prompt"], combo
 
     def generate_cache(self, progress_callback=None) -> str:
@@ -176,7 +189,6 @@ class PromptVectorCache:
         print("📝 Prompt向量缓存生成器 (v7.0 Lance)")
         print("=" * 70)
         print(f"  模型: {self._model_name}")
-        print(f"  模板: {self.prompt_template}")
         print(f"  缓存目录: {self.cache_dir}")
         print(f"  写入目标: {os.path.basename(lance_path)}")
         print(f"  编码 batch_size: {self.batch_size}")
@@ -186,10 +198,9 @@ class PromptVectorCache:
 
         temp_generator = PromptGenerator(
             keywords_path=self.keywords_path,
-            prompt_template=self.prompt_template,
             use_chinese=self.use_chinese,
         )
-        total_prompts = int(temp_generator.count_total_combinations())
+        total_prompts = sum(1 for _ in temp_generator.iterate_all_labels_flat())
         del temp_generator
         if total_prompts <= 0:
             raise RuntimeError("total_prompts == 0, check logic_keywords.json / template")
@@ -209,8 +220,8 @@ class PromptVectorCache:
         )
 
         def _vectors_to_fixed_size_list(vectors: np.ndarray) -> pa.FixedSizeListArray:
-            vec = np.asarray(vectors, dtype=np.float32, order="C")
-            values = pa.array(vec.reshape(-1), type=pa.float32())
+            vec = np.asarray(vectors, dtype=np.float16, order="C")
+            values = pa.array(vec.reshape(-1), type=pa.float16())
             return pa.FixedSizeListArray.from_arrays(values, vector_dim)
 
         def record_batches():
@@ -282,7 +293,6 @@ class PromptVectorCache:
             {
                 "format": "prompt_vector_cache_lance_v7",
                 "model_name": str(self._model_name),
-                "prompt_template": str(self.prompt_template),
                 "cache_hash": str(self._cache_hash),
                 "total_prompts": str(total_prompts),
                 "vector_dim": str(vector_dim),
@@ -423,7 +433,7 @@ class PromptVectorBatchIterator:
         end_idx = min(start_idx + self.batch_size, self.total_prompts)
         desired = end_idx - start_idx
 
-        out_vec = np.empty((desired, self._vector_dim), dtype=np.float32)
+        out_vec = np.empty((desired, self._vector_dim), dtype=np.float16)
         out_prompts: List[str] = ["" for _ in range(desired)]
         out_meta: List[Dict] = [{} for _ in range(desired)]
 

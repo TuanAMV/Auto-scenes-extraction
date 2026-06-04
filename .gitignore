@@ -2,3 +2,8 @@
 python/
 __pycache__/
 *.pyc
+temp/
+indexes/
+templates/prompt_cache/
+*.lance
+output/

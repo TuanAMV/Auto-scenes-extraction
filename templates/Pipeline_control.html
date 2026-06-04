@@ -312,83 +312,6 @@
         .two-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
         .three-columns { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
 
-        .modal-overlay {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background-color: rgba(0, 0, 0, 0.6);
-            display: none;
-            justify-content: center;
-            align-items: center;
-            z-index: 3200;
-        }
-
-        .modal-content {
-            background-color: #fff;
-            padding: 16px;
-            border-radius: 10px;
-            width: min(92vw, 640px);
-            max-height: 78vh;
-            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
-            display: flex;
-            flex-direction: column;
-            border: 1px solid #d9e5ea;
-        }
-
-        .modal-header {
-            border-bottom: 1px solid #e2ebef;
-            padding-bottom: 8px;
-            margin-bottom: 10px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-
-        .modal-header h4 { margin: 0; font-size: 1em; color: #2a4451; }
-
-        .modal-close {
-            border: none;
-            background: none;
-            font-size: 1.3em;
-            cursor: pointer;
-            color: #2f4d59;
-            padding: 0 6px;
-        }
-
-        .modal-close:hover { color: var(--danger); transform: none; box-shadow: none; background: none; }
-
-        .modal-path-container { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-        .modal-path-input { flex-grow: 1; padding: 6px 10px; }
-
-        .modal-body {
-            flex-grow: 1;
-            overflow-y: auto;
-            border: 1px solid #d3e1e7;
-            border-radius: 8px;
-            padding: 8px;
-            background: #fcfefe;
-        }
-
-        .modal-footer { padding-top: 10px; margin-top: 10px; border-top: 1px solid #e2ebef; text-align: right; }
-
-        .file-list { list-style-type: none; padding: 0; margin: 0; }
-
-        .file-list li {
-            padding: 7px 9px;
-            cursor: pointer;
-            border-radius: 6px;
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            font-size: 0.9em;
-            color: #2f4d59;
-        }
-
-        .file-list li:hover { background-color: #edf5f7; }
-        .file-list .icon { width: 18px; text-align: center; }
-
         .tab-container { margin-bottom: 10px; }
 
         .tab-buttons {
@@ -478,34 +401,6 @@
             color: #1f3d49;
         }
 
-        .search-mode-selector { display: flex; gap: 8px; margin-bottom: 10px; }
-
-        .search-mode-btn {
-            flex: 1;
-            padding: 10px;
-            border: 1px solid #cfdee4;
-            border-radius: 10px;
-            background: #fff;
-            cursor: pointer;
-            text-align: center;
-            transition: all 0.2s ease;
-            box-shadow: 0 2px 6px rgba(9, 41, 49, 0.06);
-        }
-
-        .search-mode-btn:hover {
-            border-color: #9ec0cb;
-            transform: translateY(-1px);
-        }
-
-        .search-mode-btn.active {
-            border-color: var(--primary);
-            background: #e6f2f4;
-            box-shadow: inset 0 0 0 1px rgba(15, 124, 138, 0.12);
-        }
-
-        .search-mode-btn .mode-icon { font-size: 1.2em; display: block; margin-bottom: 4px; }
-        .search-mode-btn .mode-name { font-weight: 600; font-size: 0.85em; color: #2b4a56; }
-
         .disabled-section { opacity: 0.52; pointer-events: none; }
         .disabled-section input, .disabled-section select, .disabled-section textarea { background-color: #edf2f5; }
 
@@ -523,6 +418,9 @@
 
         @media (max-width: 860px) { .three-columns { grid-template-columns: 1fr 1fr; } }
         @media (max-width: 680px) { .two-columns, .three-columns { grid-template-columns: 1fr; } }
+        .no-spinner { -moz-appearance: textfield; }
+        .no-spinner::-webkit-outer-spin-button,
+        .no-spinner::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
     </style>
 </head>
 <body>
@@ -550,7 +448,7 @@
                                 <button type="button" class="browse-btn" data-target="input_directory" data-mode="folder">📁</button>
                             </div>
                         </div>
-                        <div class="form-group">
+                        <div class="form-group" style="display:none;">
                             <label for="output_directory">输出目录</label>
                             <div class="input-group">
                                 <input type="text" id="output_directory" value="indexes" placeholder="索引保存目录">
@@ -562,7 +460,8 @@
                             <div class="form-group">
                                 <label for="idx_model_name">模型</label>
                                 <select id="idx_model_name">
-                                    <option value="qihoo360_fg-clip2-base">qihoo360_fg-clip2-base</option>
+                                    <option value="qihoo360-fg-clip2-base" data-type="fgclip2">qihoo360-fg-clip2-base</option>
+                                    <option value="openai-clip-vit-large-patch14" data-type="clip">openai-clip-vit-large-patch14</option>
                                 </select>
                             </div>
                             <div class="form-group">
@@ -614,13 +513,23 @@
                                 <input type="number" id="idx_black_pixel_ratio" value="98" min="0" max="100">
                             </div>
                             <div class="form-group">
+                                <label for="idx_white_threshold">白场阈值</label>
+                                <input type="text" id="idx_white_threshold" value="" placeholder="留空禁用 (例: 240)">
+                            </div>
+                        </div>
+                        <div class="three-columns">
+                            <div class="form-group">
+                                <label for="idx_white_pixel_ratio">白像素比例%</label>
+                                <input type="text" id="idx_white_pixel_ratio" value="" placeholder="留空禁用 (例: 90)">
+                            </div>
+                            <div class="form-group">
                                 <label for="idx_min_scene_length">最小场景帧</label>
                                 <input type="number" id="idx_min_scene_length" value="7" min="1" max="100">
                             </div>
-                        </div>
-                        <div class="form-group">
-                            <label for="idx_localmax_order">局部最大值阶数</label>
-                            <input type="number" id="idx_localmax_order" value="1" min="1" max="10">
+                            <div class="form-group">
+                                <label for="idx_localmax_order">局部最大值阶数</label>
+                                <input type="number" id="idx_localmax_order" value="1" min="1" max="10">
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -629,30 +538,14 @@
                 <div id="tab-search" class="tab-content">
                     <div class="panel-card">
                         <h3>🔍 自动提纯</h3>
-                        <!-- 搜索模式选择 -->
-                        <div class="search-mode-selector" style="margin-bottom:10px;">
-                            <div class="search-mode-btn active" data-mode="prompt">
-                                <span class="mode-icon">🔍</span>
-                                <span class="mode-name">Prompt模式</span>
-                            </div>
-                            <div class="search-mode-btn" data-mode="label">
-                                <span class="mode-icon">🏷️</span>
-                                <span class="mode-name">标签模式</span>
-                            </div>
-                            <div class="search-mode-btn" data-mode="cloze">
-                                <span class="mode-icon">📝</span>
-                                <span class="mode-name">选词填空</span>
-                            </div>
-                        </div>
-                        <input type="hidden" id="search_entry_mode" value="prompt">
                         <!-- 路径配置 -->
                         <div class="two-columns">
                             <div class="form-group">
                                 <label for="search_index_directory">索引目录</label>
-                                <div class="input-group">
-                                    <input type="text" id="search_index_directory" value="indexes">
-                                    <button type="button" class="browse-btn" data-target="search_index_directory" data-mode="folder">📁</button>
-                                </div>
+                                <select id="search_index_directory" style="padding:6px 8px; border-radius:4px; width:100%;">
+                                    <option value="openai-clip-vit-large-patch14">openai-clip-vit-large-patch14</option>
+                                    <option value="qihoo360-fg-clip2-base">qihoo360-fg-clip2-base</option>
+                                </select>
                             </div>
                             <div class="form-group">
                                 <label for="ps_video_output_directory">视频输出目录（可选）</label>
@@ -662,18 +555,18 @@
                                 </div>
                             </div>
                         </div>
-                        <!-- Prompt模板 -->
-                        <div id="prompt-mode-section">
-                            <div class="form-group">
-                                <label for="ps_prompt_template">Prompt模板</label>
-                                <textarea id="ps_prompt_template" rows="1" style="min-height:32px;">A {情绪} photo of a {主体} {动作} in {场景}.</textarea>
-                            </div>
-                            <div class="form-group">
-                                <label for="video_name_format">命名格式</label>
-                                <input type="text" id="video_name_format" value="{情绪}_{场景}_{主体}_{动作}_{起始帧}_{视频解析名}">
-                            </div>
-                            <!-- 相似度阈值 -->
-                            <div style="display:grid; grid-template-columns:1fr 1fr 1fr 1fr; gap:8px; margin-top:2px;">
+                        <!-- 索引列表 -->
+                        <div class="form-group">
+                            <label for="search_lance_indexes" style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
+                                <span>索引列表</span>
+                                <button type="button" id="selectAllLanceBtn" class="preset-btn btn-outline" style="width:auto; padding:2px 10px; font-size:0.78em;">全选</button>
+                            </label>
+                            <select id="search_lance_indexes" multiple size="4" style="height: auto; min-height: 80px; width:100%;">
+                                <option value="" disabled>选择索引模型后加载...</option>
+                            </select>
+                        </div>
+                        <!-- 相似度阈值 -->
+                            <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:2px;">
                                 <div class="form-group">
                                     <label for="sim_clip_large">CLIP阈值</label>
                                     <input type="number" id="sim_clip_large" value="21" min="0" max="100" step="1">
@@ -682,22 +575,17 @@
                                     <label for="sim_fgclip2">FG-CLIP2阈值</label>
                                     <input type="number" id="sim_fgclip2" value="14" min="0" max="100" step="1">
                                 </div>
-                                <div class="form-group">
+                                <div class="form-group" style="display:none;">
                                     <label for="sim_reranker">Reranker阈值</label>
                                     <input type="number" id="sim_reranker" value="51" min="0" max="100" step="1">
                                 </div>
-                                <div class="form-group">
+                                <div class="form-group" style="display:none;">
                                     <label for="sim_reranker_weight">Reranker权重</label>
                                     <input type="number" id="sim_reranker_weight" value="1" min="0" max="10" step="0.1">
                                 </div>
                             </div>
-                        </div>
-                        <!-- 标签Batch、缓存Batch、搜索Batch 一行 -->
+                        <!-- 缓存Batch、搜索Batch、LMDB写入批大小 一行 -->
                         <div class="three-columns">
-                            <div class="form-group" id="label-batch-group">
-                                <label for="ls_text_batch_size">标签Batch</label>
-                                <input type="text" id="ls_text_batch_size" value="" placeholder="留空或 none 使用默认">
-                            </div>
                             <div class="form-group">
                                 <label for="ps_prompt_cache_batch">缓存Batch</label>
                                 <input type="text" id="ps_prompt_cache_batch" value="" placeholder="留空或 none 使用默认">
@@ -706,8 +594,12 @@
                                 <label for="ps_prompt_search_batch">搜索Batch</label>
                                 <input type="text" id="ps_prompt_search_batch" value="" placeholder="留空或 none 使用默认">
                             </div>
+                            <div class="form-group">
+                                <label for="ps_lmdb_write_batch_size">LMDB写入批大小</label>
+                                <input type="text" id="ps_lmdb_write_batch_size" value="" placeholder="留空或 none 使用默认">
+                            </div>
                         </div>
-                        <!-- 搜索模式、候选分批大小一行（与Lance参数同布局） -->
+                        <!-- 搜索模式、候选分批大小、Top-K 一行 -->
                         <div class="three-columns">
                             <div class="form-group">
                                 <label>搜索模式</label>
@@ -722,56 +614,41 @@
                                 <input type="text" id="candidate_batch_size" value="" placeholder="留空或 none 使用默认">
                             </div>
                             <div class="form-group">
-                                <label for="ps_lance_batch_size">Lance Batch</label>
-                                <input type="text" id="ps_lance_batch_size" value="" placeholder="留空或 none 使用默认">
-                            </div>
-                        </div>
-                        <!-- Top-K、Lance加载线程 一行 -->
-                        <div class="three-columns">
-                            <div class="form-group">
                                 <label for="ps_top_k">Top-K</label>
                                 <input type="text" id="ps_top_k" value="" placeholder="留空或 none 表示不限制">
+                            </div>
+                        </div>
+                        <!-- Lance Batch、Lance加载线程 一行 -->
+                        <div class="three-columns">
+                            <div class="form-group">
+                                <label for="ps_lance_batch_size">Lance Batch</label>
+                                <input type="text" id="ps_lance_batch_size" value="" placeholder="留空或 none 使用默认">
                             </div>
                             <div class="form-group">
                                 <label for="ps_lance_load_workers">Lance加载线程</label>
                                 <input type="text" id="ps_lance_load_workers" value="" placeholder="留空或 none 使用默认">
                             </div>
+                            <div></div>
                         </div>
                         <!-- 四个勾选一行（Rerank参数上方） -->
                         <div class="toggle-row">
-                            <input type="checkbox" id="ps_use_reranker" checked data-default-checked="true">
-                            <label for="ps_use_reranker">Reranker</label>
+                            <input type="checkbox" id="ps_use_mini_rerank" data-default-checked="false">
+                            <label for="ps_use_mini_rerank">MiniRerank</label>
+                            <input type="checkbox" id="ps_use_reranker" data-default-checked="false" style="display:none;">
                             <input type="checkbox" id="use_diskcache" checked data-default-checked="true" style="margin-left:15px;">
                             <label for="use_diskcache">磁盘缓存</label>
-                            <input type="checkbox" id="ps_use_fp16" checked data-default-checked="true" style="margin-left:15px;">
-                            <label for="ps_use_fp16">FP16模型</label>
-                            <input type="checkbox" id="ps_feature_fp16" data-default-checked="false" style="margin-left:15px;">
-                            <label for="ps_feature_fp16">FP16特征</label>
                             <input type="checkbox" id="ps_use_chinese_query" data-default-checked="false" style="margin-left:15px;">
                             <label for="ps_use_chinese_query">中文查询</label>
                             <input type="checkbox" id="debug_similarity" checked data-default-checked="true" style="margin-left:15px;">
-                            <label for="debug_similarity">调试输出</label>
+                             <label for="debug_similarity">输出相似度</label>
+                            <input type="checkbox" id="use_shot_analysis" data-default-checked="false" style="margin-left:15px;">
+                            <label for="use_shot_analysis">景别分析</label>
                         </div>
-                        <!-- Rerank参数 一行 -->
+                        <!-- MiniRerank最低匹配数、向量去重阈值、相邻合并帧数 一行 -->
                         <div class="three-columns">
                             <div class="form-group">
-                                <label for="ps_rerank_top_k">Rerank Top-K</label>
-                                <input type="text" id="ps_rerank_top_k" value="" placeholder="留空或 none 使用默认">
-                            </div>
-                            <div class="form-group">
-                                <label for="ps_rerank_batch_size">Rerank Batch</label>
-                                <input type="text" id="ps_rerank_batch_size" value="" placeholder="留空或 none 使用默认">
-                            </div>
-                            <div class="form-group">
-                                <label for="ps_reranker_resolution">Rerank分辨率</label>
-                                <input type="text" id="ps_reranker_resolution" value="" placeholder="留空或 none 使用默认">
-                            </div>
-                        </div>
-                        <!-- LMDB写入批大小、向量去重阈值、相邻合并帧数 一行 -->
-                        <div class="three-columns">
-                            <div class="form-group">
-                                <label for="ps_lmdb_write_batch_size">LMDB写入批大小</label>
-                                <input type="text" id="ps_lmdb_write_batch_size" value="" placeholder="留空或 none 使用默认">
+                                <label for="ps_mini_rerank_min_matches">MiniRerank最低匹配数</label>
+                                <input type="text" id="ps_mini_rerank_min_matches" value="4" placeholder="默认4" class="no-spinner">
                             </div>
                             <div class="form-group">
                                 <label for="ps_vector_dedup_threshold">向量去重阈值</label>
@@ -1107,29 +984,9 @@
         </div>
     </div>
     
-    <!-- 文件浏览模态框 -->
-    <div id="fileBrowserModal" class="modal-overlay">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h4 id="modalTitle">选择文件夹</h4>
-                <button id="closeModalBtn" class="modal-close">&times;</button>
-            </div>
-            <div class="modal-path-container">
-                <input type="text" id="modalPathInput" class="modal-path-input">
-                <button id="modalGoBtn" class="browse-btn">转到</button>
-            </div>
-            <div class="modal-body">
-                <ul id="fileList" class="file-list"></ul>
-            </div>
-            <div class="modal-footer">
-                <button id="selectCurrentFolderBtn" class="btn-primary">选择当前文件夹</button>
-            </div>
-        </div>
-    </div>
 
     <script>
         // ============ 全局变量 ============
-        let currentTargetInput = null;
         let isRunning = false;
         let isStopping = false;
         let eventSource = null;
@@ -1168,123 +1025,19 @@
             });
         });
         
-        // ============ 搜索模式切换 ============
-        function updateSearchMode(mode) {
-            document.getElementById('search_entry_mode').value = mode;
-            
-            // Prompt模式专属元素（标签模式和选词填空模式时禁用）
-            const promptOnlyElements = [
-                'ps_prompt_template'
-            ];
-            
-            // Prompt模式和选词填空模式共用的Reranker元素（标签模式时禁用）
-            const rerankerElements = [
-                'ps_use_reranker',
-                'ps_rerank_top_k',
-                'ps_rerank_batch_size',
-                'ps_reranker_resolution'
-            ];
-            
-            // 标签模式专属元素（其他模式时禁用）
-            const labelOnlyElements = [
-                'ls_text_batch_size'
-            ];
-            
-            // 通用搜索参数（所有模式都可用）
-            const commonSearchElements = [
-                'ps_prompt_search_batch',
-                'ps_lance_batch_size',
-                'ps_prompt_cache_batch',
-                'candidate_batch_size'
-            ];
-            
-            document.querySelectorAll('.search-mode-btn').forEach(btn => {
-                btn.classList.toggle('active', btn.dataset.mode === mode);
-            });
-            
-            // 设置元素启用/禁用状态的辅助函数
-            function setElementsEnabled(ids, enabled) {
-                ids.forEach(id => {
-                    const el = document.getElementById(id);
-                    if (el) {
-                        el.disabled = !enabled;
-                        el.style.opacity = enabled ? '' : '0.5';
-                        el.style.backgroundColor = enabled ? '' : '#f0f0f0';
-                    }
-                });
-            }
-            
-            if (mode === 'prompt') {
-                // Prompt模式：启用Prompt专属和Reranker，禁用标签专属
-                setElementsEnabled(promptOnlyElements, true);
-                setElementsEnabled(rerankerElements, true);
-                setElementsEnabled(labelOnlyElements, false);
-                setElementsEnabled(commonSearchElements, true);
-                // 根据模型类型决定中文查询可用性
-                updateChineseQueryAvailability();
-            } else if (mode === 'label') {
-                // 标签模式：禁用Prompt专属和Reranker，启用标签专属
-                setElementsEnabled(promptOnlyElements, false);
-                setElementsEnabled(rerankerElements, false);
-                setElementsEnabled(labelOnlyElements, true);
-                setElementsEnabled(commonSearchElements, true);
-                // 根据模型类型决定中文查询可用性
-                updateChineseQueryAvailability();
-            } else if (mode === 'cloze') {
-                // 选词填空模式：禁用Prompt专属和标签专属，启用Reranker
-                setElementsEnabled(promptOnlyElements, false);
-                setElementsEnabled(rerankerElements, true);
-                setElementsEnabled(labelOnlyElements, false);
-                setElementsEnabled(commonSearchElements, true);
-                // 根据模型类型决定中文查询可用性
-                updateChineseQueryAvailability();
-            }
-            
-            // 根据Reranker勾选状态更新参数禁用
-            updateRerankerParams();
-        }
-        
         // ============ 中文查询可用性联动 ============
         function updateChineseQueryAvailability() {
             const chineseQueryEl = document.getElementById('ps_use_chinese_query');
             if (!chineseQueryEl) return;
-            const modelSelect = document.getElementById('idx_model_name');
-            const selectedOption = modelSelect.options[modelSelect.selectedIndex];
-            const modelType = selectedOption ? (selectedOption.dataset.type || '').toLowerCase() : '';
-            const isFgClip2 = modelType === 'fgclip2';
+            const dirSelect = document.getElementById('search_index_directory');
+            const dirVal = (dirSelect && dirSelect.value || '').toLowerCase();
+            const isFgClip2 = dirVal.includes('fg-clip2') || dirVal.includes('fgclip2');
             chineseQueryEl.disabled = !isFgClip2;
             chineseQueryEl.style.opacity = isFgClip2 ? '' : '0.5';
             if (!isFgClip2) {
                 chineseQueryEl.checked = false;
             }
         }
-        
-        // ============ Reranker勾选联动 ============
-        function updateRerankerParams() {
-            const rerankerCheckbox = document.getElementById('ps_use_reranker');
-            const rerankerParamElements = [
-                'ps_rerank_top_k',
-                'ps_rerank_batch_size',
-                'ps_reranker_resolution'
-            ];
-            
-            // 只有当Reranker勾选框本身未被禁用时，才根据勾选状态控制参数
-            const isRerankerEnabled = !rerankerCheckbox.disabled;
-            const isRerankerChecked = rerankerCheckbox.checked;
-            const shouldEnableParams = isRerankerEnabled && isRerankerChecked;
-            
-            rerankerParamElements.forEach(id => {
-                const el = document.getElementById(id);
-                if (el) {
-                    el.disabled = !shouldEnableParams;
-                    el.style.opacity = shouldEnableParams ? '' : '0.5';
-                    el.style.backgroundColor = shouldEnableParams ? '' : '#f0f0f0';
-                }
-            });
-        }
-        
-        // 绑定Reranker勾选框事件
-        document.getElementById('ps_use_reranker').addEventListener('change', updateRerankerParams);
         
         // ============ 搜索模式下拉框联动 ============
         function updateSearchModeSelect() {
@@ -1296,6 +1049,33 @@
                 lanceBatchEl.style.opacity = '';
                 lanceBatchEl.style.backgroundColor = '';
             }
+        }
+
+        // ============ 索引文件列表加载 ============
+        async function loadLanceIndexList() {
+            const modelName = document.getElementById('search_index_directory').value;
+            const lanceSelect = document.getElementById('search_lance_indexes');
+            lanceSelect.innerHTML = '<option value="" disabled>加载中...</option>';
+            try {
+                const response = await fetch(`/list_lance_files?dir=indexes%2F${encodeURIComponent(modelName)}`);
+                const data = await response.json();
+                lanceSelect.innerHTML = '';
+                if (data.success && Array.isArray(data.lance_files)) {
+                    if (data.lance_files.length === 0) {
+                        lanceSelect.innerHTML = '<option value="" disabled>未找到 .lance 索引</option>';
+                    } else {
+                        data.lance_files.forEach(name => {
+                            const option = document.createElement('option');
+                            option.value = name;
+                            option.textContent = name;
+                            lanceSelect.appendChild(option);
+                        });
+                    }
+                }
+            } catch (e) {
+                lanceSelect.innerHTML = '<option value="" disabled>加载失败</option>';
+            }
+            updateChineseQueryAvailability();
         }
 
         function setToggleVisualState(element, enabled) {
@@ -1497,12 +1277,6 @@
                 }
             });
         }
-
-        document.querySelectorAll('.search-mode-btn').forEach(btn => {
-            btn.addEventListener('click', () => {
-                updateSearchMode(btn.dataset.mode);
-            });
-        });
         
         // ============ 滑块值更新 ============
         document.querySelectorAll('input[type="range"]').forEach(slider => {
@@ -1514,75 +1288,33 @@
             }
         });
         
-        // ============ 文件浏览器 ============
-        const modal = document.getElementById('fileBrowserModal');
-        const closeModalBtn = document.getElementById('closeModalBtn');
-        const fileList = document.getElementById('fileList');
-        const modalPathInput = document.getElementById('modalPathInput');
-        const modalGoBtn = document.getElementById('modalGoBtn');
-        const selectCurrentFolderBtn = document.getElementById('selectCurrentFolderBtn');
-        
+        // ============ 原生目录选择 ============
         document.querySelectorAll('.browse-btn[data-target]').forEach(btn => {
-            btn.addEventListener('click', () => {
-                currentTargetInput = document.getElementById(btn.dataset.target);
-                modal.style.display = 'flex';
-                const initialPath = currentTargetInput.value || '';
-                fetchAndDisplayPath(initialPath);
+            btn.addEventListener('click', async () => {
+                const targetInput = document.getElementById(btn.dataset.target);
+                const initialPath = targetInput ? targetInput.value : '';
+                try {
+                    const res = await fetch('/pick_directory', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ initial_dir: initialPath })
+                    });
+                    const data = await res.json();
+                    if (data.success && data.path && targetInput) {
+                        targetInput.value = data.path;
+                    }
+                } catch (e) {
+                    console.error('原生目录选择失败:', e);
+                }
             });
         });
-        
-        function hideModal() { modal.style.display = 'none'; }
-        closeModalBtn.addEventListener('click', hideModal);
-        window.addEventListener('click', e => { if (e.target === modal) hideModal(); });
-        
-        async function fetchAndDisplayPath(path = '') {
-            fileList.innerHTML = '<li>正在加载...</li>';
-            try {
-                const res = await fetch(`/browse?path=${encodeURIComponent(path)}`);
-                const data = await res.json();
-                if (!res.ok) { fileList.innerHTML = `<li style="color: red;">错误: ${data.error}</li>`; return; }
-                
-                modalPathInput.value = data.current_path;
-                fileList.innerHTML = '';
-                
-                if (data.parent_path) {
-                    const li = document.createElement('li');
-                    li.innerHTML = `<span class="icon">⬆️</span> .. (父文件夹)`;
-                    li.onclick = () => fetchAndDisplayPath(data.parent_path);
-                    fileList.appendChild(li);
-                }
-                
-                data.dirs.forEach(dir => {
-                    const fullPath = data.current_path + (data.current_path.endsWith('\\') || data.current_path.endsWith('/') ? '' : '\\') + dir;
-                    const li = document.createElement('li');
-                    li.innerHTML = `<span class="icon">📁</span> ${dir}`;
-                    li.onclick = () => fetchAndDisplayPath(fullPath);
-                    fileList.appendChild(li);
-                });
-                
-                data.files.forEach(file => {
-                    const li = document.createElement('li');
-                    li.innerHTML = `<span class="icon">📄</span> ${file}`;
-                    li.style.color = '#888';
-                    fileList.appendChild(li);
-                });
-                
-                selectCurrentFolderBtn.onclick = () => {
-                    if (currentTargetInput) currentTargetInput.value = data.current_path;
-                    hideModal();
-                };
-            } catch (err) {
-                fileList.innerHTML = `<li style="color: red;">无法连接到后端。</li>`;
-            }
-        }
-        
-        modalGoBtn.addEventListener('click', () => fetchAndDisplayPath(modalPathInput.value));
-        modalPathInput.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); fetchAndDisplayPath(modalPathInput.value); } });
-        
+
         // ============ 收集配置参数 ============
         function collectConfig() {
             const getOptionalIntegerString = (inputId) => {
-                const raw = document.getElementById(inputId).value;
+                const el = document.getElementById(inputId);
+                if (!el) return null;
+                const raw = el.value;
                 const normalized = raw == null ? '' : String(raw).trim();
                 if (normalized === '') {
                     return null;
@@ -1596,7 +1328,9 @@
             };
 
             const getOptionalPositiveInt = (inputId) => {
-                const raw = document.getElementById(inputId).value;
+                const el = document.getElementById(inputId);
+                if (!el) return null;
+                const raw = el.value;
                 const normalized = raw == null ? '' : String(raw).trim();
                 if (normalized === '') {
                     return null;
@@ -1628,7 +1362,6 @@
             };
 
             const exportMode = document.querySelector('input[name="export_mode"]:checked').value;
-            const searchEntryMode = document.getElementById('search_entry_mode').value;
             const searchModeSelectValue = getOptionalSelectInt('search_mode_select', 0);
             const selectedLanceBatchSize = getOptionalPositiveInt('ps_lance_batch_size');
             const selectedCandidateBatchSize = getOptionalPositiveInt('candidate_batch_size');
@@ -1639,7 +1372,7 @@
                 // 流水线控制
                 run_indexer: document.getElementById('run_indexer').checked,
                 run_search: document.getElementById('run_search').checked,
-                search_entry_mode: searchEntryMode,
+                search_entry_mode: 'prompt',
                 
                 // 索引配置
                 indexer: {
@@ -1655,6 +1388,8 @@
                     cosine_similarity_threshold: parseFloat(document.getElementById('idx_cosine_threshold').value),
                     brightness_threshold: parseInt(document.getElementById('idx_brightness_threshold').value),
                     black_pixel_ratio: parseInt(document.getElementById('idx_black_pixel_ratio').value),
+                    white_threshold: document.getElementById('idx_white_threshold').value ? parseInt(document.getElementById('idx_white_threshold').value) : null,
+                    white_pixel_ratio: document.getElementById('idx_white_pixel_ratio').value ? parseInt(document.getElementById('idx_white_pixel_ratio').value) : null,
                     sample_interval: parseInt(document.getElementById('idx_sample_interval').value),
                     min_scene_length: parseInt(document.getElementById('idx_min_scene_length').value),
                     localmax_order: parseInt(document.getElementById('idx_localmax_order').value),
@@ -1663,24 +1398,23 @@
                 
                 // Prompt搜索配置
                 prompt_search: {
-                    index_directory: document.getElementById('search_index_directory').value,
+                    index_directory: 'indexes/' + document.getElementById('search_index_directory').value,
                     video_output_directory: document.getElementById('ps_video_output_directory').value || null,
-                    use_fp16: document.getElementById('ps_use_fp16').checked,
-                    feature_fp16: document.getElementById('ps_feature_fp16').checked,
                     use_reranker: document.getElementById('ps_use_reranker').checked,
                     use_chinese: document.getElementById('ps_use_chinese_query').checked,
                     rerank_top_k: getOptionalPositiveInt('ps_rerank_top_k'),
                     rerank_batch_size: getOptionalPositiveInt('ps_rerank_batch_size'),
                     reranker_output_resolution: getOptionalPositiveInt('ps_reranker_resolution'),
-                    prompt_template: document.getElementById('ps_prompt_template').value,
                     video_copy_mode: exportMode === 'copy',
-                    video_name_format: document.getElementById('video_name_format').value,
                     start_frame_offset: startFrameOffset,
                     end_frame_offset: endFrameOffset,
                     prompt_search_batch_size: getOptionalPositiveInt('ps_prompt_search_batch'),
                     lance_batch_size: selectedLanceBatchSize,
                     use_diskcache: document.getElementById('use_diskcache').checked,
                     debug_similarity: document.getElementById('debug_similarity').checked,
+                    use_shot_analysis: document.getElementById('use_shot_analysis').checked,
+                    use_mini_rerank: document.getElementById('ps_use_mini_rerank').checked,
+                    mini_rerank_min_matches: parseInt(document.getElementById('ps_mini_rerank_min_matches').value) || 4,
                     search_mode: searchModeSelectValue,
                     top_k: getOptionalPositiveInt('ps_top_k'),
                     candidate_batch_size: selectedCandidateBatchSize,
@@ -1689,60 +1423,7 @@
                     lmdb_write_batch_size: getOptionalPositiveInt('ps_lmdb_write_batch_size'),
                     vector_dedup_threshold: document.getElementById('ps_vector_dedup_threshold').value ? parseFloat(document.getElementById('ps_vector_dedup_threshold').value) : null,
                     adjacent_merge_frames: document.getElementById('ps_adjacent_merge_frames').value ? parseInt(document.getElementById('ps_adjacent_merge_frames').value) : null,
-                },
-                
-                // 标签搜索配置
-                label_search: {
-                    index_directory: document.getElementById('search_index_directory').value,
-                    video_output_directory: document.getElementById('ps_video_output_directory').value || null,
-                    use_fp16: document.getElementById('ps_use_fp16').checked,
-                    feature_fp16: document.getElementById('ps_feature_fp16').checked,
-                    prompt_search_batch_size: getOptionalPositiveInt('ls_text_batch_size'),
-                    video_copy_mode: exportMode === 'copy',
-                    video_name_format: document.getElementById('video_name_format').value,
-                    debug_similarity: document.getElementById('debug_similarity').checked,
-                    start_frame_offset: startFrameOffset,
-                    end_frame_offset: endFrameOffset,
-                    search_mode: searchModeSelectValue,
-                    top_k: getOptionalPositiveInt('ps_top_k'),
-                    candidate_batch_size: selectedCandidateBatchSize,
-                    use_diskcache: document.getElementById('use_diskcache').checked,
-                    use_chinese: document.getElementById('ps_use_chinese_query').checked,
-                    lance_load_workers: getOptionalPositiveInt('ps_lance_load_workers'),
-                    lmdb_write_batch_size: getOptionalPositiveInt('ps_lmdb_write_batch_size'),
-                    label_cache_batch_size: getOptionalPositiveInt('ps_prompt_cache_batch'),
-                    lance_batch_size: selectedLanceBatchSize,
-                    vector_dedup_threshold: document.getElementById('ps_vector_dedup_threshold').value ? parseFloat(document.getElementById('ps_vector_dedup_threshold').value) : null,
-                    adjacent_merge_frames: document.getElementById('ps_adjacent_merge_frames').value ? parseInt(document.getElementById('ps_adjacent_merge_frames').value) : null,
-                },
-                
-                // 选词填空搜索配置
-                cloze_search: {
-                    index_directory: document.getElementById('search_index_directory').value,
-                    video_output_directory: document.getElementById('ps_video_output_directory').value || null,
-                    use_fp16: document.getElementById('ps_use_fp16').checked,
-                    feature_fp16: document.getElementById('ps_feature_fp16').checked,
-                    use_reranker: document.getElementById('ps_use_reranker').checked,
-                    use_chinese: document.getElementById('ps_use_chinese_query').checked,
-                    rerank_top_k: getOptionalPositiveInt('ps_rerank_top_k'),
-                    rerank_batch_size: getOptionalPositiveInt('ps_rerank_batch_size'),
-                    reranker_output_resolution: getOptionalPositiveInt('ps_reranker_resolution'),
-                    video_copy_mode: exportMode === 'copy',
-                    video_name_format: document.getElementById('video_name_format').value,
-                    start_frame_offset: startFrameOffset,
-                    end_frame_offset: endFrameOffset,
-                    prompt_search_batch_size: getOptionalPositiveInt('ps_prompt_search_batch'),
-                    lance_batch_size: selectedLanceBatchSize,
-                    use_diskcache: document.getElementById('use_diskcache').checked,
-                    debug_similarity: document.getElementById('debug_similarity').checked,
-                    search_mode: searchModeSelectValue,
-                    top_k: getOptionalPositiveInt('ps_top_k'),
-                    candidate_batch_size: selectedCandidateBatchSize,
-                    prompt_cache_batch_size: getOptionalPositiveInt('ps_prompt_cache_batch'),
-                    lance_load_workers: getOptionalPositiveInt('ps_lance_load_workers'),
-                    lmdb_write_batch_size: getOptionalPositiveInt('ps_lmdb_write_batch_size'),
-                    vector_dedup_threshold: document.getElementById('ps_vector_dedup_threshold').value ? parseFloat(document.getElementById('ps_vector_dedup_threshold').value) : null,
-                    adjacent_merge_frames: document.getElementById('ps_adjacent_merge_frames').value ? parseInt(document.getElementById('ps_adjacent_merge_frames').value) : null,
+                    lance_indexes: Array.from(document.getElementById('search_lance_indexes').selectedOptions).map(opt => opt.value),
                 }
             };
         }
@@ -1891,8 +1572,6 @@
             const config = presetData.pipeline_config || presetData.config || {};
             const indexerConfig = config.indexer || {};
             const promptConfig = config.prompt_search || {};
-            const labelConfig = config.label_search || {};
-            const clozeConfig = config.cloze_search || {};
 
             setInputValue('run_indexer', config.run_indexer);
             setInputValue('run_search', config.run_search);
@@ -1908,110 +1587,50 @@
             setInputValue('idx_cosine_threshold', indexerConfig.cosine_similarity_threshold);
             setInputValue('idx_brightness_threshold', indexerConfig.brightness_threshold);
             setInputValue('idx_black_pixel_ratio', indexerConfig.black_pixel_ratio);
+            setInputValue('idx_white_threshold', indexerConfig.white_threshold);
+            setInputValue('idx_white_pixel_ratio', indexerConfig.white_pixel_ratio);
             setInputValue('idx_sample_interval', indexerConfig.sample_interval);
             setInputValue('idx_min_scene_length', indexerConfig.min_scene_length);
             setInputValue('idx_localmax_order', indexerConfig.localmax_order);
             setInputValue('idx_resume_processing', indexerConfig.resume_processing);
 
-            const searchEntryMode = pickDefined(config.search_entry_mode, 'prompt');
-            updateSearchMode(searchEntryMode);
+            // setInputValue不能用于select，需特殊处理匹配选项名
+            {
+                const select = document.getElementById('search_index_directory');
+                if (select && promptConfig.index_directory) {
+                    const presetSubName = promptConfig.index_directory.split(/[\\/]/).pop();
+                    const matchOpt = Array.from(select.options).find(
+                        opt => opt.value === presetSubName || opt.value === promptConfig.index_directory
+                    );
+                    if (matchOpt) select.value = matchOpt.value;
+                }
+            }
+            setInputValue('ps_video_output_directory', promptConfig.video_output_directory);
+            setInputValue('start_offset', promptConfig.start_frame_offset);
+            setInputValue('end_offset', promptConfig.end_frame_offset);
+            setInputValue('ps_prompt_search_batch', promptConfig.prompt_search_batch_size);
+            setInputValue('search_mode_select', promptConfig.search_mode);
+            setInputValue('candidate_batch_size', promptConfig.candidate_batch_size);
+            setInputValue('ps_lance_batch_size', promptConfig.lance_batch_size);
+            setInputValue('ps_top_k', promptConfig.top_k);
+            setInputValue('ps_lance_load_workers', promptConfig.lance_load_workers);
+            setInputValue('ps_prompt_cache_batch', promptConfig.prompt_cache_batch_size);
+            setInputValue('ps_lmdb_write_batch_size', promptConfig.lmdb_write_batch_size);
+            setInputValue('ps_vector_dedup_threshold', promptConfig.vector_dedup_threshold);
+            setInputValue('ps_adjacent_merge_frames', promptConfig.adjacent_merge_frames);
 
-            setInputValue('search_index_directory', pickDefined(
-                promptConfig.index_directory,
-                labelConfig.index_directory,
-                clozeConfig.index_directory
-            ));
-            setInputValue('ps_video_output_directory', pickDefined(
-                promptConfig.video_output_directory,
-                labelConfig.video_output_directory,
-                clozeConfig.video_output_directory
-            ));
-            setInputValue('ps_prompt_template', promptConfig.prompt_template);
-            setInputValue('video_name_format', pickDefined(
-                promptConfig.video_name_format,
-                labelConfig.video_name_format,
-                clozeConfig.video_name_format
-            ));
-            setInputValue('start_offset', pickDefined(
-                promptConfig.start_frame_offset,
-                labelConfig.start_frame_offset,
-                clozeConfig.start_frame_offset
-            ));
-            setInputValue('end_offset', pickDefined(
-                promptConfig.end_frame_offset,
-                labelConfig.end_frame_offset,
-                clozeConfig.end_frame_offset
-            ));
-            setInputValue('ps_prompt_search_batch', pickDefined(
-                promptConfig.prompt_search_batch_size,
-                clozeConfig.prompt_search_batch_size
-            ));
-            setInputValue('ls_text_batch_size', labelConfig.prompt_search_batch_size);
-            setInputValue('search_mode_select', pickDefined(
-                promptConfig.search_mode,
-                labelConfig.search_mode,
-                clozeConfig.search_mode
-            ));
-            setInputValue('candidate_batch_size', pickDefined(
-                promptConfig.candidate_batch_size,
-                labelConfig.candidate_batch_size,
-                clozeConfig.candidate_batch_size
-            ));
-            setInputValue('ps_lance_batch_size', pickDefined(
-                promptConfig.lance_batch_size,
-                labelConfig.lance_batch_size,
-                clozeConfig.lance_batch_size
-            ));
-            setInputValue('ps_top_k', pickDefined(
-                promptConfig.top_k,
-                labelConfig.top_k,
-                clozeConfig.top_k
-            ));
-            setInputValue('ps_lance_load_workers', pickDefined(
-                promptConfig.lance_load_workers,
-                labelConfig.lance_load_workers,
-                clozeConfig.lance_load_workers
-            ));
-            setInputValue('ps_prompt_cache_batch', pickDefined(
-                promptConfig.prompt_cache_batch_size,
-                labelConfig.label_cache_batch_size,
-                clozeConfig.prompt_cache_batch_size
-            ));
-            setInputValue('ps_lmdb_write_batch_size', pickDefined(
-                promptConfig.lmdb_write_batch_size,
-                labelConfig.lmdb_write_batch_size,
-                clozeConfig.lmdb_write_batch_size
-            ));
-            setInputValue('ps_vector_dedup_threshold', pickDefined(
-                promptConfig.vector_dedup_threshold,
-                labelConfig.vector_dedup_threshold,
-                clozeConfig.vector_dedup_threshold
-            ));
-            setInputValue('ps_adjacent_merge_frames', pickDefined(
-                promptConfig.adjacent_merge_frames,
-                labelConfig.adjacent_merge_frames,
-                clozeConfig.adjacent_merge_frames
-            ));
+            setInputValue('ps_use_reranker', promptConfig.use_reranker);
+            setInputValue('use_diskcache', promptConfig.use_diskcache);
+            setInputValue('ps_use_chinese_query', promptConfig.use_chinese);
+            setInputValue('debug_similarity', promptConfig.debug_similarity);
+            setInputValue('use_shot_analysis', promptConfig.use_shot_analysis);
+            setInputValue('ps_use_mini_rerank', promptConfig.use_mini_rerank);
+            setInputValue('ps_mini_rerank_min_matches', promptConfig.mini_rerank_min_matches);
+            setInputValue('ps_rerank_top_k', promptConfig.rerank_top_k);
+            setInputValue('ps_rerank_batch_size', promptConfig.rerank_batch_size);
+            setInputValue('ps_reranker_resolution', promptConfig.reranker_output_resolution);
 
-            setInputValue('ps_use_reranker', pickDefined(promptConfig.use_reranker, clozeConfig.use_reranker));
-            setInputValue('use_diskcache', pickDefined(promptConfig.use_diskcache, labelConfig.use_diskcache, clozeConfig.use_diskcache));
-            setInputValue('ps_use_fp16', pickDefined(
-                promptConfig.use_fp16,
-                labelConfig.use_fp16,
-                clozeConfig.use_fp16
-            ));
-            setInputValue('ps_feature_fp16', pickDefined(
-                promptConfig.feature_fp16,
-                labelConfig.feature_fp16,
-                clozeConfig.feature_fp16
-            ));
-            setInputValue('ps_use_chinese_query', pickDefined(promptConfig.use_chinese, labelConfig.use_chinese, clozeConfig.use_chinese));
-            setInputValue('debug_similarity', pickDefined(promptConfig.debug_similarity, labelConfig.debug_similarity, clozeConfig.debug_similarity));
-            setInputValue('ps_rerank_top_k', pickDefined(promptConfig.rerank_top_k, clozeConfig.rerank_top_k));
-            setInputValue('ps_rerank_batch_size', pickDefined(promptConfig.rerank_batch_size, clozeConfig.rerank_batch_size));
-            setInputValue('ps_reranker_resolution', pickDefined(promptConfig.reranker_output_resolution, clozeConfig.reranker_output_resolution));
-
-            const copyMode = pickDefined(promptConfig.video_copy_mode, labelConfig.video_copy_mode, clozeConfig.video_copy_mode);
+            const copyMode = promptConfig.video_copy_mode;
             if (copyMode !== undefined) {
                 document.getElementById(copyMode ? 'export_copy' : 'export_precise').checked = true;
             }
@@ -2056,8 +1675,16 @@
             setInputValue('sim_reranker', simConfig.reranker);
             setInputValue('sim_reranker_weight', simConfig.reranker_weight);
 
+            // 恢复选中索引列表
+            const lanceIndexes = promptConfig.lance_indexes;
+            if (Array.isArray(lanceIndexes) && lanceIndexes.length > 0) {
+                const lanceSelect = document.getElementById('search_lance_indexes');
+                Array.from(lanceSelect.options).forEach(opt => {
+                    opt.selected = lanceIndexes.includes(opt.value);
+                });
+            }
+
             updateSearchModeSelect();
-            updateRerankerParams();
             updateExportModeControls();
         }
 
@@ -2163,47 +1790,9 @@
                 statusDiv.textContent = `🧩 已加载默认预设: ${data.default_preset}`;
             }
         }
+
         
         // ============ 更新UI状态 ============
-        async function loadModelList() {
-            try {
-                const response = await fetch('/list_models');
-                const data = await response.json();
-                if (data.success && Array.isArray(data.models)) {
-                    const clipModels = data.models.filter(model => {
-                        const name = model && model.name ? String(model.name).toLowerCase() : '';
-                        return name.includes('clip');
-                    });
-                    const select = document.getElementById('idx_model_name');
-                    const currentValue = select.value;
-                    select.innerHTML = '';
-
-                    if (clipModels.length === 0) {
-                        const option = document.createElement('option');
-                        option.value = '';
-                        option.textContent = '无可用 clip 模型';
-                        select.appendChild(option);
-                        return;
-                    }
-
-                    clipModels.forEach(model => {
-                        const option = document.createElement('option');
-                        option.value = model.name;
-                        option.dataset.type = model.type;
-                        option.textContent = `${model.name} (${model.type})`;
-                        select.appendChild(option);
-                    });
-
-                    if (currentValue && clipModels.some(model => model.name === currentValue)) {
-                        select.value = currentValue;
-                    } else {
-                        select.value = clipModels[0].name;
-                    }
-                }
-            } catch (error) {
-                console.error('加载模型列表失败:', error);
-            }
-        }
         
         // ============ 事件绑定 ============
         // ============ 运行状态（覆盖乱码版本） ============
@@ -2363,21 +1952,29 @@
             }
         });
         
-        // ============ 页面加载时获取模型列表 ============
+        // 索引目录切换 → 加载对应 .lance 列表
+        document.getElementById('search_index_directory').addEventListener('change', loadLanceIndexList);
+        // 全选按钮（切换：点击全选，再点取消全选）
+        document.getElementById('selectAllLanceBtn').addEventListener('click', () => {
+            const lanceSelect = document.getElementById('search_lance_indexes');
+            const allSelected = Array.from(lanceSelect.options).filter(o => o.value).every(o => o.selected);
+            Array.from(lanceSelect.options).forEach(opt => {
+                if (opt.value) opt.selected = !allSelected;
+            });
+        });
+        
+        // ============ 页面初始化 ============
         document.addEventListener('DOMContentLoaded', async () => {
-            // 初始化搜索模式（默认prompt模式，禁用标签Batch）
-            updateSearchMode('prompt');
             // 初始化搜索模式下拉框联动
             updateSearchModeSelect();
             updateExportModeControls();
             
             // 模型选择变更时更新中文查询可用性
-            document.getElementById('idx_model_name').addEventListener('change', updateChineseQueryAvailability);
+            document.getElementById('search_index_directory').addEventListener('change', updateChineseQueryAvailability);
             
             try {
-                await loadModelList();
-                // 模型列表加载后立即刷新中文查询可用性
                 updateChineseQueryAvailability();
+                await loadLanceIndexList();
                 await initPresets();
                 // 预设加载后再次刷新（预设可能切换了模型）
                 updateChineseQueryAvailability();

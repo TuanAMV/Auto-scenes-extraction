@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>自动提纯逻辑</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: "Segoe UI","Microsoft YaHei",sans-serif; background: #f0f2f5; color: #333; line-height: 1.7; }
+.container { max-width: 1200px; margin: 0 auto; padding: 30px 20px; }
+h1 { text-align: center; color: #6a1b9a; font-size: 2em; margin-bottom: 10px; }
+.subtitle { text-align: center; color: #666; margin-bottom: 30px; font-size: 0.95em; }
+h2 { color: #2c3e50; border-left: 4px solid #6a1b9a; padding-left: 12px; margin: 40px 0 15px; font-size: 1.4em; }
+h3 { color: #555; margin: 20px 0 10px; font-size: 1.1em; }
+  .card { background: #fff; border-radius: 10px; padding: 24px; margin: 20px 0; box-shadow: 0 2px 8px rgba(0,0,0,0.06); word-break: break-word; }
+  table { width: 100%; border-collapse: collapse; margin: 15px 0; font-size: 0.92em; }
+  th, td { padding: 10px 14px; text-align: left; border-bottom: 1px solid #e0e0e0; word-break: break-word; }
+  th { background: #f3e5f5; color: #6a1b9a; font-weight: 600; white-space: nowrap; }
+  tr:hover { background: #f8f9fa; }
+  code { background: #f5f5f5; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; color: #c62828; word-break: break-all; }
+  .flow { background: linear-gradient(135deg,#f3e5f5,#ede7f6); border-radius: 8px; padding: 20px; margin: 15px 0; font-family: "Consolas","Courier New",monospace; font-size: 0.85em; white-space: pre-wrap; overflow-x: auto; line-height: 1.5; word-break: break-all; }
+  .diagram-box { display: flex; gap: 8px; flex-wrap: wrap; margin: 15px 0; align-items: center; justify-content: center; }
+  .diagram-item { background: #fff; border: 2px solid #ce93d8; border-radius: 8px; padding: 10px 18px; text-align: center; min-width: 100px; font-size: 0.95em; }
+  .diagram-item strong { display: block; color: #6a1b9a; margin-bottom: 2px; font-size: 0.9em; }
+  .diagram-desc { font-size: 0.78em; color: #888; }
+.arrow { color: #999; font-size: 1.3em; display: flex; align-items: center; }
+.tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.85em; margin: 2px 4px; }
+.tag.purple { background: #f3e5f5; color: #6a1b9a; }
+.tag.red { background: #ffebee; color: #c62828; }
+.tag.green { background: #e8f5e9; color: #2e7d32; }
+.step { display: flex; align-items: flex-start; margin: 10px 0; gap: 10px; }
+.step-num { background: #6a1b9a; color: #fff; border-radius: 50%; width: 26px; height: 26px; display: flex; align-items: center; justify-content: center; font-weight: bold; flex-shrink: 0; font-size: 0.85em; }
+.step-text { flex: 1; }
+</style>
+</head>
+<body>
+<div class="container">
+<h1>自动提纯 (Prompt 组合搜索) 执行逻辑</h1>
+<p class="subtitle">代码: auto_scene_search.py + batch_text_search.py + logic_keywords.json &nbsp;|&nbsp; v2026.06 &nbsp;|&nbsp; 全链路 FP16</p>
+
+<h2>1. 总架构</h2>
+<div class="diagram-box">
+<div class="diagram-item"><strong>logic_keywords.json</strong><span class="diagram-desc">标签树 + 模板</span></div>
+<div class="arrow">→</div>
+<div class="diagram-item"><strong>PromptGenerator</strong><span class="diagram-desc">~12,500 prompt</span></div>
+<div class="arrow">→</div>
+<div class="diagram-item"><strong>PromptVectorCache</strong><span class="diagram-desc">Lance 预缓存</span></div>
+<div class="arrow">→</div>
+<div class="diagram-item"><strong>BatchTextSearchEngine</strong><span class="diagram-desc">GPU 矩阵运算</span></div>
+<div class="arrow">→</div>
+<div class="diagram-item"><strong>交集过滤</strong><span class="diagram-desc">4 类全命中</span></div>
+<div class="arrow">→</div>
+<div class="diagram-item"><strong>MiniCPM 验证</strong><span class="diagram-desc">标签剥离</span></div>
+<div class="arrow">→</div>
+<div class="diagram-item"><strong>视频导出</strong><span class="diagram-desc">ffmpeg 切割</span></div>
+</div>
+
+<h2>2. Prompt 生成</h2>
+<div class="card">
+<p>从 <code>logic_keywords.json</code> 读取 4 大类模板，每类独立生成 prompt (非笛卡尔积)：</p>
+<table>
+<tr><th>类别</th><th>模板</th><th>生成 prompt 数</th></tr>
+<tr><td>主体</td><td><code>一张以{主体}为主体的动画风格插画</code></td><td>~192</td></tr>
+<tr><td>动作</td><td><code>一张{生物}在{动作}的...</code> + <code>一张{物体}在{物理运动}的...</code></td><td>~12,224</td></tr>
+<tr><td>场景</td><td><code>一张以{所有场景}为背景的...</code></td><td>~48</td></tr>
+<tr><td>情绪</td><td><code>一张有{所有情绪}氛围的...</code></td><td>~37</td></tr>
+<tr><td><b>合计</b></td><td></td><td><b>~12,500</b></td></tr>
+</table>
+<div class="note">使用 <code>use_chinese=False</code> 时走英文模板 + 英文标签值，<code>use_chinese=True</code> 走中文。FG-CLIP2 支持中文查询。</div>
+</div>
+
+<h2>3. 搜索与矩阵运算</h2>
+<div class="card">
+<div class="flow">
+GPU 矩阵运算:
+  similarities = logit_scale x batch_vectors @ all_features_gpu.T
+  batch_vectors:  (12500, 768)  ← 所有 prompt 的 FP16 向量
+  all_features_gpu: (Sx3, 768)  ← 所有场景的 3 帧 FP16 特征
+  similarities:     (12500, Sx3)  ← 每个 prompt x 每个场景帧</div>
+<p>每个场景的 ~12,500 个 prompt 候选按 <code>category</code> (主体/动作/场景/情绪) 分组，<b>每类取最高分</b>：</p>
+<div class="flow">
+scene_001 → 主体: "男人" (sim=80)   ← result:scene_001_主体
+scene_001 → 动作: "奔跑" (sim=90)   ← result:scene_001_动作
+scene_001 → 场景: "城市" (sim=50)   ← result:scene_001_场景
+scene_001 → 情绪: "悲伤" (sim=60)   ← result:scene_001_情绪</div>
+</div>
+
+<h2>4. 交集过滤</h2>
+<div class="card">
+<p>场景必须命中 <code>必有标签</code> 中配置的 <b>全部 4 个类别</b>，否则丢弃：</p>
+<div class="flow">
+if len(cat_idx_map) >= 2:
+    按 scene_base 分组 → 所有类别都命中 → 合并标签 → 写入新 LMDB
+else:
+    跳过交集过滤
+
+凑不齐 4 类 → 返回空结果 (不输出单标签)</div>
+<div class="warn"><b>FG-CLIP2 注意事项</b>：FG-CLIP2 对场景/情绪类别的余弦相似度天然偏低，阈值 14 时可能凑不齐 4 类 → 无输出。建议 FG-CLIP2 阈值调为 8-10，或在交集过滤后启用 MiniCPM 验证补充。</div>
+</div>
+
+<h2>5. MiniCPM 标签验证与剥离</h2>
+<div class="card">
+<h3>流程</h3>
+<div class="step"><div class="step-num">1</div><div class="step-text">抽帧 (decord) → LabelVerifier.verify(frame, labels) → MiniCPM 判断每类标签真/假</div></div>
+<div class="step"><div class="step-num">2</div><div class="step-text">匹配数 >= <code>mini_rerank_min_matches</code> → <b>保留场景</b>；小于 → <b>删除场景</b></div></div>
+<div class="step"><div class="step-num">3</div><div class="step-text"><b>标签剥离</b>: MiniCPM 判定为否的标签 → 从 LMDB item 中删除 <code>xxx_cn/_en</code> + 清理 labels/all_labels → 重建 result_name → 写回 LMDB</div></div>
+<div class="step"><div class="step-num">4</div><div class="step-text">MiniCPM 解析失败 → <code>ValueError</code> 直接冒泡 → 管道终止 (不吞错)</div></div>
+
+<h3>效果</h3>
+<table>
+<tr><th>场景</th><th>MiniCPM 判定</th><th>结果</th></tr>
+<tr><td>"男人"在"奔跑"，"城市"，"恐怖"</td><td>主体:Y 动作:Y 场景:Y 情绪:N</td><td>匹配 3/4 → 保留 → <b>剥掉"情绪"标签</b> → 视频名: <code>城市_男人_奔跑_1234_xxx.mp4</code></td></tr>
+<tr><td>"宝石"在"演奏"</td><td>主体:Y 动作:Y 场景:N 情绪:N</td><td>匹配 2/4 → 低于 min_matches →<b>删除</b></td></tr>
+</table>
+
+<div class="info"><b>min_matches 建议</b>: 4 个必有标签时设 3 (允许缺 1 类)；严格模式设 4 (全部命中)</div>
+</div>
+
+<h2>6. 视频导出</h2>
+<div class="card">
+<p>命名格式从 <code>输出视频命名格式</code> 读取: <code>{情绪}_{场景}_{主体}_{动作}_{起始帧}_{视频解析名}</code></p>
+<p>各占位符从 item 的 <code>_cn</code> 字段动态填充。标签剥离后的 item 自动排除被删标签，视频名相应收缩。</p>
+<div class="flow">
+完整:    绝望_赛博空间_宝石_演奏_1008_xxx.mp4
+剥情绪:  赛博空间_宝石_演奏_1008_xxx.mp4  (情绪被 MiniCPM 判否 → 从文件名消失)</div>
+<p>勾选 <b>输出相似度</b> 时前缀加分数: <code>21.3400_绝望_赛博空间_宝石_演奏_1008_xxx.mp4</code></p>
+</div>
+
+<h2>7. 后处理链</h2>
+<div class="card">
+<table>
+<tr><th>步骤</th><th>触发条件</th><th>作用</th></tr>
+<tr><td>向量去重</td><td><code>vector_dedup_threshold</code> 非 None</td><td>同标签组内余弦相似度去重</td></tr>
+<tr><td>相邻合并</td><td><code>adjacent_merge_frames</code> 非 None</td><td>合并时间相邻的片段</td></tr>
+<tr><td>景别分析</td><td><code>use_shot_analysis=True</code></td><td>DinoV2 (GPU) + 光流法 (CPU) 并行分析</td></tr>
+<tr><td>视频导出</td><td>始终</td><td>ffmpeg precision cut / copy 模式</td></tr>
+</table>
+</div>
+
+<h2>8. 前端参数 (Pipeline_control.html → prompt_search)</h2>
+<div class="card">
+<table>
+<tr><th>前端控件</th><th>JSON字段</th><th>默认值</th><th>说明</th></tr>
+<tr><td><code>search_index_directory</code></td><td><code>index_directory</code></td><td>indexes</td><td>索引目录</td></tr>
+<tr><td><code>search_lance_indexes</code></td><td><code>lance_indexes</code></td><td>—</td><td>选中的 .lance 文件</td></tr>
+<tr><td><code>ps_use_chinese_query</code></td><td><code>use_chinese</code></td><td>False</td><td>中文查询 (仅 FG-CLIP2)</td></tr>
+<tr><td><code>use_mini_rerank</code></td><td><code>use_mini_rerank</code></td><td>False</td><td>MiniCPM 标签验证</td></tr>
+<tr><td><code>mini_rerank_min_matches</code></td><td><code>mini_rerank_min_matches</code></td><td>4</td><td>最低匹配类别数</td></tr>
+<tr><td><code>use_shot_analysis</code></td><td><code>use_shot_analysis</code></td><td>False</td><td>景别/镜头分析</td></tr>
+<tr><td><code>use_diskcache</code></td><td><code>use_diskcache</code></td><td>True</td><td>LMDB 磁盘缓存</td></tr>
+<tr><td><code>debug_similarity</code></td><td><code>debug_similarity</code></td><td>True</td><td>输出相似度到文件名</td></tr>
+<tr><td><code>video_name_format</code></td><td><code>video_name_format</code></td><td>{情绪}_{场景}_{主体}_{动作}_{起始帧}_{视频解析名}</td><td>输出命名格式</td></tr>
+<tr><td><code>ps_top_k</code></td><td><code>top_k</code></td><td>None</td><td>Top-K 限制</td></tr>
+<tr><td><code>search_mode_select</code></td><td><code>search_mode</code></td><td>0</td><td>搜索模式 (-1/0/1)</td></tr>
+<tr><td><code>ps_vector_dedup_threshold</code></td><td><code>vector_dedup_threshold</code></td><td>None</td><td>向量去重阈值</td></tr>
+<tr><td><code>ps_adjacent_merge_frames</code></td><td><code>adjacent_merge_frames</code></td><td>None</td><td>相邻合并帧数</td></tr>
+<tr><td><code>start_offset</code></td><td><code>start_frame_offset</code></td><td>None</td><td>起始帧偏移</td></tr>
+<tr><td><code>end_offset</code></td><td><code>end_frame_offset</code></td><td>None</td><td>结束帧偏移</td></tr>
+</table>
+</div>
+
+<h2>9. 添加/删除/修改标签指南</h2>
+<div class="card">
+<table>
+<tr><th>操作</th><th>方法</th></tr>
+<tr><td>添加新孙类标签</td><td>在对应子类 JSON 中加 <code>"中文": "english"</code>，代码自动纳入模板</td></tr>
+<tr><td>添加新子类</td><td>在 <code>标签.大类</code> 下加子类字典，模板中用 <code>{子类名}</code> 占位符</td></tr>
+<tr><td>添加新大类</td><td>在 <code>标签</code>、<code>自动提纯prompt</code>、<code>必有标签</code> 三处同步添加</td></tr>
+<tr><td>修改命名格式</td><td>改 <code>输出视频命名格式</code> 值，占位符自动匹配</td></tr>
+</table>
+</div>
+
+<h2>10. 缓存体系</h2>
+<div class="card">
+<table>
+<tr><th>缓存类型</th><th>存储位置</th><th>格式</th><th>失效条件</th></tr>
+<tr><td>Prompt 向量缓存</td><td><code>templates/prompt_cache/{model}_{lang}.lance</code></td><td>Lance (FP16)</td><td>logic_keywords.json 内容变化或 use_chinese 切换 (MD5 hash)</td></tr>
+<tr><td>LMDB 搜索候选缓存</td><td><code>temp/cache/search_results/inner_search/</code></td><td>LMDB candidate:*</td><td>任意搜索参数变化 (config_hash MD5)</td></tr>
+<tr><td>LMDB Lance 合并缓存</td><td><code>temp/cache/search_results/lance_merge/</code></td><td>LMDB</td><td>搜索参数变化 (config_hash)</td></tr>
+<tr><td>LMDB 最终结果缓存</td><td><code>temp/cache/search_results/</code></td><td>LMDB result:*</td><td>每次搜索重建</td></tr>
+<tr><td>Reranker 帧缓存</td><td><code>temp/cache/rerank_cache/</code></td><td>图片文件</td><td>分辨率变化</td></tr>
+</table>
+</div>
+
+<h2>11. 执行入口</h2>
+<div class="card">
+<ul>
+<li><b>Web 界面</b>: <code>python pipeline_app.py</code> → 访问 127.0.0.1:5007</li>
+<li><b>命令行</b>: <code>python prompt_output_app.py</code></li>
+<li><b>直接调用</b>: <code>from A_coreUtils.search.auto_scene_search import run_interactive_search</code></li>
+</ul>
+</div>
+</div>
+</body>
+</html>

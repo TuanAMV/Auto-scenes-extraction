@@ -23,9 +23,9 @@ from threading import Thread, Event
 _current_file = os.path.abspath(__file__)
 _video_processing_dir = os.path.dirname(_current_file)
 _a_core_utils_dir = os.path.dirname(_video_processing_dir)
-_project_root_dir = os.path.dirname(_a_core_utils_dir)
-if _project_root_dir not in sys.path:
-    sys.path.insert(0, _project_root_dir)
+_cut_detect_scene_dir = os.path.dirname(_a_core_utils_dir)
+if _cut_detect_scene_dir not in sys.path:
+    sys.path.insert(0, _cut_detect_scene_dir)
 
 # ============================================================
 #  全局配置
@@ -238,8 +238,14 @@ class FrameExtractorThread:
             
             print(f"[CPU] 开始流式提取帧 (预计 {expected_frames} 帧)")
             
-            process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
-                                       stderr=subprocess.PIPE, universal_newlines=True)
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding='utf-8',
+                errors='replace'
+            )
             
             # ✅ 修复：后台线程异步读取stderr，防止管道阻塞导致死锁
             stderr_chunks = []

@@ -146,6 +146,7 @@ _current_model_name = None
 _reranker_engine = None
 _current_reranker_path = None
 _current_rerank_resolution = None
+_mini_reranker_analyzer = None
 
 
 def release_clip_model():
@@ -198,6 +199,174 @@ def release_reranker_model():
         except ImportError:
             pass
         print("[Info] Reranker 模型已释放")
+
+
+# ============================================================================
+# MiniCPM Mini-Reranker (Qwen Reranker 平替)
+# ============================================================================
+
+def get_or_create_mini_reranker():
+    """Get or create the MiniCPM mini-reranker (ShotAnalyzer 单例)."""
+    global _mini_reranker_analyzer
+    if _mini_reranker_analyzer is None:
+        from A_coreUtils.aftertreatment.shot_analyzer import ShotAnalyzer
+        _mini_reranker_analyzer = ShotAnalyzer()
+        _mini_reranker_analyzer.load_model()
+        print("[Info] MiniCPM mini-reranker 模型已加载")
+    return _mini_reranker_analyzer
+
+
+def release_mini_reranker_model():
+    """释放 MiniCPM 模型显存"""
+    global _mini_reranker_analyzer
+    if _mini_reranker_analyzer is not None:
+        _mini_reranker_analyzer.unload_model()
+        _mini_reranker_analyzer = None
+        gc.collect()
+        try:
+            import torch as _t
+            if _t.cuda.is_available():
+                _t.cuda.empty_cache()
+        except ImportError:
+            pass
+        print("[Info] MiniCPM mini-reranker 模型已释放")
+
+
+def mini_rerank_text_results(matches: list, query_text: str, threshold: float = 0.6, top_k: int = 50) -> list:
+    """
+    MiniCPM Mini-Rerank: 用 MiniCPM-V-4-6 对 CLIP 搜索结果逐帧判断与查询描述的相似度。
+    
+    Args:
+        matches: CLIP 搜索结果列表
+        query_text: 用户输入的查询文本
+        threshold: 相似度阈值 (0.0-1.0)，低于此值的结果将被移除
+        top_k: 需要验证的 Top-K 结果数量
+    
+    Returns:
+        过滤后的结果列表
+    """
+    import cv2
+    import torch as _t
+    
+    if not matches:
+        return matches
+    
+    matches_to_check = matches[:min(top_k, len(matches))]
+    
+    analyzer = get_or_create_mini_reranker()
+    
+    from A_coreUtils.search.reranker_frame_extractor import RerankerFrameExtractor
+    frame_extractor = RerankerFrameExtractor(
+        output_resolution='384', cache_dir=RERANK_CACHE_DIR,
+    )
+    
+    # 构建提取场景列表
+    scenes = []
+    for match in matches_to_check:
+        video_path = match.get('video_path', '')
+        start_frame = match.get('start_frame', 0)
+        scenes.append({
+            'video_path': video_path,
+            'start_frame': start_frame,
+            'end_frame': start_frame,
+            'fps': VideoMetaHelper.get_fps_cached(video_path, _fps_cache) if video_path else 25.0,
+        })
+    
+    try:
+        frame_paths = frame_extractor.extract_batch(scenes)
+    except Exception as e:
+        print(f"[MiniRerank] 帧提取异常: {e}")
+        frame_paths = {}
+    
+    # MiniCPM 提示词 — JSON 格式输出
+    prompt = (
+        f'判断这张图片与以下描述的画面相似度，只输出一行JSON不要解释:\n'
+        f'{{"相似度": <一个0到1之间的小数, 例如0.85>}}\n'
+        f'描述: {query_text}'
+    )
+    
+    kept = []
+    removed_count = 0
+    total = len(matches_to_check)
+    
+    for idx, match in enumerate(matches_to_check):
+        video_path = match.get('video_path', '')
+        start_frame = match.get('start_frame', 0)
+        video_name = os.path.basename(video_path)
+        frame_key = f"{start_frame}_1_{video_name}"
+        frame_path = frame_paths.get(frame_key)
+        
+        if not frame_path or not os.path.exists(frame_path):
+            kept.append(match)
+            continue
+        
+        frame = cv2.imread(frame_path)
+        if frame is None:
+            kept.append(match)
+            continue
+        
+        try:
+            img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            from PIL import Image
+            pil_img = Image.fromarray(img_rgb)
+            
+            msgs = [{"role": "user", "content": [
+                {"type": "image", "image": pil_img},
+                {"type": "text", "text": prompt},
+            ]}]
+            
+            inputs = analyzer._processor.apply_chat_template(
+                msgs, tokenize=True, add_generation_prompt=True,
+                return_dict=True, return_tensors="pt",
+            ).to(analyzer.device)
+            
+            with _t.no_grad():
+                generated_ids = analyzer._model.generate(
+                    **inputs,
+                    max_new_tokens=32,
+                    do_sample=False,
+                    eos_token_id=analyzer._processor.tokenizer.eos_token_id,
+                )
+            response_ids = generated_ids[0][inputs["input_ids"].shape[1]:]
+            text = analyzer._processor.tokenizer.decode(response_ids, skip_special_tokens=True).strip()
+            
+            # 从 JSON 解析相似度分数
+            score = 0.0
+            start = text.find("{")
+            end = text.rfind("}")
+            if start != -1 and end != -1 and start < end:
+                try:
+                    import json as _json
+                    parsed = _json.loads(text[start:end + 1])
+                    raw_val = parsed.get("相似度", 0)
+                    score = float(raw_val)
+                except Exception:
+                    pass
+            
+            # 归一化：如果模型输出了百分比（如85），转为小数（0.85）
+            raw_score = score
+            if score > 1.0:
+                score = score / 100.0
+            
+            if score >= threshold:
+                match['mini_rerank_score'] = score
+                boost = score * 50
+                match['similarity'] = match.get('similarity', 0) + boost
+                kept.append(match)
+            else:
+                removed_count += 1
+        except Exception as e:
+            print(f"  [MiniRerank] 处理异常: {e}")
+            kept.append(match)
+    
+    # 清理帧提取缓存
+    try:
+        frame_extractor.cleanup(remove_files=True)
+    except Exception:
+        pass
+    
+    print(f"[MiniRerank] 完成: {total}条检查 → 保留 {len(kept)}条 (阈值={threshold})")
+    return kept
 
 
 def get_or_create_reranker(model_path: str, output_resolution: str = '384'):
@@ -287,7 +456,7 @@ def get_or_create_processor(model_name: str = None, truncate_dim: int = None, us
     
     # 设置默认模型
     if model_name is None:
-        model_name = 'qihoo360_fg-clip2-base'
+        model_name = 'qihoo360-fg-clip2-base'
     
     # 构建模型路径
     if os.path.isabs(model_name) or os.path.exists(model_name):
@@ -419,6 +588,7 @@ def clear_cache():
         # 释放模型
         release_clip_model()
         release_reranker_model()
+        release_mini_reranker_model()
         cleared_items.append("已释放模型")
         
         # 计算并清理 text_search.py 自身的临时子目录（保留 cache 目录下的搜索结果 LMDB）
@@ -778,7 +948,7 @@ def _deduplicate_vectors_matrix(scene_vectors_list: list, threshold: float) -> l
     total_frames = sum(frame_counts)
     
     # 展平所有向量为 [total_frames, D]
-    all_vectors = np.vstack(scene_vectors_list).astype(np.float32)
+    all_vectors = np.vstack(scene_vectors_list).astype(np.float16)
     
     # 向量已经归一化，直接计算相似度矩阵 [total_frames, total_frames]
     similarity_matrix = all_vectors @ all_vectors.T
@@ -789,7 +959,7 @@ def _deduplicate_vectors_matrix(scene_vectors_list: list, threshold: float) -> l
         scene_boundaries.append(scene_boundaries[-1] + count)
     
     # 计算场景间最大相似度矩阵 [N, N]
-    scene_max_sim = np.zeros((n, n), dtype=np.float32)
+    scene_max_sim = np.zeros((n, n), dtype=np.float16)
     for i in range(n):
         i_start, i_end = scene_boundaries[i], scene_boundaries[i+1]
         for j in range(i, n):
@@ -827,14 +997,14 @@ def _deduplicate_vectors_matrix_cross_video(
         return list(range(n))
 
     frame_counts = [vectors.shape[0] for vectors in scene_vectors_list]
-    all_vectors = np.vstack(scene_vectors_list).astype(np.float32)
+    all_vectors = np.vstack(scene_vectors_list).astype(np.float16)
     similarity_matrix = all_vectors @ all_vectors.T
 
     scene_boundaries = [0]
     for count in frame_counts:
         scene_boundaries.append(scene_boundaries[-1] + count)
 
-    scene_max_sim = np.zeros((n, n), dtype=np.float32)
+    scene_max_sim = np.zeros((n, n), dtype=np.float16)
     for i in range(n):
         i_start, i_end = scene_boundaries[i], scene_boundaries[i + 1]
         for j in range(i, n):
@@ -1039,6 +1209,10 @@ def search_similar_scenes():
         rerank_model_path = DEFAULT_RERANKER_PATH
         reranker_output_resolution = data.get('reranker_output_resolution', DEFAULT_OUTPUT_RESOLUTION)
 
+        # MiniRerank params (MiniCPM-V-4-6)
+        use_mini_rerank = bool(data.get('use_mini_rerank', False))
+        mini_rerank_threshold = rerank_weight  # reuse rerank_weight slider as threshold
+
         try:
             rerank_top_k = int(rerank_top_k)
         except Exception:
@@ -1117,92 +1291,60 @@ def search_similar_scenes():
         # 按相似度排序（基础召回）
         all_matches.sort(key=lambda x: x.get('similarity', 0), reverse=True)
 
-        # ✅ v3.9: 搜索完成后释放 CLIP 模型，避免与 Reranker 同时占用显存
-        if use_reranker and rerank_weight > 0 and _RERANKER_AVAILABLE and all_matches:
+        # ✅ 按需释放 CLIP 模型，避免与 MiniRerank 同时占用显存
+        need_release_clip = use_mini_rerank and all_matches
+        if need_release_clip:
             release_clip_model()
 
         rerank_used = False
         rerank_info = None
 
-        # ✅ Reranker 处理 - 批量模式
-        if use_reranker and rerank_weight > 0 and _RERANKER_AVAILABLE and all_matches:
+        # ========================================================================
+        # MiniCPM Mini-Rerank（优先，与 Qwen Reranker 互斥）
+        # ========================================================================
+        if use_mini_rerank and all_matches:
             try:
-                reranker = get_or_create_reranker(rerank_model_path, reranker_output_resolution)
-                
-                # 初始化帧提取器
-                frame_extractor = RerankerFrameExtractor(
-                    output_resolution=reranker_output_resolution,
-                    cache_dir=RERANK_CACHE_DIR
+                all_matches = mini_rerank_text_results(
+                    all_matches,
+                    query_text=text_query,
+                    threshold=mini_rerank_threshold,
+                    top_k=rerank_top_k,
                 )
-                
-                # 限制重排数量
-                matches_to_rerank = all_matches[:rerank_top_k]
-                
-                # 批量提取帧
-                scenes_to_extract = []
-                for match in matches_to_rerank:
-                    video_path = match.get('video_path', '')
-                    start_frame = match.get('start_frame', 0)
-                    end_frame = match.get('end_frame', start_frame + 1)
-                    fps = VideoMetaHelper.get_fps_cached(video_path, _fps_cache) if video_path else 25.0
-                    scenes_to_extract.append({
-                        'video_path': video_path,
-                        'start_frame': start_frame,
-                        'end_frame': end_frame,
-                        'fps': fps
-                    })
-                
-                frame_paths = frame_extractor.extract_batch(scenes_to_extract)
-                
-                # 收集有效的帧路径和对应的 match 索引
-                valid_frame_paths = []
-                valid_match_indices = []
-                for idx, match in enumerate(matches_to_rerank):
-                    video_path = match.get('video_path', '')
-                    start_frame = match.get('start_frame', 0)
-                    frame_key = f"{start_frame}_{os.path.basename(video_path)}"
-                    frame_path = frame_paths.get(frame_key)
-                    
-                    if frame_path and os.path.exists(frame_path):
-                        valid_frame_paths.append(frame_path)
-                        valid_match_indices.append(idx)
-                
-                # 批量 Reranker 推理：单文本 + 多图像
-                rerank_count = 0
-                if valid_frame_paths:
-                    # 构建批量输入：query=文本, documents=多个图像
-                    inputs = {
-                        'query': {'text': text_query},
-                        'documents': [{'image': fp} for fp in valid_frame_paths]
-                    }
-                    # 一次批量推理
-                    rerank_scores = reranker.process(inputs, batch_size=rerank_batch_size)
-                    rerank_count = len(rerank_scores)
-                    
-                    # 将分数映射回对应的 match
-                    for score_idx, match_idx in enumerate(valid_match_indices):
-                        if score_idx < len(rerank_scores):
-                            rerank_score = rerank_scores[score_idx]
-                            clip_sim = matches_to_rerank[match_idx].get('similarity', 0)
-                            # 融合分数: final = clip * (1 - weight) + rerank * 100 * weight
-                            final_score = clip_sim * (1 - rerank_weight) + rerank_score * 100.0 * rerank_weight
-                            matches_to_rerank[match_idx]['similarity'] = final_score
-                            matches_to_rerank[match_idx]['rerank_score'] = rerank_score
-                
-                # 重新排序
-                matches_to_rerank.sort(key=lambda x: x.get('similarity', 0), reverse=True)
-                
-                # 合并未重排的结果
-                all_matches = matches_to_rerank
-                
-                rerank_info = {"reranked": rerank_count, "total": len(matches_to_rerank)}
-                rerank_used = rerank_count > 0
-                release_reranker_model()
+                all_matches.sort(key=lambda x: x.get('similarity', 0), reverse=True)
+                rerank_used = True
+                rerank_info = {"type": "mini_rerank", "kept": len(all_matches)}
             except Exception as e:
-                print(f"[Warning] Rerank failed: {e}")
+                print(f"[Warning] MiniRerank failed: {e}")
                 import traceback
                 traceback.print_exc()
-                release_reranker_model()
+            finally:
+                release_mini_reranker_model()
+
+
+
+        # ========================================================================
+        # 帧偏移：直接调整搜索结果帧范围（保存原始值，展示偏移后的值）
+        # ========================================================================
+        start_frame_offset = data.get('start_frame_offset', -2)
+        end_frame_offset = data.get('end_frame_offset', 2)
+        try:
+            start_frame_offset = int(start_frame_offset)
+            end_frame_offset = int(end_frame_offset)
+        except Exception:
+            start_frame_offset = -2
+            end_frame_offset = 2
+
+        if start_frame_offset != 0 or end_frame_offset != 0:
+            offset_info = {"start_offset": start_frame_offset, "end_offset": end_frame_offset}
+            for m in all_matches:
+                sf = int(m.get('start_frame', 0) or 0)
+                ef = int(m.get('end_frame', sf + 1) or sf + 1)
+                m['original_start_frame'] = sf
+                m['original_end_frame'] = ef
+                m['start_frame'] = max(0, sf + start_frame_offset)
+                m['end_frame'] = max(m['start_frame'] + 1, ef + end_frame_offset)
+        else:
+            offset_info = None
 
         # ✅ v3.10: 最终阈值过滤 - 应用于 rerank 后的最终相似度
         all_matches = [m for m in all_matches if m.get('similarity', 0) >= threshold]
@@ -1580,6 +1722,38 @@ def browse():
         })
     except Exception as e:
         return jsonify({"error": str(e), "path": current_path}), 500
+
+
+@app.route('/pick_directory', methods=['POST'])
+def pick_directory():
+    """打开系统原生目录选择对话框，返回选中路径"""
+    try:
+        data = request.get_json(silent=True) or {}
+        initial_dir = data.get('initial_dir', BASE_DIRECTORY)
+        if initial_dir and not os.path.isdir(initial_dir):
+            initial_dir = BASE_DIRECTORY
+
+        import tkinter as tk
+        from tkinter import filedialog
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes('-topmost', True)
+        root.update()
+
+        selected = filedialog.askdirectory(
+            initialdir=initial_dir,
+            title='选择目录'
+        )
+
+        root.destroy()
+        root.quit()
+
+        if selected:
+            return jsonify({"success": True, "path": os.path.normpath(selected)})
+        else:
+            return jsonify({"success": False, "path": None, "message": "未选择目录"})
+    except Exception as e:
+        return jsonify({"success": False, "path": None, "error": str(e)}), 500
 
 
 if __name__ == '__main__':

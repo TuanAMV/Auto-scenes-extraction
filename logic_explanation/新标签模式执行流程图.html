@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>新标签模式执行流程图</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: "Segoe UI","Microsoft YaHei",sans-serif; background: #f8f9fb; color: #333; }
+h1 { text-align: center; padding: 28px 0 6px; color: #1a237e; font-size: 1.8em; }
+.subtitle { text-align: center; color: #888; margin-bottom: 10px; font-size: 0.95em; }
+.chart { display: flex; flex-direction: column; align-items: center; padding: 20px 0 60px; gap: 8px; }
+.row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: center; max-width: 98vw; }
+
+.box { border-radius: 10px; padding: 12px 16px; text-align: center; font-size: 0.9em; min-width: 140px; max-width: 280px; font-weight: 600; line-height: 1.6; word-break: break-word; }
+.box.sm { max-width: 260px; min-width: 100px; padding: 10px 14px; font-size: 0.84em; }
+.box.xs { max-width: 200px; min-width: 90px; padding: 8px 12px; font-size: 0.8em; }
+
+.bx-start   { background: #e8eaf6; border: 2px solid #3949ab; color: #1a237e; }
+.bx-main    { background: #e3f2fd; border: 2px solid #1e88e5; color: #0d47a1; }
+.bx-process { background: #e8f5e9; border: 2px solid #43a047; color: #1b5e20; }
+.bx-decision{ background: #fff9c4; border: 2px solid #f9a825; color: #e65100; border-radius: 20px; }
+.bx-cache   { background: #fce4ec; border: 2px solid #e53935; color: #b71c1c; }
+.bx-verify  { background: #ede7f6; border: 2px solid #7e57c2; color: #311b92; }
+.bx-merge   { background: #e0f7fa; border: 2px solid #00838f; color: #004d40; }
+.bx-export  { background: #fff8e1; border: 2px solid #ff8f00; color: #e65100; }
+
+.arr-down { width: 2px; height: 20px; background: #999; margin: 0 auto; position: relative; }
+.arr-down::after { content: ""; position: absolute; bottom: 0; left: -5px; border: 6px solid transparent; border-top: 8px solid #999; }
+.arr-right { color: #999; font-size: 1.5em; flex-shrink: 0; }
+
+.split { display: flex; gap: 20px; justify-content: center; flex-wrap: wrap; align-items: flex-start; max-width: 95vw; }
+.split-col { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+
+.label { font-size: 0.75em; color: #777; font-weight: normal; display: block; margin-top: 3px; }
+
+.subgraph { border: 2px dashed #ccc; border-radius: 12px; padding: 16px 12px 12px; display: flex; flex-direction: column; align-items: center; gap: 8px; position: relative; margin: 4px 0; max-width: 95vw; }
+.subgraph-title { position: absolute; top: -12px; left: 16px; background: #fff; padding: 2px 10px; font-size: 0.82em; font-weight: 700; color: #666; border-radius: 4px; }
+.subgraph.red { border-color: #ef9a9a; } .subgraph.red .subgraph-title { color: #c62828; }
+.subgraph.blue { border-color: #90caf9; } .subgraph.blue .subgraph-title { color: #1565c0; }
+.subgraph.purple { border-color: #ce93d8; } .subgraph.purple .subgraph-title { color: #6a1b9a; }
+.subgraph.grey { border-color: #bdbdbd; } .subgraph.grey .subgraph-title { color: #666; }
+
+hr { width: 90%; max-width: 1100px; border: 0; border-top: 1px solid #e0e0e0; margin: 10px auto; }
+
+.legend { display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; padding: 10px 0 20px; }
+.legend-item { display: flex; align-items: center; gap: 6px; font-size: 0.8em; }
+.legend-dot { width: 14px; height: 14px; border-radius: 3px; border: 1px solid #999; }
+
+table { border-collapse: collapse; width: 100%; max-width: 1000px; margin: 10px auto; }
+th, td { padding: 10px 14px; text-align: left; border-bottom: 1px solid #e0e0e0; }
+th { background: #e8eaf6; color: #1a237e; font-weight: 600; white-space: nowrap; }
+</style>
+</head>
+<body>
+<h1>新标签模式 执行流程图</h1>
+<p class="subtitle">全链路 FP16 &nbsp;|&nbsp; 多模型支持 (OpenAI CLIP / FG-CLIP2) &nbsp;|&nbsp; MiniCPM 标签验证与剥离</p>
+
+<div class="legend">
+<div class="legend-item"><div class="legend-dot" style="background:#e8eaf6;border-color:#3949ab;"></div>前端/入口</div>
+<div class="legend-item"><div class="legend-dot" style="background:#e3f2fd;border-color:#1e88e5;"></div>主流程</div>
+<div class="legend-item"><div class="legend-dot" style="background:#e8f5e9;border-color:#43a047;"></div>处理节点</div>
+<div class="legend-item"><div class="legend-dot" style="background:#fff9c4;border-color:#f9a825;border-radius:8px;"></div>分支判断</div>
+<div class="legend-item"><div class="legend-dot" style="background:#fce4ec;border-color:#e53935;"></div>缓存层</div>
+<div class="legend-item"><div class="legend-dot" style="background:#ede7f6;border-color:#7e57c2;"></div>验证 (MiniCPM)</div>
+</div>
+
+<div class="chart">
+
+  <div class="box bx-start">🖥️ 前端 Pipeline_control.html<br/><span class="label">collectConfig() → POST /run_pipeline_stream</span></div>
+  <div class="arr-down"></div>
+
+  <div class="box bx-main">📦 pipeline_app.py<br/><span class="label">run_prompt_search_with_config()<br/>解析 config → 构建 kwargs → 调用 run_interactive_search</span></div>
+  <div class="arr-down"></div>
+
+  <div class="box bx-main">🔀 run_interactive_search()<br/><span class="label">扫描 Lance 索引 → 提取模型名 → 检测 clip/fgclip2 → 配置阈值<br/>创建 PromptGenerator (读取 logic_keywords.json)</span></div>
+  <div class="arr-down"></div>
+
+  <!-- Prompt Vector Cache -->
+  <div class="subgraph red" style="padding-top:20px;">
+    <div class="subgraph-title">💾 Prompt 向量缓存 (PromptVectorCache)</div>
+    <div class="box bx-decision">缓存是否有效?<br/><span class="label">MD5(template + keywords + use_chinese)</span></div>
+    <div class="split">
+      <div class="split-col">
+        <div class="box bx-process sm">哈希不匹配 → 重建<br/><span class="label">加载 CLIP/FG-CLIP2 模型<br/>分批编码 ~12,500 条 Prompt → FP16 向量<br/>写入 {model}_{lang}.lance</span></div>
+      </div>
+      <div class="split-col">
+        <div class="box bx-process sm">哈希匹配 → 直读<br/><span class="label">跳过模型加载<br/>直接读取 Lance 缓存</span></div>
+      </div>
+    </div>
+    <div class="arr-down"></div>
+    <div class="box bx-process sm">📤 cache_iterator<br/><span class="label">分批迭代读取 FP16 Prompt 向量 + 元数据 (prompt_idx → 类别/标签)</span></div>
+  </div>
+  <div class="arr-down"></div>
+
+  <!-- Search Engine -->
+  <div class="subgraph blue" style="padding-top:20px;">
+    <div class="subgraph-title">🔍 BatchTextSearchEngine</div>
+    <div class="box bx-main">初始化引擎: 加载 Lance 场景特征 (FP16)</div>
+    <div class="arr-down"></div>
+    <div class="box bx-main">config_hash = MD5(所有搜索参数) → 断点续搜校验</div>
+    <div class="arr-down"></div>
+    <div class="box bx-decision">lance_batch_size vs Lance 总数?</div>
+    <div class="split">
+      <div class="split-col">
+        <div class="box bx-process sm">路径A: 全量预加载<br/><span class="label">一次性加载全部 Lance 特征到 GPU<br/>logit_scale(100) × FP16 @ FP16.T<br/>→ 余弦相似度矩阵 (12500 × scenes)</span></div>
+      </div>
+      <div class="split-col">
+        <div class="box bx-process sm">路径B: 分批流式<br/><span class="label">每批加载 lance_batch_size 个 Lance<br/>CLIP 搜索 → 结果写入 LMDB<br/>checkpoint 支持断点续搜<br/>全部完成后合并</span></div>
+      </div>
+    </div>
+  </div>
+  <div class="arr-down"></div>
+
+  <!-- Per-category top-1 -->
+  <div class="box bx-process">📊 每类取最高分 → 按 category 分组<br/><span class="label">scene_001 → 主体: "男人"(sim=80), 动作: "奔跑"(sim=90), 场景: "城市"(sim=50), 情绪: "悲伤"(sim=60)<br/>每一条独立存入 LMDB result:*</span></div>
+  <div class="arr-down"></div>
+
+  <!-- Intersection -->
+  <div class="box bx-merge">🔗 交集过滤 (_apply_per_category_intersection)<br/><span class="label">场景必须同时命中 4 类 (必有标签) → 合并 labels → 生成 result_name<br/>可选: 校验必有子类 / 必有孙类<br/>凑不齐 → 返回空结果 (不输出单标签)</span></div>
+  <div class="arr-down"></div>
+
+  <!-- MiniCPM -->
+  <div class="box bx-decision">use_mini_rerank?</div>
+  <div class="split">
+    <div class="split-col">
+      <div class="subgraph purple" style="padding-top:20px;">
+        <div class="subgraph-title">🧠 MiniCPM-V-4-6 标签验证与剥离</div>
+        <div class="box bx-verify sm">抽帧 (decord) → 获取中间帧</div>
+        <div class="arr-down" style="height:12px;"></div>
+        <div class="box bx-verify sm">LabelVerifier.verify(frame, labels)<br/><span class="label">MiniCPM 逐类判定标签 True/False<br/>解析失败 → ValueError 冒泡终止</span></div>
+        <div class="arr-down" style="height:12px;"></div>
+        <div class="box bx-decision xs">命中数 ≥ min_matches?</div>
+        <div class="split">
+          <div class="split-col">
+            <div class="box bx-verify sm">✅ 通过<br/><span class="label"><b>剥离判定为 False 的标签</b><br/>删除 xxx_cn / xxx_en<br/>清理 labels / all_labels<br/>重建 result_name<br/>写回 LMDB</span></div>
+          </div>
+          <div class="split-col">
+            <div class="box bx-process sm">❌ 不足<br/><span class="label">整组场景删除<br/>不在 kept_keys 中</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="split-col">
+      <div class="box bx-process sm">❌ 跳过<br/><span class="label">直接进入下一步</span></div>
+    </div>
+  </div>
+  <div class="arr-down"></div>
+
+  <!-- Shot Analysis -->
+  <div class="box bx-decision">use_shot_analysis? (可选)</div>
+  <div class="split">
+    <div class="box bx-process sm">✅ DinoV2 (GPU 景别) + 光流法 (CPU 镜头运动) 并行分析</div>
+    <div class="box bx-process sm">❌ 跳过</div>
+  </div>
+  <div class="arr-down"></div>
+
+  <!-- Post-processing -->
+  <div class="subgraph grey" style="padding-top:20px;">
+    <div class="subgraph-title">⚙️ 后处理链</div>
+    <div class="row">
+      <div class="box bx-decision xs">向量去重?<br/><span class="label">vector_dedup_threshold</span></div>
+      <div class="arr-right">→</div>
+      <div class="box bx-process xs">按组去重</div>
+      <div class="arr-right">→</div>
+      <div class="box bx-decision xs">相邻合并?<br/><span class="label">adjacent_merge_frames</span></div>
+      <div class="arr-right">→</div>
+      <div class="box bx-process xs">按帧合并</div>
+    </div>
+  </div>
+  <div class="arr-down"></div>
+
+  <!-- Export -->
+  <div class="box bx-export">📦 视频导出 (VideoExporter)<br/><span class="label">ffmpeg precision cut / copy 模式<br/>命名模板: {情绪}_{场景}_{主体}_{动作}_{起始帧}_{视频解析名}<br/>勾选"输出相似度" → 文件名前缀加分数</span></div>
+  <div class="arr-down"></div>
+
+  <div class="box bx-process">🗑️ cleanup_temp_after_export()<br/><span class="label">清理 temp/ 目录 + 销毁 LMDB</span></div>
+
+</div>
+
+<h2 style="text-align:center;color:#1a237e;margin:20px 0 10px;">💿 缓存体系</h2>
+<table>
+<tr><th>缓存</th><th>位置</th><th>格式</th><th>失效条件</th></tr>
+<tr><td>Prompt 向量</td><td><code>prompt_cache/{model}_{lang}.lance</code></td><td>Lance (FP16)</td><td>logic_keywords.json 变化 / use_chinese 切换</td></tr>
+<tr><td>搜索候选</td><td><code>temp/cache/search_results/inner_search/</code></td><td>LMDB candidate:*</td><td>任意搜索参数变化 (MD5 config_hash)</td></tr>
+<tr><td>Lance 合并</td><td><code>temp/cache/search_results/lance_merge/</code></td><td>LMDB</td><td>搜索参数变化</td></tr>
+<tr><td>最终结果</td><td><code>temp/cache/search_results/</code></td><td>LMDB result:*</td><td>每次搜索清空重建</td></tr>
+</table>
+
+</body>
+</html>

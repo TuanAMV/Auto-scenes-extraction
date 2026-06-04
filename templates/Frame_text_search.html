@@ -76,21 +76,10 @@
         button:hover { background-color: var(--primary-strong); transform: translateY(-1px); }
         button:disabled { background-color: #ccc; cursor: not-allowed; }
         #loadMoreBtn { background-color: #415c67; margin-top: 20px; }
-        .status-box {
-            margin-top: 25px;
-            padding: 14px;
-            background-color: #ebf3f6;
-            border-radius: 8px;
-            text-align: center;
-            font-weight: 500;
-            min-height: 50px;
-            border: 1px solid #dbe8ed;
-        }
         .search-actions { display: flex; gap: 10px; margin-bottom: 10px; }
         .search-actions button { width: 50%; font-size: 1em; padding: 10px 12px; }
         .search-actions .clear-cache-btn { background-color: var(--danger); }
         .search-actions .clear-cache-btn:hover { background-color: #a93d3d; }
-        .status-box.status-inline { margin-top: 0; margin-bottom: 18px; min-height: 44px; text-align: left; }
         .input-group { display: flex; align-items: center; }
         .input-group textarea { flex-grow: 1; }
         .browse-btn {
@@ -247,20 +236,6 @@
             .setup-panel { width: auto; flex: 1; }
             .results-panel { border-left: none; padding-left: 0; }
         }
-        .modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.6); display: none; justify-content: center; align-items: center; z-index: 3200; } 
-        .modal-content { background-color: #fff; padding: 20px; border-radius: 8px; width: 80%; max-width: 700px; height: 70%; max-height: 500px; box-shadow: 0 5px 15px rgba(0,0,0,0.3); display: flex; flex-direction: column; } 
-        .modal-header { border-bottom: 1px solid #eee; padding-bottom: 10px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; } 
-        .modal-header h4 { margin: 0; } 
-        .modal-close { border: none; background: none; font-size: 1.5em; cursor: pointer; } 
-        .modal-path-container { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; } 
-        .modal-path-input { flex-grow: 1; padding: 5px 10px; border: 1px solid #ccc; border-radius: 4px; } 
-        .modal-body { flex-grow: 1; overflow-y: auto; border: 1px solid #ccc; border-radius: 4px; padding: 10px; } 
-        .modal-footer { padding-top: 10px; margin-top: 10px; border-top: 1px solid #eee; text-align: right; } 
-        .file-list { list-style-type: none; padding: 0; margin: 0; } 
-        .file-list li { padding: 8px 10px; cursor: pointer; border-radius: 4px; display: flex; align-items: center; gap: 8px; } 
-        .file-list li:hover { background-color: #edf5f7; } 
-        .file-list .icon { width: 20px; text-align: center; }
-        
         .no-models { padding: 15px; background: #fff3cd; border: 1px solid #ffc107; border-radius: 4px; color: #856404; margin-top: 10px; }
         
         /* 视频播放相关样式 */
@@ -527,27 +502,39 @@
             <form id="search-form">
                 <div class="search-actions">
                     <button type="submit" id="searchBtn">🔍 开始语义搜索</button>
-                    <button type="button" id="clearCacheBtn" class="clear-cache-btn">🗑️ 清理缓存并释放显存</button>
+                    <button type="button" id="clearCacheBtn" class="clear-cache-btn">🗑️ 清理缓存</button>
                 </div>
-                <div id="status" class="status-box status-inline">等待任务...</div>
+                <div class="form-group">
+                    <label>帧偏移</label>
+                    <div style="display: flex; gap: 15px; align-items: flex-start;">
+                        <div style="flex: 1;">
+                            <label for="startFrameOffset" style="font-size: 0.85em; color: #666; display: block; margin-bottom: 5px;">起始帧偏移</label>
+                            <input type="number" id="startFrameOffset" value="-2" style="width: 100%; padding: 10px; box-sizing: border-box; border: 1px solid var(--line); border-radius: 8px;">
+                        </div>
+                        <div style="flex: 1;">
+                            <label for="endFrameOffset" style="font-size: 0.85em; color: #666; display: block; margin-bottom: 5px;">结束帧偏移</label>
+                            <input type="number" id="endFrameOffset" value="2" style="width: 100%; padding: 10px; box-sizing: border-box; border: 1px solid var(--line); border-radius: 8px;">
+                        </div>
+                    </div>
+                    <div class="inline-note">负值=前移；正值=后移</div>
+                </div>
                 <div class="form-group">
                     <label for="text_query">1. 输入您想搜索的画面描述</label>
                     <input type="text" id="text_query" name="query" placeholder="例如：一个男人在雨中奔跑" required>
                 </div>
                 <div class="form-group">
-                    <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: nowrap;">
+                    <label for="model_index_select">索引模型</label>
+                    <select id="model_index_select" style="padding:6px 8px; border-radius:4px; width:100%;">
+                        <option value="qihoo360-fg-clip2-base">qihoo360-fg-clip2-base</option>
+                        <option value="openai-clip-vit-large-patch14" selected>openai-clip-vit-large-patch14</option>
+                    </select>
+                </div>
+                <div class="form-group">
                         <label for="index_select" style="margin-bottom: 0;">2. 选择索引库 (.lance) <small style="color:#666;">(可多选)</small></label>
-                        <div style="display: flex; gap: 5px; flex-shrink: 0;">
-                            <button type="button" class="browse-btn refresh-btn" id="refreshIndexBtn" title="刷新索引列表">🔄</button>
-                            <button type="button" class="browse-btn refresh-btn" id="browseIndexBtn" title="浏览文件夹">📁</button>
-                        </div>
-                    </div>
                     <select id="index_select" name="index_path" multiple size="4" required style="height: auto; min-height: 80px;">
                         <option value="">正在加载索引列表...</option>
                     </select>
-                    <div class="model-info" id="indexInfo">
-                        💡 索引将从 <code>indexes/</code> 文件夹自动加载，按住 Ctrl 可多选
-                    </div>
+                    <div class="inline-note" id="indexInfo">按住 Ctrl 可多选</div>
                     <!-- 隐藏的输入框用于存储完整路径 -->
                     <input type="hidden" id="index_full_path" value="">
                 </div>
@@ -570,38 +557,43 @@
                         <span id="similarity_val">12</span>
                     </div>
                     <div class="slider-info">
-                        💡 CLIP系模型使用 logit_scale 计算，Qwen3-VL 使用余弦相似度×100
                         <div id="thresholdGuidance"></div>
                     </div>
                 </div>
                 <div class="form-group">
                     <label>4. Reranker</label>
                     <div class="toggle-row">
-                        <input type="checkbox" id="use_reranker">
-                        <span>启动Qwen3-VL Reranker</span>
+                        <input type="checkbox" id="use_mini_rerank">
+                        <span>启用MiniCPM Mini-Rerank</span>
                     </div>
                     <div class="slider-group" style="margin-top: 12px;">
                         <label for="rerank_top_k">Rerank Top-K</label>
-                        <input type="number" id="rerank_top_k" min="5" max="300" step="5" value="50" style="max-width: 160px;">
+                        <input type="number" id="rerank_top_k" min="1" max="300" step="1" value="50" style="max-width: 160px;">
                         <span>items</span>
                     </div>
                     <div class="slider-group">
-                        <label for="rerank_weight">Rerank Weight</label>
+                        <label for="rerank_weight">Rerank 相似度阈值</label>
                         <input type="range" id="rerank_weight" min="0" max="1" step="0.05" value="0.6" style="max-width: 160px;">
                         <span id="rerank_weight_val">0.60</span>
                     </div>
-                    <div class="slider-group">
-                        <label for="rerank_batch_size">Rerank Batch</label>
-                        <input type="number" id="rerank_batch_size" min="1" max="16" step="1" value="4" style="max-width: 160px;">
-                        <span>batch</span>
+                    <div style="display:none;">
+                        <div class="toggle-row">
+                            <input type="checkbox" id="use_reranker" checked>
+                            <span>启动Qwen3-VL Reranker</span>
+                        </div>
+                        <div class="slider-group">
+                            <label for="rerank_batch_size">Rerank Batch</label>
+                            <input type="number" id="rerank_batch_size" min="1" max="16" step="1" value="4" style="max-width: 160px;">
+                            <span>batch</span>
+                        </div>
+                        <div class="slider-group">
+                            <label for="reranker_output_resolution">Rerank分辨率</label>
+                            <input type="number" id="reranker_output_resolution" min="64" max="2048" step="1" value="384" style="max-width: 160px;">
+                            <span>px</span>
+                        </div>
+                        <input type="hidden" id="rerank_model_path" value="models/Qwen3-VL-Reranker-2B">
+                        <div class="inline-note" id="rerankInfo">使用默认路径: models/Qwen3-VL-Reranker-2B</div>
                     </div>
-                    <div class="slider-group">
-                        <label for="reranker_output_resolution">Rerank分辨率</label>
-                        <input type="number" id="reranker_output_resolution" min="64" max="2048" step="1" value="384" style="max-width: 160px;">
-                        <span>px</span>
-                    </div>
-                    <input type="hidden" id="rerank_model_path" value="models/Qwen3-VL-Reranker-2B">
-                    <div class="inline-note" id="rerankInfo">使用默认路径: models/Qwen3-VL-Reranker-2B</div>
                 </div>
                 <div class="form-group">
                     <label>5. 去重</label>
@@ -703,21 +695,6 @@
                     </div>
                 </label>
                 
-                <!-- 帧偏移参数设置 -->
-                <div class="export-frame-offset" style="margin-top: 15px; padding: 12px; background: #f8f9fa; border-radius: 6px; border: 1px solid #e9ecef;">
-                    <div style="font-weight: 600; margin-bottom: 10px; color: #495057;">⚙️ 帧偏移参数</div>
-                    <div style="display: flex; gap: 15px; align-items: flex-start;">
-                        <div style="width: 120px;">
-                            <label for="startFrameOffset" style="font-size: 0.85em; color: #666; display: block; margin-bottom: 5px;">起始帧偏移</label>
-                            <input type="number" id="startFrameOffset" value="-2" disabled style="width: 100%; padding: 6px; border: 1px solid #ccc; border-radius: 4px; opacity: 0.5; background-color: #f0f0f0;">
-                        </div>
-                        <div style="width: 120px;">
-                            <label for="endFrameOffset" style="font-size: 0.85em; color: #666; display: block; margin-bottom: 5px;">结束帧偏移</label>
-                            <input type="number" id="endFrameOffset" value="2" style="width: 100%; padding: 6px; border: 1px solid #ccc; border-radius: 4px;">
-                        </div>
-                    </div>
-                    <div style="font-size: 0.8em; color: #17a2b8; margin-top: 8px;">💡 Copy模式只使用结束帧偏移；精确模式使用两个偏移参数</div>
-                </div>
                 <!-- FFmpeg 编码参数 -->
                 <div id="ffmpegParamsSection" style="margin-top: 15px; padding: 12px; background: #f8f9fa; border-radius: 6px; border: 1px solid #e9ecef;">
                     <div style="font-weight: 600; margin-bottom: 10px; color: #495057; display: flex; align-items: center; justify-content: space-between;">
@@ -987,30 +964,10 @@
             </div>
         </div>
     </div>
-    
-    <div id="fileBrowserModal" class="modal-overlay">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h4 id="modalTitle">选择文件</h4>
-                <button id="closeModalBtn" class="modal-close">&times;</button>
-            </div>
-            <div class="modal-path-container">
-                <input type="text" id="modalPathInput" class="modal-path-input">
-                <button id="modalGoBtn" class="browse-btn" style="height: 30px; padding: 0 10px;">转到</button>
-            </div>
-            <div class="modal-body">
-                <ul id="fileList" class="file-list"></ul>
-            </div>
-            <div class="modal-footer">
-                <button id="selectCurrentFolderBtn" class="browse-btn" style="display:none;">选择当前文件夹</button>
-            </div>
-        </div>
-    </div>
     <script id="defaultExportBrowsePathData" type="application/json">{{ (default_export_dir if default_export_dir else 'output/') | tojson }}</script>
     <script>
         const searchForm = document.getElementById('search-form');
         const defaultExportBrowsePath = JSON.parse(document.getElementById('defaultExportBrowsePathData').textContent);
-        const statusDiv = document.getElementById('status');
         const resultsPanel = document.getElementById('resultsPanel');
         const resultsGrid = document.getElementById('resultsGrid');
         const queryDisplay = document.getElementById('queryDisplay');
@@ -1025,6 +982,7 @@
         const indexInfo = document.getElementById('indexInfo');
         const indexFullPath = document.getElementById('index_full_path');
         const useReranker = document.getElementById('use_reranker');
+        const useMiniRerank = document.getElementById('use_mini_rerank');
         const rerankTopKInput = document.getElementById('rerank_top_k');
         const rerankWeightInput = document.getElementById('rerank_weight');
         const rerankWeightVal = document.getElementById('rerank_weight_val');
@@ -1058,14 +1016,13 @@
                 
                 clearCacheBtn.disabled = true;
                 clearCacheBtn.textContent = '🔄 正在清理...';
-                statusDiv.textContent = '正在清理缓存...';
                 
                 try {
                     const response = await fetch('/clear_cache', { method: 'POST' });
                     const data = await response.json();
                     
                     if (data.success) {
-                        statusDiv.textContent = `✅ ${data.message}`;
+                        console.log(`✅ Cache cleared: ${data.message}`);
                         // 清空当前显示的结果（因为视频片段缓存已清理）
                         resultsGrid.innerHTML = '';
                         resultsPanel.style.display = 'none';
@@ -1073,13 +1030,13 @@
                         currentlyDisplayedCount = 0;
                         updateSelectionUI();
                     } else {
-                        statusDiv.textContent = `❌ 清理失败: ${data.error}`;
+                        console.error('Clear cache failed:', data.error);
                     }
                 } catch (error) {
-                    statusDiv.textContent = `❌ 清理失败: ${error.message}`;
+                    console.error('Clear cache failed:', error.message);
                 } finally {
                     clearCacheBtn.disabled = false;
-                    clearCacheBtn.textContent = '🗑️ 清理缓存并释放显存';
+                    clearCacheBtn.textContent = '🗑️ 清理缓存';
                 }
             });
         }
@@ -1095,7 +1052,7 @@
         let currentSortMode = 'similarity_desc';
         let availableModels = [];
         let availableIndexes = [];
-        let currentIndexDir = 'indexes/';  // 当前索引目录
+        let currentIndexDir = 'indexes/openai-clip-vit-large-patch14';  // 当前索引目录
         let lockedSearchPrompt = '';  // 最近一次成功搜索的 prompt（勾选时使用）
         let currentlyPlayingCard = null;  // 当前正在播放的卡片
         let selectedCards = new Set();  // 选中的卡片唯一ID (video_path|start_frame|end_frame)
@@ -1222,13 +1179,6 @@
                 audioBitrateEl.style.backgroundColor = isCopyMode ? '#f0f0f0' : '';
             }
             updateCopyAudioConflictControls(isCopyMode);
-            // Copy模式禁用起始帧偏移
-            const startOffsetEl = document.getElementById('startFrameOffset');
-            if (startOffsetEl) {
-                startOffsetEl.disabled = isCopyMode;
-                startOffsetEl.style.opacity = isCopyMode ? '0.5' : '';
-                startOffsetEl.style.backgroundColor = isCopyMode ? '#f0f0f0' : '';
-            }
             // Copy模式自动折叠FFmpeg参数框，精确切割模式自动展开
             const ffmpegToggle = document.getElementById('ffmpegParamsToggle');
             const ffmpegBody = document.getElementById('ffmpegParamsBody');
@@ -1325,6 +1275,7 @@
             return {
                 threshold: parseFloat(thresholdSlider.value),
                 use_reranker: useReranker ? useReranker.checked : false,
+                use_mini_rerank: useMiniRerank ? useMiniRerank.checked : false,
                 rerank_top_k: rerankTopKInput ? parseInt(rerankTopKInput.value, 10) : 50,
                 rerank_weight: rerankWeightInput ? parseFloat(rerankWeightInput.value) : 0.6,
                 rerank_batch_size: rerankBatchInput ? parseInt(rerankBatchInput.value, 10) : 4,
@@ -1335,6 +1286,7 @@
                 start_frame_offset: parseInt(document.getElementById('startFrameOffset').value, 10) || -2,
                 end_frame_offset: parseInt(document.getElementById('endFrameOffset').value, 10) || 2,
                 export_output_dir: exportOutputDirInput ? exportOutputDirInput.value : '',
+                model_index: document.getElementById('model_index_select').value,
                 ffmpeg_config: collectFfmpegConfig()
             };
         }
@@ -1366,6 +1318,9 @@
             }
             if (useReranker && presetData.use_reranker !== undefined) {
                 useReranker.checked = Boolean(presetData.use_reranker);
+            }
+            if (useMiniRerank && presetData.use_mini_rerank !== undefined) {
+                useMiniRerank.checked = Boolean(presetData.use_mini_rerank);
             }
             if (rerankTopKInput && presetData.rerank_top_k !== undefined) {
                 rerankTopKInput.value = String(presetData.rerank_top_k);
@@ -1411,6 +1366,15 @@
             if (presetData.ffmpeg_config && presetData.ffmpeg_config.video_output) {
                 applyFfmpegConfig(presetData.ffmpeg_config.video_output);
             }
+            // 恢复索引模型选择
+            if (presetData.model_index) {
+                const modelSelect = document.getElementById('model_index_select');
+                if (modelSelect.querySelector(`option[value="${presetData.model_index}"]`)) {
+                    modelSelect.value = presetData.model_index;
+                    currentIndexDir = 'indexes/' + presetData.model_index;
+                    await loadIndexList();
+                }
+            }
             updateExportModeControls();
         }
         function updateDefaultPresetInfo(defaultPresetName) {
@@ -1455,14 +1419,11 @@
             await applyPresetData(data.data || {});
             presetSelect.value = data.name || name;
             presetNameInput.value = data.name || name;
-            if (!silent) {
-                statusDiv.textContent = `✅ 已加载预设: ${data.name || name}`;
-            }
         }
         async function savePreset() {
             const presetName = (presetNameInput.value || presetSelect.value || '').trim();
             if (!presetName) {
-                statusDiv.textContent = '❌ 请先输入预设名称';
+                console.warn('Save preset: no name provided');
                 return;
             }
             const payload = {
@@ -1483,11 +1444,6 @@
             await refreshPresetList(savedName);
             presetSelect.value = savedName;
             presetNameInput.value = savedName;
-            if (payload.set_as_default) {
-                statusDiv.textContent = `✅ 预设已保存并设为默认: ${savedName}`;
-            } else {
-                statusDiv.textContent = `✅ 预设已保存: ${savedName}`;
-            }
         }
         async function loadSelectedPreset() {
             const name = (presetSelect.value || '').trim();
@@ -1496,7 +1452,7 @@
         async function setDefaultPreset() {
             const name = (presetSelect.value || presetNameInput.value || '').trim();
             if (!name) {
-                statusDiv.textContent = '❌ 请先选择或输入预设名称';
+                console.warn('Set default preset: no name selected');
                 return;
             }
             const response = await fetch('/set_default_preset', {
@@ -1511,13 +1467,11 @@
             await refreshPresetList(data.default_preset || name);
             presetSelect.value = data.default_preset || name;
             presetNameInput.value = data.default_preset || name;
-            statusDiv.textContent = `✅ 默认预设已设置: ${data.default_preset || name}`;
         }
         async function initPresets() {
             const data = await refreshPresetList();
             if (data.default_preset) {
                 await loadPresetByName(data.default_preset, true);
-                statusDiv.textContent = `🧩 已加载默认预设: ${data.default_preset}`;
             }
         }
         
@@ -2044,12 +1998,21 @@
         updateExportModeControls();
 
         if (browseExportDirBtn) {
-            browseExportDirBtn.addEventListener('click', () => {
-                currentTargetInputId = 'exportOutputDir';
-                currentMode = 'folder';
-                modalTitle.textContent = '选择导出目录';
-                modal.style.display = 'flex';
-                fetchAndDisplayPath(exportOutputDirInput.value || defaultExportBrowsePath);
+            browseExportDirBtn.addEventListener('click', async () => {
+                const initialPath = exportOutputDirInput.value || defaultExportBrowsePath;
+                try {
+                    const res = await fetch('/pick_directory', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ initial_dir: initialPath })
+                    });
+                    const data = await res.json();
+                    if (data.success && data.path) {
+                        exportOutputDirInput.value = data.path;
+                    }
+                } catch (e) {
+                    console.error('原生目录选择失败:', e);
+                }
             });
         }
 
@@ -2057,10 +2020,9 @@
             exportConfirmBtn.addEventListener('click', async () => {
                 const exportMode = document.querySelector('input[name="exportMode"]:checked').value;
                 const outputDir = exportOutputDirInput.value.trim() || '';
-                const startFrameOffsetInput = document.getElementById('startFrameOffset');
-                const endFrameOffsetInput = document.getElementById('endFrameOffset');
-                const startFrameOffset = parseInt(startFrameOffsetInput.value, 10) || -2;
-                const endFrameOffset = parseInt(endFrameOffsetInput.value, 10) || 2;
+                // 搜索已应用帧偏移，导出不再重复偏移
+                const startFrameOffset = 0;
+                const endFrameOffset = 0;
 
                 const selectedCandidates = Array.from(candidateClips.values())
                     .filter(candidate => selectedCards.has(candidate.clip_id))
@@ -2265,12 +2227,7 @@
                 
                 if (availableIndexes.length === 0) {
                     indexSelect.innerHTML = '<option value="">未找到索引文件</option>';
-                    indexInfo.innerHTML = `
-                        <div class="no-models">
-                            ⚠️ 在 <code>${data.current_path}</code> 中未找到 .lance 索引目录<br>
-                            请先创建索引或点击"浏览"选择其他文件夹
-                        </div>
-                    `;
+                    indexInfo.innerHTML = '';
                     return;
                 }
                 
@@ -2284,18 +2241,14 @@
                 });
                 
                 indexSelect.disabled = false;
-                indexInfo.innerHTML = `📁 索引目录: <code>${data.current_path}</code>`;
                 
                 // 自动选择第一个索引对应的模型
                 if (availableIndexes.length > 0) {
-                    const selected = autoSelectModelFromIndex(availableIndexes[0].path);
-                    if (selected) {
-                        statusDiv.textContent = `✅ 已根据索引文件自动选择模型`;
-                    }
+                    autoSelectModelFromIndex(availableIndexes[0].path);
                 }
                 
                 if (data.rerank_used && data.rerank_info) {
-                    statusDiv.textContent = `${baseStatus}(rerank ${data.rerank_info.reranked}/${data.rerank_info.candidates})`;
+                    console.log(`Search used rerank: ${data.rerank_info.reranked}/${data.rerank_info.candidates}`);
                 }
             } catch (error) {
                 indexSelect.innerHTML = '<option value="">加载失败</option>';
@@ -2320,31 +2273,23 @@
                     // 只有一个模型，自动选择
                     const modelName = Array.from(modelNames)[0];
                     autoSelectModelFromIndex(selectedPaths[0]);
-                    statusDiv.textContent = `✅ 已选择 ${selectedPaths.length} 个索引，模型: ${modelName}`;
-                    statusDiv.style.color = '';
+                    console.log(`Selected ${selectedPaths.length} index(es), model: ${modelName}`);
                 } else if (modelNames.size > 1) {
                     // 多个模型，显示警告
-                    statusDiv.textContent = `⚠️ 已选择 ${selectedPaths.length} 个索引，但包含 ${modelNames.size} 个不同模型！多索引搜索要求相同模型`;
-                    statusDiv.style.color = '#dc3545';
+                    console.warn(`Selected ${selectedPaths.length} indexes with ${modelNames.size} different models`);
                 } else {
-                    statusDiv.textContent = `📋 已选择 ${selectedPaths.length} 个索引`;
-                    statusDiv.style.color = '';
+                    console.log(`Selected ${selectedPaths.length} index(es)`);
                 }
                 
                 indexFullPath.value = selectedPaths.join('\n');
             }
         });
         
-        // 刷新索引列表
-        document.getElementById('refreshIndexBtn').addEventListener('click', () => loadIndexList());
-        
-        // 浏览索引文件夹
-        document.getElementById('browseIndexBtn').addEventListener('click', () => {
-            currentTargetInputId = '_index_browse_';  // 特殊标识
-            currentMode = 'folder';
-            modalTitle.textContent = '选择索引文件夹';
-            modal.style.display = 'flex';
-            fetchAndDisplayPath(currentIndexDir);
+        // 模型切换 → 自动切换索引目录
+        document.getElementById('model_index_select').addEventListener('change', () => {
+            const modelName = document.getElementById('model_index_select').value;
+            currentIndexDir = 'indexes/' + modelName;
+            loadIndexList();
         });
         // ============ 模型加载 ============
         async function loadModelList() {
@@ -2409,16 +2354,6 @@
             if (model) {
                 const typeClass = `type-${model.type}`;
                 const typeLabel = model.type === 'qwen_embed' ? 'QWEN_EMBED' : model.type.toUpperCase();
-                if (useReranker && rerankInfo) {
-                    const isQwenEmbed = model.type === 'qwen_embed';
-                    useReranker.disabled = isQwenEmbed;
-                    if (isQwenEmbed) {
-                        useReranker.checked = false;
-                        rerankInfo.textContent = 'Reranker disabled for Qwen3-VL-Embedding indexes.';
-                    } else {
-                        rerankInfo.textContent = 'Default: models/Qwen3-VL-Reranker-2B';
-                    }
-                }
                 modelInfo.innerHTML = `
                     📁 <code>${model.name}</code>
                     <span class="type-badge ${typeClass}">${typeLabel}</span>
@@ -2480,7 +2415,7 @@
                 try {
                     await savePreset();
                 } catch (error) {
-                    statusDiv.textContent = `❌ 保存预设失败: ${error.message}`;
+                    console.error('Save preset failed:', error.message);
                 }
             });
         }
@@ -2489,7 +2424,7 @@
                 try {
                     await loadSelectedPreset();
                 } catch (error) {
-                    statusDiv.textContent = `❌ 加载预设失败: ${error.message}`;
+                    console.error('Load preset failed:', error.message);
                 }
             });
         }
@@ -2498,7 +2433,7 @@
                 try {
                     await setDefaultPreset();
                 } catch (error) {
-                    statusDiv.textContent = `❌ 设置默认预设失败: ${error.message}`;
+                    console.error('Set default preset failed:', error.message);
                 }
             });
         }
@@ -2560,11 +2495,11 @@
             const selectedIndices = selectedOptions.map(opt => opt.value).filter(v => v);
             
             if (selectedIndices.length === 0) {
-                statusDiv.textContent = '❌ 请先选择至少一个索引库';
+                console.error('Search: no index selected');
                 return;
             }
             
-            statusDiv.textContent = `正在进行语义分析和搜索 (${selectedIndices.length} 个索引)...`;
+            console.log(`Searching ${selectedIndices.length} index(es)...`);
             resultsPanel.style.display = 'none';
             resultsGrid.innerHTML = '';
             
@@ -2573,12 +2508,15 @@
                 indices: selectedIndices.join('\n'),  // 多个索引用换行分隔
                 threshold: parseFloat(thresholdSlider.value),
                 use_reranker: useReranker ? useReranker.checked : false,
+                use_mini_rerank: useMiniRerank ? useMiniRerank.checked : false,
                 rerank_top_k: rerankTopKInput ? parseInt(rerankTopKInput.value, 10) : 50,
                 rerank_weight: rerankWeightInput ? parseFloat(rerankWeightInput.value) : 0.6,
                 rerank_batch_size: rerankBatchInput ? parseInt(rerankBatchInput.value, 10) : 4,
                 reranker_output_resolution: rerankOutputResolutionInput ? rerankOutputResolutionInput.value : '384',
                 use_dedup: useDedup ? useDedup.checked : false,
-                dedup_threshold: dedupThresholdInput ? parseFloat(dedupThresholdInput.value) : 0.95
+                dedup_threshold: dedupThresholdInput ? parseFloat(dedupThresholdInput.value) : 0.95,
+                start_frame_offset: parseInt(document.getElementById('startFrameOffset').value, 10) || -2,
+                end_frame_offset: parseInt(document.getElementById('endFrameOffset').value, 10) || 2
             };
             
             try {
@@ -2590,7 +2528,7 @@
                 const data = await response.json();
                 if (!data.success) throw new Error(data.error);
                 
-                let baseStatus = `搜索完成！找到 ${data.matches.length} 个结果。`;
+                console.log(`Search done: ${data.matches.length} results`);
                 allMatches = data.matches;
                 currentlyDisplayedCount = 0;
                 currentSortMode = 'similarity_desc';
@@ -2603,14 +2541,14 @@
                 renderNextChunk();
                 
                 if (data.rerank_used && data.rerank_info) {
-                    baseStatus = `搜索完成！找到 ${data.matches.length} 个结果。(rerank ${data.rerank_info.reranked}/${data.rerank_info.total})`;
+                    console.log(`Search done: ${data.matches.length} results (rerank ${data.rerank_info.reranked}/${data.rerank_info.total})`);
                 }
                 if (data.dedup_info) {
-                    baseStatus += ` (去重: ${data.dedup_info.before} → ${data.dedup_info.after})`;
+                    console.log(`Dedup: ${data.dedup_info.before} → ${data.dedup_info.after}`);
                 }
-                statusDiv.textContent = baseStatus;
+
             } catch (error) {
-                statusDiv.textContent = `错误: ${error.message}`;
+                console.error('Search error:', error.message);
             }
         });
         loadMoreBtn.addEventListener('click', renderNextChunk);
@@ -2629,90 +2567,6 @@
             refreshVisibleCardSelectionState();
             updateSelectionUI();
         }
-        // ============ 文件浏览器 ============
-        const modal = document.getElementById('fileBrowserModal');
-        const closeModalBtn = document.getElementById('closeModalBtn');
-        const fileList = document.getElementById('fileList');
-        const modalPathInput = document.getElementById('modalPathInput');
-        const modalGoBtn = document.getElementById('modalGoBtn');
-        const selectCurrentFolderBtn = document.getElementById('selectCurrentFolderBtn');
-        const modalTitle = document.getElementById('modalTitle');
-        let currentTargetInputId = null;
-        let currentMode = 'file';
-        const fileFilters = { lance: ['.lance'] };
-        function hideModal() { modal.style.display = 'none'; }
-        function selectItem(path) {
-            if (!currentTargetInputId) return;
-            
-            // ✅ 特殊处理：索引文件夹选择
-            if (currentTargetInputId === '_index_browse_') {
-                // 选择文件夹作为索引目录
-                loadIndexList(path);
-                hideModal();
-                return;
-            }
-            
-            const el = document.getElementById(currentTargetInputId);
-            if (!el) {
-                hideModal();
-                return;
-            }
-            
-            if (el.tagName.toLowerCase() === 'textarea') {
-                el.value += (el.value ? '\n' : '') + path;
-            } else {
-                el.value = path;
-            }
-            
-            hideModal();
-        }
-        async function fetchAndDisplayPath(path = '') {
-            fileList.innerHTML = '<li>正在加载...</li>';
-            try {
-                const res = await fetch(`/browse?path=${encodeURIComponent(path)}`);
-                const data = await res.json();
-                if (!res.ok) { fileList.innerHTML = `<li style="color: red;">错误: ${data.error}</li>`; return; }
-                
-                modalPathInput.value = data.current_path;
-                fileList.innerHTML = '';
-                if (data.parent_path) {
-                    const li = document.createElement('li');
-                    li.innerHTML = `<span class="icon">⬆️</span> .. (父文件夹)`;
-                    li.onclick = () => fetchAndDisplayPath(data.parent_path);
-                    fileList.appendChild(li);
-                }
-                data.dirs.forEach(dir => {
-                    const fullPath = data.current_path + (data.current_path.endsWith('\\') || data.current_path.endsWith('/') ? '' : '\\') + dir;
-                    const li = document.createElement('li');
-                    li.innerHTML = `<span class="icon">📁</span> ${dir}`;
-                    li.onclick = () => fetchAndDisplayPath(fullPath);
-                    fileList.appendChild(li);
-                });
-                const filterKey = document.querySelector(`[data-input-id="${currentTargetInputId}"]`)?.dataset.filter;
-                const filterExts = fileFilters[filterKey] || [];
-                data.files.forEach(file => {
-                    if (currentMode === 'file' && filterExts.length > 0 && !filterExts.some(ext => file.toLowerCase().endsWith(ext))) return;
-                    const fullPath = data.current_path + (data.current_path.endsWith('\\') || data.current_path.endsWith('/') ? '' : '\\') + file;
-                    const li = document.createElement('li');
-                    li.innerHTML = `<span class="icon">📄</span> ${file}`;
-                    if (currentMode === 'file' || currentMode === 'savefile') {
-                        li.onclick = () => selectItem(fullPath);
-                    } else {
-                        li.style.cursor = 'default';
-                        li.style.color = '#888';
-                    }
-                    fileList.appendChild(li);
-                });
-                selectCurrentFolderBtn.style.display = currentMode === 'folder' ? 'inline-block' : 'none';
-                selectCurrentFolderBtn.onclick = () => selectItem(data.current_path);
-            } catch (err) {
-                fileList.innerHTML = `<li style="color: red;">无法连接到后端服务。</li>`;
-            }
-        }
-        modalGoBtn.addEventListener('click', () => fetchAndDisplayPath(modalPathInput.value));
-        modalPathInput.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); fetchAndDisplayPath(modalPathInput.value); } });
-        closeModalBtn.addEventListener('click', hideModal);
-        window.addEventListener('click', e => { if (e.target === modal) hideModal(); });
         // FFmpeg 参数折叠/展开
         const ffmpegToggle = document.getElementById('ffmpegParamsToggle');
         const ffmpegBody = document.getElementById('ffmpegParamsBody');

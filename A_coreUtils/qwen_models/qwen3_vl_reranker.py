@@ -10,9 +10,9 @@ import hashlib
 _current_file = os.path.abspath(__file__)
 _qwen_models_dir = os.path.dirname(_current_file)
 _a_core_utils_dir = os.path.dirname(_qwen_models_dir)
-_project_root_dir = os.path.dirname(_a_core_utils_dir)
-if _project_root_dir not in sys.path:
-    sys.path.insert(0, _project_root_dir)
+_cut_detect_scene_dir = os.path.dirname(_a_core_utils_dir)
+if _cut_detect_scene_dir not in sys.path:
+    sys.path.insert(0, _cut_detect_scene_dir)
 
 # Force offline loading (no remote download)
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
@@ -391,11 +391,24 @@ class Qwen3VLReranker():
         
         # Truncate input IDs while preserving special tokens
         for i, ele in enumerate(inputs['input_ids']):
-            inputs['input_ids'][i] = self.truncate_tokens_optimized(
-                inputs['input_ids'][i][:-5],
+            truncated = self.truncate_tokens_optimized(
+                ele[:-5],
                 max_length,
                 self.processor.tokenizer.all_special_ids
-            ) + inputs['input_ids'][i][-5:]
+            ) + ele[-5:]
+            inputs['input_ids'][i] = truncated
+
+            # 同步截断 mm_token_type_ids，保持与 input_ids 长度一致
+            if 'mm_token_type_ids' in inputs:
+                new_len = len(truncated)
+                mm_ids = inputs['mm_token_type_ids'][i]
+                if new_len < len(mm_ids):
+                    front = mm_ids[:new_len - 5]
+                    back = mm_ids[-5:]
+                    if isinstance(mm_ids, torch.Tensor):
+                        inputs['mm_token_type_ids'][i] = torch.cat([front, back])
+                    else:
+                        inputs['mm_token_type_ids'][i] = front + back
             
         # Apply padding using tokenizer's pad() method
         # 使用 tokenizer 的 pad() 方法进行 padding
@@ -409,7 +422,15 @@ class Qwen3VLReranker():
             )
         for key in temp_inputs:
             inputs[key] = temp_inputs[key]
-            
+
+        # 补齐 mm_token_type_ids 使其与 padded input_ids 长度一致
+        if 'mm_token_type_ids' in inputs and isinstance(inputs['mm_token_type_ids'], list):
+            mm_list = inputs['mm_token_type_ids']
+            from torch.nn.utils.rnn import pad_sequence
+            # 确保每个元素都是 tensor
+            as_tensors = [t if isinstance(t, torch.Tensor) else torch.tensor(t) for t in mm_list]
+            inputs['mm_token_type_ids'] = pad_sequence(as_tensors, batch_first=True, padding_value=0)
+
         return inputs
 
     def format_mm_content(

@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 # 本文件使用 UTF-8 编码，请勿使用 GBK 或其他编码打开/保存
 # pipeline_app.py
 # 视频处理流水线 - Flask Web界面版
@@ -59,25 +59,11 @@ except ImportError as e:
 # 导入搜索模块
 # ============================================================================
 try:
-    from A_coreUtils.search.auto_scene_search import run_interactive_search
+    from A_coreUtils.search.auto_scene_search import run_interactive_search, cleanup_temp_after_export
     _PROMPT_SEARCH_AVAILABLE = True
 except ImportError as e:
     print(f"[Warning] 无法导入 auto_scene_search 模块 - {e}")
     _PROMPT_SEARCH_AVAILABLE = False
-
-try:
-    from A_coreUtils.search.label_traverse_search import run_label_traverse_search
-    _LABEL_SEARCH_AVAILABLE = True
-except ImportError as e:
-    print(f"[Warning] 无法导入 label_traverse_search 模块 - {e}")
-    _LABEL_SEARCH_AVAILABLE = False
-
-try:
-    from A_coreUtils.search.cloze_fill_search import run_cloze_fill_search
-    _CLOZE_SEARCH_AVAILABLE = True
-except ImportError as e:
-    print(f"[Warning] 无法导入 cloze_fill_search 模块 - {e}")
-    _CLOZE_SEARCH_AVAILABLE = False
 
 
 # ============================================================================
@@ -350,7 +336,7 @@ def run_indexer_with_config(config):
     
     idx_config = config.get('indexer', {})
 
-    selected_model_name = str(idx_config.get('model_name', '')).strip() or 'qihoo360_fg-clip2-base'
+    selected_model_name = str(idx_config.get('model_name', '')).strip() or 'qihoo360-fg-clip2-base'
     if not _is_clip_model_name(selected_model_name):
         log_message(f"错误: 仅允许使用名称包含 clip 的模型，当前模型为: {selected_model_name}", 'error')
         return False
@@ -369,6 +355,7 @@ def run_indexer_with_config(config):
     # 直通参数：仅在预设中存在且非 None 时才传递，None 让下游函数使用自己的默认值
     for key in ('output_resolution', 'batch_size', 'workers', 'io_workers',
                 'cosine_similarity_threshold', 'brightness_threshold', 'black_pixel_ratio',
+                'white_threshold', 'white_pixel_ratio',
                 'sample_interval', 'min_scene_length', 'localmax_order',
                 'resume_processing', 'use_fp16'):
         if key in idx_config and idx_config[key] is not None:
@@ -448,6 +435,17 @@ def run_prompt_search_with_config(config):
     log_message("=" * 50, 'info')
     
     ps_config = config.get('prompt_search', {})
+
+    # 自动从 config.json 获取对应模型的 CLIP 相似度阈值
+    if 'search_threshold' not in ps_config or ps_config.get('search_threshold') is None:
+        project_cfg = _load_project_config()
+        sim_thresholds = project_cfg.get('similarity_thresholds', {})
+        idx_mname = str(config.get('indexer', {}).get('model_name', '')).lower()
+        if 'fg-clip2' in idx_mname or 'fgclip2' in idx_mname:
+            ps_config['search_threshold'] = float(sim_thresholds.get('fgclip2', 14))
+        else:
+            ps_config['search_threshold'] = float(sim_thresholds.get('clip_large', 21))
+        log_message(f"自动设置搜索阈值(按模型): {ps_config['search_threshold']}", 'info')
     
     # 检查停止请求
     if _stop_requested.value:
@@ -495,12 +493,17 @@ def run_prompt_search_with_config(config):
         for key in ('use_fp16', 'use_reranker',
                      'video_output_directory', 'video_copy_mode',
                      'feature_fp16',
-                     'use_diskcache', 'prompt_template', 'video_name_format',
-                     'debug_similarity',
+                     'use_diskcache', 'debug_similarity',
                      'use_chinese',
-                     'vector_dedup_threshold', 'adjacent_merge_frames'):
+                     'vector_dedup_threshold', 'adjacent_merge_frames',
+                      'use_shot_analysis',
+                      'use_mini_rerank', 'mini_rerank_min_matches',
+                      'search_threshold'):
             if key in ps_config and ps_config[key] is not None:
                 kwargs[key] = ps_config[key]
+        # lance_indexes: 用户选中的索引文件名列表
+        if 'lance_indexes' in ps_config and ps_config.get('lance_indexes'):
+            kwargs['lance_indexes'] = ps_config['lance_indexes']
         for key in ('rerank_top_k', 'rerank_batch_size', 'candidate_batch_size',
                     'prompt_search_batch_size', 'lance_batch_size',
                     'prompt_cache_batch_size', 'lance_load_workers',
@@ -517,7 +520,12 @@ def run_prompt_search_with_config(config):
             log_message(f"Prompt search failed: {idx_msg}", 'error')
             return False
 
-        search_results = run_interactive_search(**kwargs)
+        use_shot_analysis = kwargs.pop('use_shot_analysis', False)
+        search_kwargs = kwargs
+        search_kwargs['use_shot_analysis'] = use_shot_analysis
+        search_results = run_interactive_search(**search_kwargs)
+        if isinstance(search_results, dict) and search_results.get('export_succeeded'):
+            cleanup_temp_after_export(_path_resolver)
 
         if not isinstance(search_results, dict):
             log_message("Prompt搜索返回异常结果类型，判定为失败", 'error')
@@ -525,6 +533,10 @@ def run_prompt_search_with_config(config):
         if not search_results.get('success', False):
             log_message(f"Prompt搜索失败: {search_results.get('error', 'unknown error')}", 'error')
             return False
+
+        # logic_keywords.json 一致性校验警告
+        for w in search_results.get('validation_warnings', []) or []:
+            log_message(f"[logic_keywords] {w}", 'warning')
 
         result_count = int(search_results.get('result_count', 0) or 0)
         merged_count = int(search_results.get('merged_result_count', result_count) or 0)
@@ -549,203 +561,6 @@ def run_prompt_search_with_config(config):
         return False
 
 
-def run_label_search_with_config(config):
-    """
-    运行遍历模式标签匹配搜索，使用传入的配置
-    """
-    
-    if not _LABEL_SEARCH_AVAILABLE:
-        log_message("标签搜索模块不可用，请检查 label_traverse_search 是否正确安装", 'error')
-        return False
-    
-    log_message("=" * 50, 'info')
-    log_message("🏷️ 步骤2: 遍历模式标签匹配搜索", 'info')
-    log_message("=" * 50, 'info')
-    
-    ls_config = config.get('label_search', {})
-    
-    # 检查停止请求
-    if _stop_requested.value:
-        log_message("收到停止请求，终止搜索", 'warning')
-        return False
-    
-    time_start = time.time()
-    log_progress(55)
-    diskcache_dir = _resolve_diskcache_dir(ls_config.get('diskcache_dir'))
-    
-    try:
-        # 只传预设中明确存在的参数，未设置的让下游函数使用自己的默认值
-        kwargs = {}
-        # 路径配置（有默认回退）
-        if 'index_directory' in ls_config:
-            kwargs['index_directory'] = resolve_path(ls_config['index_directory'])
-        if 'output_directory' in ls_config:
-            kwargs['output_directory'] = resolve_path(ls_config['output_directory'])
-        # 需要类型转换的参数
-        normalized_start_offset = _normalize_optional_int(ls_config.get('start_frame_offset'), field_name='label_search.start_frame_offset')
-        if normalized_start_offset is not None:
-            kwargs['start_frame_offset'] = normalized_start_offset
-        normalized_end_offset = _normalize_optional_int(ls_config.get('end_frame_offset'), field_name='label_search.end_frame_offset')
-        if normalized_end_offset is not None:
-            kwargs['end_frame_offset'] = normalized_end_offset
-        if 'search_mode' in ls_config:
-            normalized_search_mode = _normalize_optional_int(ls_config.get('search_mode'), field_name='label_search.search_mode')
-            if normalized_search_mode is not None:
-                kwargs['search_mode'] = normalized_search_mode
-        if 'top_k' in ls_config:
-            normalized_top_k = _normalize_top_k(ls_config.get('top_k'))
-            kwargs['top_k'] = normalized_top_k
-        if 'candidate_batch_size' in ls_config:
-            normalized_candidate_batch_size = _normalize_optional_positive_int(
-                ls_config.get('candidate_batch_size'),
-                field_name='label_search.candidate_batch_size'
-            )
-            # 字段存在即透传；显式 None/0 保留为 None
-            kwargs['candidate_batch_size'] = normalized_candidate_batch_size
-        # diskcache_dir 经过特殊解析
-        if diskcache_dir is not None:
-            kwargs['diskcache_dir'] = diskcache_dir
-        # 直通参数：仅在预设中存在且非 None 时才传递
-        for key in ('video_output_directory', 'video_copy_mode', 'video_name_format',
-                     'debug_similarity',
-                     'use_diskcache', 'use_chinese',
-                     'vector_dedup_threshold',
-                     'adjacent_merge_frames', 'use_fp16', 'feature_fp16'):
-            if key in ls_config and ls_config[key] is not None:
-                kwargs[key] = ls_config[key]
-        for key in ('prompt_search_batch_size', 'lance_batch_size', 'scene_chunk_size',
-                    'lance_load_workers', 'lmdb_write_batch_size', 'label_cache_batch_size'):
-            if key not in ls_config:
-                continue
-            normalized = _normalize_optional_positive_int(ls_config.get(key), field_name=f'label_search.{key}')
-            # 字段存在即透传；显式 None/0 表示“不限制/自动”
-            kwargs[key] = normalized
-
-        index_dir_for_check = kwargs.get('index_directory', _path_resolver.join_str('indexes'))
-        valid_idx, idx_msg = _validate_lance_index_directory(index_dir_for_check)
-        if not valid_idx:
-            log_message(f"Label search failed: {idx_msg}", 'error')
-            return False
-
-        results = run_label_traverse_search(**kwargs)
-        if not isinstance(results, list):
-            log_message("Label search returned invalid result type; mark as failed", 'error')
-            return False
-
-        time_end = time.time()
-        log_message(f"Label traverse done, {len(results)} valid scenes", 'success')
-        log_message(f"Search elapsed: {time_end - time_start:.2f} s", 'success')
-        log_progress(100)
-
-        return True
-        
-    except Exception as e:
-        log_message(f"搜索过程出错: {str(e)}", 'error')
-        import traceback
-        log_message(traceback.format_exc(), 'error')
-        return False
-
-
-def run_cloze_search_with_config(config):
-    """
-    运行选词填空模式搜索，使用传入的配置
-    """
-    
-    if not _CLOZE_SEARCH_AVAILABLE:
-        log_message("选词填空搜索模块不可用，请检查 cloze_fill_search 是否正确安装", 'error')
-        return False
-    
-    log_message("=" * 50, 'info')
-    log_message("📝 步骤2: 选词填空模式搜索", 'info')
-    log_message("=" * 50, 'info')
-    
-    cs_config = config.get('cloze_search', {})
-    
-    # 检查停止请求
-    if _stop_requested.value:
-        log_message("收到停止请求，终止搜索", 'warning')
-        return False
-    
-    time_start = time.time()
-    log_progress(55)
-    diskcache_dir = _resolve_diskcache_dir(cs_config.get('diskcache_dir'))
-    
-    try:
-        # 只传预设中明确存在的参数，未设置的让下游函数使用自己的默认值
-        kwargs = {}
-        # 路径配置（有默认回退）
-        if 'index_directory' in cs_config:
-            kwargs['index_directory'] = resolve_path(cs_config['index_directory'])
-        if 'output_directory' in cs_config:
-            kwargs['output_directory'] = resolve_path(cs_config['output_directory'])
-        # 需要类型转换的参数
-        normalized_start_offset = _normalize_optional_int(cs_config.get('start_frame_offset'), field_name='cloze_search.start_frame_offset')
-        if normalized_start_offset is not None:
-            kwargs['start_frame_offset'] = normalized_start_offset
-        normalized_end_offset = _normalize_optional_int(cs_config.get('end_frame_offset'), field_name='cloze_search.end_frame_offset')
-        if normalized_end_offset is not None:
-            kwargs['end_frame_offset'] = normalized_end_offset
-        if 'search_mode' in cs_config:
-            normalized_search_mode = _normalize_optional_int(cs_config.get('search_mode'), field_name='cloze_search.search_mode')
-            if normalized_search_mode is not None:
-                kwargs['search_mode'] = normalized_search_mode
-        if 'top_k' in cs_config:
-            normalized_top_k = _normalize_top_k(cs_config.get('top_k'))
-            kwargs['top_k'] = normalized_top_k
-        if 'reranker_output_resolution' in cs_config:
-            normalized_reranker_resolution = _normalize_optional_positive_int(
-                cs_config.get('reranker_output_resolution'),
-                field_name='cloze_search.reranker_output_resolution'
-            )
-            if normalized_reranker_resolution is not None:
-                kwargs['reranker_output_resolution'] = str(normalized_reranker_resolution)
-        # diskcache_dir 经过特殊解析
-        if diskcache_dir is not None:
-            kwargs['diskcache_dir'] = diskcache_dir
-        # 直通参数：仅在预设中存在且非 None 时才传递
-        for key in ('video_output_directory', 'video_copy_mode', 'video_name_format',
-                     'debug_similarity',
-                     'use_diskcache', 'use_chinese',
-                     'use_reranker',
-                     'vector_dedup_threshold', 'adjacent_merge_frames',
-                     'use_fp16', 'feature_fp16'):
-            if key in cs_config and cs_config[key] is not None:
-                kwargs[key] = cs_config[key]
-        for key in ('prompt_search_batch_size', 'lance_batch_size',
-                    'rerank_top_k', 'rerank_batch_size', 'candidate_batch_size',
-                    'prompt_cache_batch_size', 'lance_load_workers',
-                    'lmdb_write_batch_size'):
-            if key not in cs_config:
-                continue
-            normalized = _normalize_optional_positive_int(cs_config.get(key), field_name=f'cloze_search.{key}')
-            # 字段存在即透传；显式 None/0 表示“不限制/自动”
-            kwargs[key] = normalized
-
-        index_dir_for_check = kwargs.get('index_directory', _path_resolver.join_str('indexes'))
-        valid_idx, idx_msg = _validate_lance_index_directory(index_dir_for_check)
-        if not valid_idx:
-            log_message(f"Cloze search failed: {idx_msg}", 'error')
-            return False
-
-        results = run_cloze_fill_search(**kwargs)
-        if not isinstance(results, dict):
-            log_message("Cloze search returned invalid result type; mark as failed", 'error')
-            return False
-
-        time_end = time.time()
-        log_message(f"Cloze mode done, {len(results)} valid scenes", 'success')
-        log_message(f"Search elapsed: {time_end - time_start:.2f} s", 'success')
-        log_progress(100)
-
-        return True
-        
-    except Exception as e:
-        log_message(f"搜索过程出错: {str(e)}", 'error')
-        import traceback
-        log_message(traceback.format_exc(), 'error')
-        return False
-
-
 def run_pipeline_thread(config):
     """
     在单独线程中运行流水线
@@ -760,7 +575,6 @@ def run_pipeline_thread(config):
     try:
         run_indexer = config.get('run_indexer', True)
         run_search = config.get('run_search', True)
-        search_entry_mode = config.get('search_entry_mode', 'prompt')
         
         log_progress(5)
         
@@ -785,8 +599,7 @@ def run_pipeline_thread(config):
         if run_indexer and run_search:
             idx_config = config.get('indexer', {})
             indexer_output = resolve_path(idx_config.get('output_directory', _path_resolver.join_str('indexes')))
-            search_key = {'prompt': 'prompt_search', 'label': 'label_search', 'cloze': 'cloze_search'}.get(search_entry_mode, 'prompt_search')
-            search_cfg = config.setdefault(search_key, {})
+            search_cfg = config.setdefault('prompt_search', {})
             if 'index_directory' not in search_cfg or not search_cfg['index_directory']:
                 search_cfg['index_directory'] = indexer_output
                 log_message(f"流水线串联: 搜索步骤自动使用索引输出目录 {indexer_output}", 'info')
@@ -794,16 +607,7 @@ def run_pipeline_thread(config):
         # 步骤2: 场景搜索
         if run_search:
             log_status("正在运行搜索...")
-            if search_entry_mode == 'prompt':
-                success = run_prompt_search_with_config(config)
-            elif search_entry_mode == 'label':
-                success = run_label_search_with_config(config)
-            elif search_entry_mode == 'cloze':
-                success = run_cloze_search_with_config(config)
-            else:
-                log_message(f"未知的搜索模式: {search_entry_mode}", 'error')
-                success = False
-            
+            success = run_prompt_search_with_config(config)
             if not success:
                 log_complete(False, "搜索步骤失败，流水线终止")
                 return
@@ -874,6 +678,38 @@ def browse():
         return jsonify({"error": str(e), "path": current_path}), 500
 
 
+@app.route('/pick_directory', methods=['POST'])
+def pick_directory():
+    """打开系统原生目录选择对话框，返回选中路径"""
+    try:
+        data = request.get_json(silent=True) or {}
+        initial_dir = data.get('initial_dir', _SCRIPT_DIR)
+        if initial_dir and not os.path.isdir(initial_dir):
+            initial_dir = _SCRIPT_DIR
+
+        import tkinter as tk
+        from tkinter import filedialog
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes('-topmost', True)
+        root.update()
+
+        selected = filedialog.askdirectory(
+            initialdir=initial_dir,
+            title='选择目录'
+        )
+
+        root.destroy()
+        root.quit()
+
+        if selected:
+            return jsonify({"success": True, "path": os.path.normpath(selected)})
+        else:
+            return jsonify({"success": False, "path": None, "message": "未选择目录"})
+    except Exception as e:
+        return jsonify({"success": False, "path": None, "error": str(e)}), 500
+
+
 @app.route('/list_models')
 def list_models():
     """列出 models 文件夹中的可用模型"""
@@ -907,6 +743,24 @@ def list_models():
             "models": models,
             "models_dir": MODELS_DIR
         })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/list_lance_files')
+def list_lance_files():
+    """列出索引目录下的 .lance 索引子目录"""
+    try:
+        index_dir = request.args.get('dir', '')
+        index_dir = resolve_path(index_dir) if index_dir else _path_resolver.join_str('indexes')
+        lance_files = []
+        if os.path.isdir(index_dir):
+            for item in os.listdir(index_dir):
+                item_path = os.path.join(index_dir, item)
+                if os.path.isdir(item_path) and item.endswith('.lance'):
+                    lance_files.append(item)
+        lance_files.sort(key=str.lower)
+        return jsonify({"success": True, "lance_files": lance_files, "index_dir": os.path.normpath(index_dir)})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
@@ -1257,9 +1111,7 @@ def get_status():
     return jsonify({
         "running": is_pipeline_running(),
         "indexer_available": _INDEXER_AVAILABLE,
-        "prompt_search_available": _PROMPT_SEARCH_AVAILABLE,
-        "label_search_available": _LABEL_SEARCH_AVAILABLE,
-        "cloze_search_available": _CLOZE_SEARCH_AVAILABLE
+        "prompt_search_available": _PROMPT_SEARCH_AVAILABLE
     })
 
 
@@ -1282,8 +1134,6 @@ def main():
     print("  Flask Web界面版")
     print(f"  索引模块: {'✓ 可用' if _INDEXER_AVAILABLE else '✗ 不可用'}")
     print(f"  Prompt搜索模块: {'✓ 可用' if _PROMPT_SEARCH_AVAILABLE else '✗ 不可用'}")
-    print(f"  标签搜索模块: {'✓ 可用' if _LABEL_SEARCH_AVAILABLE else '✗ 不可用'}")
-    print(f"  选词填空模块: {'✓ 可用' if _CLOZE_SEARCH_AVAILABLE else '✗ 不可用'}")
     print(f"  访问: http://127.0.0.1:{args.port}")
     print("=" * 60)
     

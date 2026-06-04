@@ -37,7 +37,7 @@
     "_comment_similarity_thresholds": "相似度阈值配置（用于文搜图），标签模式取15，prompt模式21",
     "similarity_thresholds": {
         "clip_large": 21,
-        "fgclip2": 14,
+        "fgclip2": 11,
         "reranker": 51,
         "reranker_weight": 1
     }
