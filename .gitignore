@@ -7,3 +7,6 @@ indexes/
 templates/prompt_cache/
 *.lance
 output/
+ASEv*.zip
+python.zip
+python.zip.baiduyun.uploading.cfg
