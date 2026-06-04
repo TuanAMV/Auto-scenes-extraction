@@ -50,11 +50,11 @@
 
 | 文档 | 说明 |
 |------|------|
-| `logic_explanation/new/新标签模式执行流程图.html` | 新标签模式完整执行流程图 |
-| `logic_explanation/new/自动提纯逻辑.html` | 自动提纯详细逻辑 |
-| `logic_explanation/new/视频向量化逻辑.html` | 视频向量化全流程 |
-| `logic_explanation/new/text_search执行逻辑.html` | text_search 执行逻辑 |
-| `logic_explanation/new/logic_keywords.html` | logic_keywords.json 设计原理与结构 |
+| `logic_explanation/新标签模式执行流程图.html` | 新标签模式完整执行流程图 |
+| `logic_explanation/自动提纯逻辑.html` | 自动提纯详细逻辑 |
+| `logic_explanation/视频向量化逻辑.html` | 视频向量化全流程 |
+| `logic_explanation/text_search执行逻辑.html` | text_search 执行逻辑 |
+| `logic_explanation/logic_keywords.html` | logic_keywords.json 设计原理与结构 |
 
 ### `logic_keywords.json` 的作用
 
@@ -171,11 +171,11 @@
 
 | Document | Description |
 |------|------|
-| `logic_explanation/new/新标签模式执行流程图.html` | New Label Mode full flowchart |
-| `logic_explanation/new/自动提纯逻辑.html` | Auto-purify detailed logic |
-| `logic_explanation/new/视频向量化逻辑.html` | Video vectorization pipeline |
-| `logic_explanation/new/text_search执行逻辑.html` | text_search execution logic |
-| `logic_explanation/new/logic_keywords.html` | logic_keywords.json design |
+| `logic_explanation/新标签模式执行流程图.html` | New Label Mode full flowchart |
+| `logic_explanation/自动提纯逻辑.html` | Auto-purify detailed logic |
+| `logic_explanation/视频向量化逻辑.html` | Video vectorization pipeline |
+| `logic_explanation/text_search执行逻辑.html` | text_search execution logic |
+| `logic_explanation/logic_keywords.html` | logic_keywords.json design |
 
 ---
 
