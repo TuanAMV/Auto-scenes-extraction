@@ -72,7 +72,9 @@ class DinoV2ShotClassifier:
         if not os.path.isdir(self._model_path):
             raise FileNotFoundError(f"模型目录不存在: {self._model_path}")
 
-        self._processor = AutoImageProcessor.from_pretrained(self._HF_BACKBONE)
+        self._processor = AutoImageProcessor.from_pretrained(
+            self._model_path, local_files_only=True
+        )
         self._model = AutoModelForImageClassification.from_pretrained(
             self._model_path, local_files_only=True
         ).to(self._device)
