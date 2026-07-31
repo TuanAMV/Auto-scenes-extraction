@@ -545,13 +545,13 @@ class EmbeddingModelProcessor:
             longtext_len = text_cfg.longtext_len
             for sub in self._model_raw.modules():
                 if sub.__class__.__name__ == 'Fgclip2TextEmbeddings':
-                    sub._buffers['position_ids'] = torch.arange(longtext_len).expand((1, -1))
+                    sub.position_ids = torch.arange(longtext_len).expand((1, -1))
                     m1 = torch.zeros([longtext_len, 1])
                     m1[:keep_len] = 1
-                    sub._buffers['mask1'] = m1
+                    sub.mask1 = m1
                     m2 = torch.zeros([longtext_len, 1])
                     m2[keep_len:] = 1
-                    sub._buffers['mask2'] = m2
+                    sub.mask2 = m2
                     print(f"[Fix] Fgclip2TextEmbeddings buffers reset: position_ids=arange({longtext_len}), mask1/2 with keep_len={keep_len}")
 
             self._model_raw = self._model_raw.to(DEVICE)
