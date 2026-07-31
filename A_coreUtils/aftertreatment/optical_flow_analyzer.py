@@ -230,8 +230,25 @@ class OpticalFlowAnalyzer:
         result["direction"] = direction
         return result
 
+    def prepare_frame(self, frame: np.ndarray) -> np.ndarray:
+        """将解码帧立即转换为光流使用的灰度小图，避免长期保留 BGR。"""
+        if frame is None or not isinstance(frame, np.ndarray) or frame.size == 0:
+            return frame
+        if frame.ndim == 2:
+            gray = frame
+        elif frame.ndim == 3 and frame.shape[2] == 1:
+            gray = frame[:, :, 0]
+        else:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        if gray.shape[1] != self.flow_resize[0] or gray.shape[0] != self.flow_resize[1]:
+            gray = cv2.resize(gray, self.flow_resize, interpolation=cv2.INTER_LINEAR)
+        return np.ascontiguousarray(gray)
+
     def analyze_frames(self, frames_bgr: list) -> dict:
-        """直接从 BGR numpy 帧列表分析镜头运动，避免编解码引入伪影。
+        """直接从 BGR 或已预处理的灰度小图列表分析镜头运动。
+
+        分析阶段优先接收 ``prepare_frame`` 生成的灰度 ``320x240`` 图，
+        这样调用方无需长期保留光流所用的完整 BGR 帧；仍兼容直接传入 BGR。
 
         Args:
             frames_bgr: list of np.ndarray, each shape (H, W, 3), dtype uint8, BGR
@@ -250,8 +267,7 @@ class OpticalFlowAnalyzer:
             if frame_idx % self.sample_interval != 0:
                 continue
 
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            gray = cv2.resize(gray, self.flow_resize, interpolation=cv2.INTER_LINEAR)
+            gray = self.prepare_frame(frame)
 
             if prev_gray is not None:
                 flow = cv2.calcOpticalFlowFarneback(

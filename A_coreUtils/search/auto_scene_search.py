@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 # 本文件使用 UTF-8 编码，请勿使用 GBK 或其他编码打开/保存
 # auto_scene_search.py
 # 自动化场景搜索器 - 遍历所有合理的关键词组合进行文搜图
@@ -1765,10 +1765,12 @@ def export_video_matches(
 def attach_shot_analysis(result_view, temp_dir: str = None):
     """对去重后的结果做景别和镜头运动分析，结果写回原 LMDB。
 
-    双线并行：DinoV2 (GPU 景别) + OpticalFlow (CPU 镜头运动)
+    景别固定使用场景中间帧，光流固定使用中间附近最多30张连续帧。
+    同一视频的请求帧只解码一次，帧以 BGR numpy 数组在内存中按帧号分发，
+    不再经过 JPG 临时文件。
     """
-    import cv2
-    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+    from collections import defaultdict
     from A_coreUtils.aftertreatment.shot_type_classifier import DinoV2ShotClassifier
     from A_coreUtils.aftertreatment.optical_flow_analyzer import OpticalFlowAnalyzer
     from A_coreUtils.search.reranker_frame_extractor import RerankerFrameExtractor
@@ -1793,11 +1795,8 @@ def attach_shot_analysis(result_view, temp_dir: str = None):
         push_vote_ratio=0.15,
         tracking_vote_ratio=0.20,
     )
-    shot_extractor = RerankerFrameExtractor(
-        output_resolution='384', cache_dir=os.path.join(temp_dir, 'midframe'),
-    )
-    flow_extractor = RerankerFrameExtractor(
-        output_resolution='384', cache_dir=os.path.join(temp_dir, 'flow'),
+    memory_extractor = RerankerFrameExtractor(
+        output_resolution='384', backend='auto', decord_decode_batch_size=30
     )
 
     # 直接用导出前用的 result_view 的 LMDB，不新建
@@ -1806,92 +1805,329 @@ def attach_shot_analysis(result_view, temp_dir: str = None):
         return result_view
 
     total = result_view.count()
-    print(f"\n[景别分析] 开始分析 {total} 个场景...")
-    pool = ThreadPoolExecutor(max_workers=2)
+    print(f"\n[帧提取-共享] 开始为 {total} 个场景准备分析帧...")
+    print(f"[景别分析-GPU] 使用场景中间帧进行景别判断...")
+    print(f"[光流分析-CPU] 使用中间附近连续帧进行镜头运动判断...")
+    # Optical-flow work is independent per scene. Keep the CPU pool bounded so
+    # Farneback calculations can overlap without taking all system cores.
+    flow_workers = min(4, max(1, (os.cpu_count() or 4) // 8))
+    flow_pool = ThreadPoolExecutor(
+        max_workers=flow_workers, thread_name_prefix="shot-flow"
+    )
+    shot_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="shot-type-gpu")
+    # 光流帧已经在解码后压缩为 320x240 灰度图，仅中间帧保留 BGR；
+    # 允许 8 个在途场景可填满 4 个 CPU worker，同时仍有界控制内存。
+    max_in_flight_scenes = 8
+    shot_batch_size = 4
+    pending_jobs = {}
+    shot_batch_queue = []
     buffer = {}
 
-    try:
-        for batch in result_view.iter_batches(batch_size=16):
-            for scene_key, item in batch:
-                video_path = item.get('video_path', '')
-                start_f = int(item.get('start_frame', 0) or 0)
-                end_f = int(item.get('end_frame', 0) or 0)
+    def _store_item(scene_key, item):
+        """写回分析结果，并保持原有批量 LMDB 写入行为。"""
+        buffer[cache.RESULT_PREFIX + scene_key] = item
+        if len(buffer) >= 16:
+            cache.put_many(buffer)
+            buffer.clear()
 
-                mid_frame_path = None
+    def _finish_incomplete_plan(plan):
+        """解码不完整时写回未知结果，并释放该场景的帧引用。"""
+        item = plan['item']
+        item['shot_type'] = '未知'
+        item['camera_movement'] = '未知'
+        _store_item(plan['scene_key'], item)
+        plan['frames'].clear()
+        plan['mid_frame_data'] = None
+        plan['remaining'].clear()
+
+    def _finish_job(job_key, job):
+        """收集 CPU/GPU 两条分析结果，并在此之后释放场景帧。"""
+        plan = job['plan']
+        flow_result = None
+        shot_result = None
+
+        flow_future = job.get('flow_future')
+        if flow_future is not None:
+            try:
+                flow_result = flow_future.result()
+            except Exception:
                 flow_result = None
 
-                if video_path and os.path.exists(video_path):
-                    try:
-                        frame_paths = shot_extractor.extract_batch([{
-                            'video_path': video_path,
-                            'start_frame': start_f, 'end_frame': end_f,
-                            'target_frame_idx': 1,
-                        }])
-                        mid_frame_path = list(frame_paths.values())[0] if frame_paths else None
-                    except Exception:
-                        pass
+        shot_future = job.get('shot_future')
+        if shot_future is not None:
+            try:
+                batch_results = shot_future.result()
+                shot_index = int(job.get('shot_index', 0))
+                shot_result = batch_results[shot_index]
+            except Exception:
+                shot_result = None
 
-                if start_f < end_f:
-                    try:
-                        scene_duration = end_f - start_f
-                        flow_sample_count = min(30, scene_duration)
-                        # 取中点附近连续帧，避免均匀采样导致帧间位移过大
-                        mid_frame = (start_f + end_f) // 2
-                        first = max(start_f, mid_frame - flow_sample_count // 2)
-                        flow_scenes = []
-                        for i in range(flow_sample_count):
-                            fn = min(end_f, first + i)
-                            flow_scenes.append({
-                                'video_path': video_path,
-                                'start_frame': fn, 'end_frame': fn,
-                                'target_frame_idx': 0,
-                            })
-                        flow_frame_paths = flow_extractor.extract_batch(flow_scenes)
-                        flow_frame_paths_sorted = [
-                            flow_frame_paths[k]
-                            for k in sorted(flow_frame_paths.keys())
-                            if os.path.exists(flow_frame_paths[k])
-                        ]
-                        flow_frames_bgr = []
-                        for fp in flow_frame_paths_sorted:
-                            img = cv2.imread(fp)
-                            if img is not None:
-                                flow_frames_bgr.append(img)
-                        if len(flow_frames_bgr) >= 2:
-                            flow_result = of_analyzer.analyze_frames(flow_frames_bgr)
-                        else:
-                            flow_result = None
-                    except Exception:
-                        flow_result = None
+        plan['item']['shot_type'] = (
+            shot_result.get('景别', '未知')
+            if isinstance(shot_result, dict) else '未知'
+        )
+        plan['item']['camera_movement'] = (
+            flow_result.get('镜头运动', '未知')
+            if isinstance(flow_result, dict) else '未知'
+        )
+        video_name = os.path.basename(plan['item'].get('video_path', ''))
+        scene_label = (
+            f"{video_name} [{plan['item'].get('start_frame', 0)}-"
+            f"{plan['item'].get('end_frame', 0)}]"
+        )
+        flow_frame_count = int(job.get('flow_frame_count', 0) or 0)
+        print(
+            f"[景别分析-GPU] {scene_label}: "
+            f"中间帧={plan['mid_frame']} -> {plan['item']['shot_type']}"
+        )
+        print(
+            f"[光流分析-CPU] {scene_label}: "
+            f"输入帧={flow_frame_count}、帧对={max(0, flow_frame_count - 1)} "
+            f"-> {plan['item']['camera_movement']}"
+        )
+        _store_item(plan['scene_key'], plan['item'])
 
-                f_shot = pool.submit(shot_clf.analyze, mid_frame_path) if mid_frame_path else None
+        # 两条分析任务都完成后，才解除对这些 ndarray 的引用。
+        plan['frames'].clear()
+        plan['mid_frame_data'] = None
+        plan['remaining'].clear()
+        pending_jobs.pop(job_key, None)
 
-                shot = '未知'
-                move = '未知'
-                if f_shot:
-                    try:
-                        sr = f_shot.result()
-                        shot = sr.get('景别', '未知') if isinstance(sr, dict) else '未知'
-                    except Exception:
-                        pass
-                if flow_result:
-                    oi = flow_result
-                    move = oi.get('镜头运动', '未知') if isinstance(oi, dict) else '未知'
+    def _job_complete(job):
+        flow_future = job.get('flow_future')
+        shot_future = job.get('shot_future')
+        return (
+            (flow_future is None or flow_future.done())
+            and not job.get('shot_pending', False)
+            and (shot_future is None or shot_future.done())
+        )
 
-                item['shot_type'] = shot
-                item['camera_movement'] = move
-                buffer[cache.RESULT_PREFIX + scene_key] = item
-                if len(buffer) >= 16:
-                    cache.put_many(buffer)
-                    buffer.clear()
+    def _flush_shot_batch(force=False):
+        """将多个场景的中间帧合并为一次 GPU 景别推理。"""
+        if not shot_batch_queue:
+            return False
+        if not force and len(shot_batch_queue) < shot_batch_size:
+            return False
+
+        batch_items = shot_batch_queue[:shot_batch_size]
+        del shot_batch_queue[:len(batch_items)]
+        frames = [item[1] for item in batch_items]
+        try:
+            shot_future = shot_pool.submit(shot_clf.analyze_frames_batch, frames)
+        except Exception as exc:
+            print(f"[景别分析-GPU] 批量任务提交失败: {exc}")
+            for job_key, _ in batch_items:
+                job = pending_jobs.get(job_key)
+                if job is not None:
+                    job['shot_pending'] = False
+                    job['shot_future'] = None
+            return True
+
+        for shot_index, (job_key, _) in enumerate(batch_items):
+            job = pending_jobs.get(job_key)
+            if job is not None:
+                job['shot_future'] = shot_future
+                job['shot_index'] = shot_index
+                job['shot_pending'] = False
+        return True
+
+    def _drain_jobs(block=False, min_completed=0):
+        """回收已完成场景；必要时等待至少一个完整场景完成。"""
+        drained = 0
+        while pending_jobs:
+            if block:
+                _flush_shot_batch(force=True)
+            completed_keys = [
+                key for key, job in pending_jobs.items()
+                if _job_complete(job)
+            ]
+            if completed_keys:
+                for job_key in completed_keys:
+                    job = pending_jobs.get(job_key)
+                    if job is not None:
+                        _finish_job(job_key, job)
+                        drained += 1
+                        if min_completed and drained >= min_completed:
+                            return drained
+                if not block:
+                    return drained
+                continue
+
+            if not block:
+                return drained
+
+            futures = []
+            for job in pending_jobs.values():
+                if job.get('flow_future') is not None:
+                    futures.append(job['flow_future'])
+                if job.get('shot_future') is not None:
+                    futures.append(job['shot_future'])
+            if futures:
+                wait(futures, return_when=FIRST_COMPLETED)
+            else:
+                return drained
+        return drained
+
+    def _submit_plan(plan):
+        """把一个已收齐帧的场景同时送入 CPU 光流和 GPU 景别队列。"""
+        frames = plan['frames']
+        mid_frame = plan.get('mid_frame_data')
+        flow_frames = [
+            frames[frame_number]
+            for frame_number in plan['flow_frames']
+            if frame_number in frames
+        ]
+
+        flow_future = None
+        try:
+            if len(flow_frames) >= 2:
+                flow_future = flow_pool.submit(
+                    of_analyzer.analyze_frames,
+                    flow_frames,
+                )
+            if mid_frame is not None:
+                shot_batch_queue.append((id(plan), mid_frame))
+        except Exception as exc:
+            if flow_future is not None:
+                flow_future.cancel()
+            print(f"[景别/光流任务] 场景任务提交失败: {exc}")
+            _finish_incomplete_plan(plan)
+            # 已经写回未知结果，调用方将其视为已处理，避免重复写入。
+            return True
+
+        # 先登记场景任务，再触发 GPU 批量提交。否则当本场景恰好填满
+        # 一个批次时，批量 future 无法回挂到当前场景。
+        pending_jobs[id(plan)] = {
+            'plan': plan,
+            'flow_future': flow_future,
+            'shot_future': None,
+            'shot_pending': mid_frame is not None,
+            'flow_frame_count': len(flow_frames),
+        }
+        _flush_shot_batch(force=False)
+        return True
+
+    def _make_plan(scene_key, item):
+        """建立一个场景的帧使用表，不改变原有采样公式。"""
+        start_frame = int(item.get('start_frame', 0) or 0)
+        end_frame = int(item.get('end_frame', 0) or 0)
+        mid_frame = (start_frame + end_frame) // 2
+        flow_frame_numbers = []
+
+        if start_frame < end_frame:
+            scene_duration = end_frame - start_frame
+            flow_sample_count = min(30, scene_duration)
+            # 保持原逻辑：中点附近连续帧，避免均匀采样导致帧间位移过大。
+            first = max(start_frame, mid_frame - flow_sample_count // 2)
+            flow_frame_numbers = [min(end_frame, first + i)
+                                  for i in range(flow_sample_count)]
+
+        required = set(flow_frame_numbers)
+        required.add(mid_frame)
+        return {
+            'scene_key': scene_key,
+            'item': item,
+            'mid_frame': mid_frame,
+            'flow_frames': flow_frame_numbers,
+            'frames': {},
+            'mid_frame_data': None,
+            'remaining': required,
+        }
+
+    try:
+        for batch in result_view.iter_batches(batch_size=128):
+            video_groups = defaultdict(list)
+            for scene_key, item in batch:
+                video_path = item.get('video_path', '')
+                if not video_path or not os.path.exists(video_path):
+                    item['shot_type'] = '未知'
+                    item['camera_movement'] = '未知'
+                    _store_item(scene_key, item)
+                    continue
+                video_groups[video_path].append(_make_plan(scene_key, item))
+
+            for video_path, plans in video_groups.items():
+                plans.sort(key=lambda plan: min(plan['remaining']))
+                submitted_indices = set()
+                decoded_frame_count = 0
+                video_decode_start = time.perf_counter()
+                try:
+                    video_name = os.path.basename(video_path)
+                    middle_frame_numbers = {plan['mid_frame'] for plan in plans}
+                    flow_frame_requests = sum(
+                        len(plan['flow_frames']) for plan in plans
+                    )
+                    requested_frame_count = sum(
+                        len(plan['remaining']) for plan in plans
+                    )
+                    print(
+                        f"[帧提取-共享-{memory_extractor.backend}] {video_name}: "
+                        f"场景={len(plans)}，"
+                        f"景别中间帧={len(middle_frame_numbers)}个，"
+                        f"光流={flow_frame_requests}个场景帧请求，"
+                        f"按场景连续批次读取={requested_frame_count}帧"
+                    )
+                    for plan_index, plan in enumerate(plans):
+                        # 每个场景的光流帧在中点附近连续，单独读取可避免
+                        # 把两个视频中远距离场景混成稀疏随机 get_batch。
+                        scene_frame_numbers = sorted(plan['remaining'])
+                        for frame_number, frame_bgr in memory_extractor.iter_memory_frames(
+                                video_path, scene_frame_numbers,
+                                release_reader=False):
+                            decoded_frame_count += 1
+                            if frame_number == plan['mid_frame']:
+                                plan['mid_frame_data'] = frame_bgr
+                            if frame_number in plan['flow_frames']:
+                                plan['frames'][frame_number] = of_analyzer.prepare_frame(
+                                    frame_bgr
+                                )
+                            plan['remaining'].discard(frame_number)
+
+                        if not plan['remaining']:
+                            if len(pending_jobs) >= max_in_flight_scenes:
+                                _drain_jobs(block=True, min_completed=1)
+                            if _submit_plan(plan):
+                                submitted_indices.add(plan_index)
+                        _drain_jobs(block=False)
+                    memory_extractor.release_video_reader(video_path)
+                except Exception as exc:
+                    print(f"[帧提取-共享-{memory_extractor.backend}] {video_name}: 抽帧失败: {exc}")
+                    memory_extractor.release_video_reader(video_path)
+
+                video_decode_elapsed = time.perf_counter() - video_decode_start
+                print(
+                    f"[帧提取-共享-{memory_extractor.backend}] {video_name}: "
+                    f"实际交付={decoded_frame_count}/{requested_frame_count}帧，"
+                    f"耗时={video_decode_elapsed:.2f}s"
+                )
+
+                # 解码异常或帧越界时，仍为场景写回未知结果，避免丢失结果记录。
+                for plan_index, plan in enumerate(plans):
+                    if plan_index not in submitted_indices:
+                        _finish_incomplete_plan(plan)
+
+            # 当前结果批次结束前回收全部在途场景，避免帧引用跨批次累积。
+            _flush_shot_batch(force=True)
+            while pending_jobs:
+                _drain_jobs(block=True, min_completed=1)
 
         if buffer:
             cache.put_many(buffer)
     finally:
-        pool.shutdown(wait=True)
+        # 即使中途发生异常，也要先等待分析任务结束，再卸载 GPU 模型。
+        _flush_shot_batch(force=True)
+        while pending_jobs:
+            _drain_jobs(block=True, min_completed=1)
+        if buffer:
+            cache.put_many(buffer)
+            buffer.clear()
+        flow_pool.shutdown(wait=True)
+        shot_pool.shutdown(wait=True)
         shot_clf.unload()
 
-    print(f"[景别分析] 完成 {total} 个场景\n")
+    print(f"[景别分析-GPU] 完成 {total} 个场景")
+    print(f"[光流分析-CPU] 完成 {total} 个场景")
+    print(f"[帧提取-共享] 已完成全部分析帧交付\n")
     return result_view
 
 
@@ -1966,7 +2202,7 @@ def filter_by_mini_rerank(result_view, min_matches: int = 4, use_chinese: bool =
     print(f"\n[MiniRerank] 开始分批验证...")
 
     # 流式分组：每次收集 window_size 条后处理该批
-    window_groups = {}    # (vp, sf) → {items, labels}
+    window_groups = {}    # (vp, sf, ef) → {items, labels}
     window_items = 0
 
     def _flush_window():
@@ -1977,19 +2213,19 @@ def filter_by_mini_rerank(result_view, min_matches: int = 4, use_chinese: bool =
         # 提取本窗口所有组的帧（一次 batch 调用）
         window_scenes = []
         window_key_order = []
-        for (vp, sf), group in window_groups.items():
+        for (vp, sf, ef), group in window_groups.items():
             window_scenes.append({
-                'video_path': vp, 'start_frame': sf, 'end_frame': sf,
+                'video_path': vp, 'start_frame': sf, 'end_frame': ef,
                 'target_frame_idx': 1,
             })
-            window_key_order.append((vp, sf))
+            window_key_order.append((vp, sf, ef))
         try:
             all_frame_paths = mid_extractor.extract_batch(window_scenes)
         except Exception as e:
             print(f"  [MiniRerank] 帧提取异常: {e}")
             all_frame_paths = {}
 
-        for i, ((vp, sf), group) in enumerate(window_groups.items()):
+        for i, ((vp, sf, ef), group) in enumerate(window_groups.items()):
             items = group['items']
             labels = group['labels']
             if i < 3:
@@ -2035,9 +2271,10 @@ def filter_by_mini_rerank(result_view, min_matches: int = 4, use_chinese: bool =
             for scene_key, item in batch:
                 vp = item.get('video_path', '')
                 sf = int(item.get('start_frame', 0) or 0)
+                ef = int(item['end_frame'])
                 if not vp or not os.path.exists(vp):
                     continue
-                group_key = (vp, sf)
+                group_key = (vp, sf, ef)
                 grp = window_groups.setdefault(group_key, {'items': {}, 'labels': {}})
                 grp['items'][scene_key] = item
                 # 只取 logic_keywords.json "必有标签" 中定义的大类名

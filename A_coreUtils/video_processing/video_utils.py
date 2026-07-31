@@ -374,7 +374,11 @@ class VideoMetaHelper:
                 duration = VideoMetaHelper.get_duration(video_path)
                 if duration > 0 and fps > 0:
                     total_frames = int(duration * fps)
-                    print(f"[Info] 使用时长估算帧数: {total_frames} (时长: {duration:.2f}s, FPS: {fps:.2f})")
+                    video_name = os.path.basename(video_path)
+                    print(
+                        f"[视频元数据] {video_name}: 使用时长估算帧数 "
+                        f"{total_frames} (时长: {duration:.2f}s, FPS: {fps:.2f})"
+                    )
                 else:
                     total_frames = VideoMetaHelper._count_frames_via_decode(video_path)
             

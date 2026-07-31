@@ -112,6 +112,57 @@ class DinoV2ShotClassifier:
         label_en = self._model.config.id2label.get(idx, f"unknown({idx})")
         return DINOV2_LABELS_CN.get(label_en, label_en), conf
 
+    def analyze_frame(self, frame_bgr: np.ndarray) -> dict:
+        """分析一张已经在内存中的 BGR 中间帧，不生成临时图片文件。"""
+        if not self._loaded:
+            self.load()
+        if frame_bgr is None or not isinstance(frame_bgr, np.ndarray) or frame_bgr.size == 0:
+            return {"景别": "未知", "confidence": 0.0}
+        label, conf = self._predict_frame(frame_bgr)
+        return {"景别": label, "confidence": round(conf, 4)}
+
+    def analyze_frames_batch(self, frames_bgr: List[np.ndarray]) -> List[dict]:
+        """批量分析内存中的 BGR 中间帧，返回结果顺序与输入一致。"""
+        if not self._loaded:
+            self.load()
+        if not frames_bgr:
+            return []
+
+        import torch
+        from PIL import Image
+
+        results = [{"景别": "未知", "confidence": 0.0} for _ in frames_bgr]
+        valid_indices = []
+        pil_images = []
+        for index, frame_bgr in enumerate(frames_bgr):
+            if frame_bgr is None or not isinstance(frame_bgr, np.ndarray) or frame_bgr.size == 0:
+                continue
+            img_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            pil_images.append(Image.fromarray(img_rgb))
+            valid_indices.append(index)
+
+        if not pil_images:
+            return results
+
+        inputs = self._processor(images=pil_images, return_tensors="pt").to(self._device)
+        with torch.inference_mode():
+            outputs = self._model(**inputs)
+            probs = torch.softmax(outputs.logits, dim=1)
+            indices = torch.argmax(probs, dim=1)
+            confidences = probs.gather(1, indices.unsqueeze(1)).squeeze(1)
+
+        for batch_index, result_index in enumerate(valid_indices):
+            class_index = int(indices[batch_index].item())
+            confidence = float(confidences[batch_index].item())
+            label_en = self._model.config.id2label.get(
+                class_index, f"unknown({class_index})"
+            )
+            results[result_index] = {
+                "景别": DINOV2_LABELS_CN.get(label_en, label_en),
+                "confidence": round(confidence, 4),
+            }
+        return results
+
     def _extract_frames(self, video_path: str, num_frames: int = 5) -> List[np.ndarray]:
         cap = cv2.VideoCapture(video_path)
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
