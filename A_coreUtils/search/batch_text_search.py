@@ -64,6 +64,7 @@ class LMDBCache:
             writemap=True,  # 使用写映射提高写入性能
             map_async=True,  # 异步刷新
         )
+        self._main_db = self.env.open_db(None)
         self._closed = False
 
     def __setitem__(self, key: str, value):
@@ -189,7 +190,7 @@ class LMDBCache:
     def clear_all(self):
         """清空所有数据。"""
         with self.env.begin(write=True) as txn:
-            txn.drop(db=txn.db, delete=False)
+            txn.drop(self._main_db, delete=False)
 
     def save_checkpoint(self, data: dict):
         """保存断点信息。"""
