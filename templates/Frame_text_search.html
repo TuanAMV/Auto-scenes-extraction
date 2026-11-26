@@ -555,10 +555,6 @@
                         <input type="range" id="similarity_threshold" name="threshold" min="5" max="80" step="1" value="12">
                         <span id="similarity_val">12</span>
                     </div>
-                    <div class="form-group">
-                        <label for="sceneBatchSize">每批场景数</label>
-                        <input type="number" id="sceneBatchSize" value="128" min="1" max="1024" required>
-                    </div>
                     <div class="slider-info">
                         <div id="thresholdGuidance"></div>
                     </div>
@@ -1266,7 +1262,6 @@
             const exportMode = document.querySelector('input[name="exportMode"]:checked')?.value || 'copy';
             return {
                 threshold: parseFloat(thresholdSlider.value),
-                scene_batch_size: Number(document.getElementById("sceneBatchSize").value) || 128,
                 use_aesthetic_score: aestheticToggle.checked,
                 use_jev_rerank: useJevRerank ? useJevRerank.checked : false,
                 jev_rerank_top_k: jevRerankTopKInput ? parseInt(jevRerankTopKInput.value, 10) : 10,
@@ -1295,7 +1290,6 @@
         }
         async function applyPresetData(presetData) {
             if (!presetData || typeof presetData !== 'object') return;
-            document.getElementById("sceneBatchSize").value = presetData.scene_batch_size ?? 128;
             if (presetData.threshold !== undefined && presetData.threshold !== null) {
                 thresholdSlider.value = String(presetData.threshold);
                 thresholdValueSpan.textContent = parseInt(thresholdSlider.value, 10);
@@ -2343,7 +2337,6 @@
                 query: document.getElementById('text_query').value,
                 indices: selectedIndices.join('\n'),  // 多个索引用换行分隔
                 threshold: parseFloat(thresholdSlider.value),
-                scene_batch_size: Number(document.getElementById("sceneBatchSize").value) || 128,
                 use_aesthetic_score: aestheticToggle.checked,
                 use_jev_rerank: useJevRerank ? useJevRerank.checked : false,
                 jev_rerank_top_k: jevRerankTopKInput ? parseInt(jevRerankTopKInput.value, 10) : 10,

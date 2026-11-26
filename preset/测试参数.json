@@ -45,7 +45,6 @@
                 "jev_rerank_min_matches": 4,
                 "search_mode": null,
                 "top_k": null,
-                "candidate_batch_size": 1000,
                 "prompt_cache_batch_size": 512,
                 "lance_load_workers": 4,
                 "lmdb_write_batch_size": 1000,
