@@ -31,11 +31,8 @@
             "prompt_search": {
                 "index_directory": "indexes/openai-clip-vit-large-patch14",
                 "video_output_directory": null,
-                "use_reranker": false,
                 "use_chinese": false,
-                "rerank_top_k": null,
-                "rerank_batch_size": null,
-                "reranker_output_resolution": null,
+
                 "video_copy_mode": true,
                 "start_frame_offset": null,
                 "end_frame_offset": null,
@@ -44,8 +41,8 @@
                 "use_diskcache": true,
                 "debug_similarity": true,
                 "use_shot_analysis": true,
-                "use_mini_rerank": true,
-                "mini_rerank_min_matches": 4,
+                "use_jev_rerank": true,
+                "jev_rerank_min_matches": 4,
                 "search_mode": null,
                 "top_k": null,
                 "candidate_batch_size": 1000,
@@ -82,9 +79,7 @@
         },
         "similarity_thresholds": {
             "clip_large": 21,
-            "fgclip2": 10,
-            "reranker": 51,
-            "reranker_weight": 1
+            "fgclip2": 10
         }
     }
 }

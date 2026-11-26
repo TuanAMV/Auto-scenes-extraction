@@ -66,7 +66,8 @@ from A_coreUtils.video_processing.video_utils import (
 from A_coreUtils.lance_index_io import (
     scenes_to_lance_rows,
     get_indexed_video_paths,
-    read_lance_index_raw,
+    iter_scene_batches,
+    iter_vector_tiles,
     AsyncLanceWriter,
 )
 
@@ -617,7 +618,7 @@ class EmbeddingModelProcessor:
             raise RuntimeError(f"CLIP 模型加载失败: {e}")
     
     # [简化] 移除 _load_chinese_clip_model 函数，不再支持 Chinese CLIP
-    
+
     def _load_openclip_model(self):
         """加载 open_clip 格式的模型（本地离线加载）"""
         import open_clip
@@ -979,8 +980,9 @@ class EmbeddingModelProcessor:
         # 提取每个场景的三元组特征并构建结果
         results = []
         for start, end in scenes:
-            feats = SceneBoundaryDetector.get_scene_features((start, end), frame_indices, features)
-            scene_data = {'start_frame': start, 'end_frame': end, 'features': []}
+            feats, frames = SceneBoundaryDetector.get_scene_features(
+                (start, end), frame_indices, features, with_frame_numbers=True)
+            scene_data = {'start_frame': start, 'end_frame': end, 'features': [], 'feature_frames': frames}
             for f in feats:
                 if isinstance(f, torch.Tensor):
                     scene_data['features'].append(f.cpu())
@@ -1004,24 +1006,7 @@ class SemanticSearchEngine:
         self.cache_dir = cache_dir
         os.makedirs(cache_dir, exist_ok=True)
     
-    def _load_features_from_lance(self, lance_path: str) -> tuple:
-        """
-        从 Lance 索引加载特征（直接读取，无需缓存层）
-        
-        Returns:
-            tuple: (features_np, scene_map, feature_counts)
-        """
-        try:
-            features_np, scene_map, feature_counts = read_lance_index_raw(lance_path)
-            if features_np is None:
-                return None, None, None
-            print(f"    [Lance读取] {os.path.basename(lance_path)}: {len(scene_map)} 场景, {features_np.shape[0]} 向量")
-            return features_np, scene_map, feature_counts
-        except Exception as e:
-            print(f"    [Error] 无法加载 Lance 索引: {e}")
-            return None, None, None
-    
-    def search_by_text(self, query_text: str, index_paths: list, similarity_threshold: float = 20.0) -> list:
+    def iter_text_matches(self, query_text, index_paths, similarity_threshold, scene_batch_size=128):
         """
         文本语义搜索 - 使用模型原生 logit_scale * (text @ image.T) 计算相似度
         
@@ -1070,65 +1055,51 @@ class SemanticSearchEngine:
         query_tensor = torch.tensor(query_vector, device=DEVICE, dtype=torch.float16)
         
         print(f"[步骤B] 扫描 {len(valid_index_paths)} 个索引库...")
-        all_results = []
-        
-        for i, path in enumerate(valid_index_paths):
-            print(f"  [{i+1}/{len(valid_index_paths)}] {os.path.basename(path)}")
-            try:
-                # ✅ v4.0: 从 Lance 索引直接读取特征
-                features_np, scene_map, feature_counts = self._load_features_from_lance(path)
-                
-                if features_np is None or scene_map is None:
-                    print(f"    [Warning] 无场景数据: {os.path.basename(path)}")
-                    continue
-                
-                # ✅ v2.9: 只在维度不匹配时截断并归一化
-                if self.processor.truncate_dim is not None and features_np.shape[1] > self.processor.truncate_dim:
-                    print(f"    [Info] 截断维度: {features_np.shape[1]} -> {self.processor.truncate_dim}")
-                    features_np = features_np[:, :self.processor.truncate_dim]
-                    # 截断后需要重新归一化
-                    norms = np.linalg.norm(features_np, axis=1, keepdims=True)
-                    features_np = features_np / (norms + 1e-8)
-                
-                # 检查维度匹配
-                if features_np.shape[1] != query_vector.shape[1]:
-                    print(f"    [Warning] 维度不匹配: 索引={features_np.shape[1]}, 查询={query_vector.shape[1]}, 跳过此索引")
-                    continue
-                
-                # 转换为 tensor 送入 GPU
-                image_features = torch.tensor(features_np, device=DEVICE, dtype=torch.float16)
-                
-                # 使用 logit_scale * (text_features @ image_features.T) 计算相似度
-                with torch.no_grad():
-                    similarities = (logit_scale * query_tensor.to(logit_scale.dtype) @ image_features.to(logit_scale.dtype).T).squeeze(0)
-                
-                # 转换为 numpy 处理结果
-                similarities_np = similarities.cpu().numpy()
-                
-                # ✅ v3.0: 根据 feature_counts 分组，每个场景取最大相似度
-                feat_idx = 0
-                for scene_idx, count in enumerate(feature_counts):
-                    # 获取该场景所有向量的相似度
-                    scene_sims = similarities_np[feat_idx:feat_idx + count]
-                    # 取最大值作为该场景的匹配分数
-                    max_sim = float(np.max(scene_sims))
-                    feat_idx += count
-                    
+        for path in valid_index_paths:
+            for _, scenes in iter_scene_batches(path, scene_batch_size):
+                best_scores = np.full(len(scenes), -np.inf)
+                best_slots = np.zeros(len(scenes), dtype=int)
+                positions = np.zeros(len(scenes), dtype=int)
+                for features, owners in iter_vector_tiles(scenes, scene_batch_size):
+                    if truncate_dim and features.shape[1] > truncate_dim:
+                        features = features[:, :truncate_dim]
+                        features = features / (np.linalg.norm(features, axis=1, keepdims=True) + 1e-8)
+                    if features.shape[1] != query_vector.shape[1]:
+                        continue
+                    images = torch.tensor(features, device=DEVICE, dtype=logit_scale.dtype)
+                    with torch.inference_mode():
+                        scores = (logit_scale * query_tensor.to(logit_scale.dtype) @ images.T)[0].cpu().numpy()
+                    for owner, start, length in zip(*np.unique(owners,return_index=True,return_counts=True)):
+                        slot = int(scores[start:start+length].argmax())
+                        score = scores[start+slot]
+                        if score > best_scores[owner]:
+                            best_scores[owner] = score
+                            best_slots[owner] = positions[owner] + slot
+                        positions[owner] += length
+                for (original_scene,vectors), value, slot in zip(scenes,best_scores,best_slots):
+                    count, max_sim, best_slot = len(vectors),float(value),int(slot)
                     if max_sim >= similarity_threshold:
-                        original_scene = scene_map[scene_idx]
                         video_path = original_scene["video_path"]
                         fps = original_scene.get("fps") or VideoMetaHelper.get_fps_cached(video_path)
                         start_frame = original_scene["start_frame"]
                         end_frame = original_scene["end_frame"]
+                        frames = original_scene.get("feature_frames")
+                        matched_frame = frames[best_slot] if frames and best_slot < len(frames) else None
+                        if matched_frame is None:
+                            # 使用索引中的原始边界，导出用的帧偏移不参与计算。
+                            middle = (start_frame + end_frame) // 2
+                            matched_frame = (start_frame, middle, end_frame)[best_slot] if count == 3 else middle
                         duration_frames = end_frame - start_frame
                         duration_seconds = round(VideoMetaHelper.frame_to_seconds(duration_frames, fps), 2)
                         video_name = os.path.basename(video_path)
                         duration_display = VideoMetaHelper.format_duration(duration_seconds)
-                        all_results.append({
+                        yield {
+                            "source_lance": path,
                             "video_path": video_path,
                             "video_name": video_name,
                             "start_frame": start_frame,
                             "end_frame": end_frame,
+                            "matched_frame": matched_frame,
                             "duration_frames": duration_frames,
                             "duration_seconds": duration_seconds,
                             "duration_display": duration_display,
@@ -1136,21 +1107,7 @@ class SemanticSearchEngine:
                             "start": VideoMetaHelper.seconds_to_timecode(VideoMetaHelper.frame_to_seconds(start_frame, fps)),
                             "end": VideoMetaHelper.seconds_to_timecode(VideoMetaHelper.frame_to_seconds(end_frame, fps)),
                             "similarity": round(max_sim, 4)
-                        })
-                
-                # 清理 GPU 内存
-                del image_features
-                del similarities
-                
-            except Exception as e:
-                print(f"    [Error] 处理失败 {os.path.basename(path)}: {e}")
-                traceback.print_exc()
-                continue
-        
-        all_results.sort(key=lambda x: x['similarity'], reverse=True)
-        print(f"[完成] 找到 {len(all_results)} 个结果")
-        
-        return all_results
+                        }, vectors
     
 
 

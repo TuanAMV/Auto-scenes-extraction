@@ -16,7 +16,7 @@ Usage:
     from A_coreUtils.aftertreatment.optical_flow_analyzer import OpticalFlowAnalyzer
 
     analyzer = OpticalFlowAnalyzer()
-    result = analyzer.analyze("path/to/video.mp4")
+    result = analyzer.analyze_frames(frames_bgr)
     # {"镜头运动": "推镜头", "景别": "未知", "confidence": 0.82, "details": {...}}
 """
 
@@ -140,95 +140,6 @@ class OpticalFlowAnalyzer:
         self._initialized = True
 
     # ---------- 公有 API ----------
-
-    def analyze(self, video_path: str) -> dict:
-        """分析视频的镜头运动类型。
-
-        Args:
-            video_path: 视频文件路径
-
-        Returns:
-            dict: {
-                "镜头运动": str,   # 推镜头 / 拉镜头 / 摇镜头 / 移镜头 / 固定镜头
-                "景别": "未知",     # 本模块不预测景别，保留键名以兼容上游
-                "confidence": float,
-                "details": {
-                    "pair_votes": [...],         # 每对帧的分类结果
-                    "pair_details": [...],       # 每对帧的详细统计
-                }
-            }
-        """
-        video_path = os.path.abspath(video_path)
-        if not os.path.exists(video_path):
-            raise FileNotFoundError(f"视频文件不存在: {video_path}")
-
-        cap = cv2.VideoCapture(video_path)
-        if not cap.isOpened():
-            raise RuntimeError(f"无法打开视频: {video_path}")
-
-        try:
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            if total_frames < 2:
-                return self._static_result("视频帧数不足")
-
-            pair_results = []
-            prev_gray = None
-            frame_idx = 0
-            prev_idx = -1
-
-            while True:
-                ret, frame = cap.read()
-                if not ret:
-                    break
-
-                if frame_idx % self.sample_interval != 0:
-                    frame_idx += 1
-                    continue
-
-                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                gray = cv2.resize(gray, self.flow_resize, interpolation=cv2.INTER_LINEAR)
-
-                if prev_gray is not None:
-                    flow = cv2.calcOpticalFlowFarneback(
-                        prev_gray, gray,
-                        None,
-                        self.farneback_pyr_scale,
-                        self.farneback_levels,
-                        self.farneback_winsize,
-                        self.farneback_iterations,
-                        self.farneback_poly_n,
-                        self.farneback_poly_sigma,
-                        cv2.OPTFLOW_FARNEBACK_GAUSSIAN,
-                    )
-                    result = self._analyze_flow_field(flow)
-                    result["frame_pair"] = (prev_idx, frame_idx)
-                    pair_results.append(result)
-
-                prev_gray = gray
-                prev_idx = frame_idx
-                frame_idx += 1
-
-        finally:
-            cap.release()
-
-        movement, confidence, details = self._classify_video(pair_results)
-        return {
-            "镜头运动": movement,
-            "景别": "未知",
-            "confidence": round(confidence, 4),
-            "details": details,
-        }
-
-    def analyze_with_direction(self, video_path: str) -> dict:
-        """分析镜头运动类型，附带摇/移的方向信息。
-
-        Returns 中额外包含:
-            "direction": "left" / "right" / "up" / "down" / None
-        """
-        result = self.analyze(video_path)
-        direction = self._infer_direction(result.get("details", {}))
-        result["direction"] = direction
-        return result
 
     def prepare_frame(self, frame: np.ndarray) -> np.ndarray:
         """将解码帧立即转换为光流使用的灰度小图，避免长期保留 BGR。"""
@@ -709,10 +620,6 @@ class OpticalFlowAnalyzer:
             return "up" if tilt_sum > 0 else "down"
         return None
 
-    def _infer_direction(self, details: dict) -> Optional[str]:
-        """从 details 中提取方向信息。"""
-        return details.get("direction", None)
-
     # ---------- 工具 ----------
 
     def _static_result(self, reason: str = "") -> dict:
@@ -722,53 +629,3 @@ class OpticalFlowAnalyzer:
             "confidence": 0.0,
             "details": {"pair_votes": [], "pair_details": [], "reason": reason},
         }
-
-    @property
-    def version(self) -> str:
-        return "1.1.0"
-
-
-_global_analyzer = None
-
-
-def analyze(video_path: str) -> dict:
-    """便捷函数：使用全局单例分析视频镜头运动。"""
-    global _global_analyzer
-    if _global_analyzer is None:
-        _global_analyzer = OpticalFlowAnalyzer()
-    return _global_analyzer.analyze(video_path)
-
-
-# ---------- CLI 测试入口 ----------
-
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="基于光流法的镜头运动分析")
-    parser.add_argument("video", help="视频文件路径")
-    parser.add_argument("--sample-interval", type=int, default=5, help="采样帧间隔（默认 5）")
-    parser.add_argument("--with-direction", action="store_true", help="显示摇/移的方向")
-    parser.add_argument("--details", action="store_true", help="输出每帧对的详细统计")
-    args = parser.parse_args()
-
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
-
-    analyzer = OpticalFlowAnalyzer(sample_interval=args.sample_interval)
-
-    if args.with_direction:
-        result = analyzer.analyze_with_direction(args.video)
-    else:
-        result = analyzer.analyze(args.video)
-
-    output = {
-        "镜头运动": result["镜头运动"],
-        "景别": result["景别"],
-        "confidence": result["confidence"],
-    }
-    if args.with_direction:
-        output["direction"] = result.get("direction")
-
-    if args.details:
-        output["details"] = result.get("details", {})
-
-    print(json.dumps(output, ensure_ascii=False, indent=2))

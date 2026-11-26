@@ -7,12 +7,17 @@
 # v1.1: 添加去重功能 - 同一场景保留相似度最高的prompt结果
 
 import json
+import hashlib
+import math
 import os
+import pickle
 import re
 import sys
 import time
 import itertools
-from typing import List, Dict, Optional, Callable, Tuple, Iterator, Any# ============================================================
+from functools import lru_cache
+from typing import List, Dict, Optional, Callable, Tuple, Any
+# ============================================================
 #  路径设置 - 确保能找到项目根目录的模块
 # ============================================================
 _current_file = os.path.abspath(__file__)
@@ -23,9 +28,17 @@ if _cut_detect_scene_dir not in sys.path:
     sys.path.insert(0, _cut_detect_scene_dir)
 # 导入路径解析器
 from path_resolver import PathResolver
+from A_coreUtils.aftertreatment.jev_rerank import score_prefix
 
 # 导入视频名称解析器
 from A_coreUtils.video_processing.video_name_parser import VideoNameParser
+
+_MERGED_NAME_PARSER = VideoNameParser()
+
+
+@lru_cache(maxsize=4096)
+def _parse_merged_video_name(name: str) -> str:
+    return _MERGED_NAME_PARSER.parse_filename(name)
 
 # 延迟导入嵌入模型处理器（避免在只需要PromptGenerator时加载重型依赖）
 EmbeddingModelProcessor = None
@@ -42,8 +55,6 @@ SYSTEM_PLACEHOLDERS = {
 }
 
 # Backend defaults (used when caller omits optional params).
-DEFAULT_RERANK_TOP_K = 50
-DEFAULT_RERANK_BATCH_SIZE = 4
 DEFAULT_PROMPT_SEARCH_BATCH_SIZE = 1024
 DEFAULT_PROMPT_CACHE_BATCH_SIZE = 512
 DEFAULT_LANCE_LOAD_WORKERS = 4
@@ -229,7 +240,9 @@ class PromptGenerator:
 
         # 其他参数设置
         other = self._full_data.get("其他参数设置", {})
-        self._video_name_format = other.get("输出视频命名格式", "{主体}_{动作}_{场景}_{情绪}_{起始帧}_{视频解析名}")
+        self.name_template = other["输出视频命名格式"]
+        if not isinstance(self.name_template, str) or not self.name_template.strip():
+            raise ValueError("logic_keywords.json 中的输出视频命名格式不能为空")
         self._required_categories = [c for c in other.get("必有标签", []) if isinstance(c, str)]
         self._required_subcategories = other.get("必有子类", []) or []
         self._required_labels = other.get("必有孙类", []) or []
@@ -243,7 +256,7 @@ class PromptGenerator:
             print(f"\u26a0\ufe0f\u26a0\ufe0f\u26a0\ufe0f [logic_keywords] {w}")
 
     def _validate_consistency(self) -> list:
-        """校验 必有标签 ↔ 标签.* ↔ MiniCPM验证Prompt 的一致性，返回警告列表。"""
+        """校验 必有标签 ↔ 标签.* ↔ Jev-rerank验证Prompt 的一致性，返回警告列表。"""
         warnings = []
         special = self.RESERVED_KEYS | {'_说明'}
         all_cats = {k for k in self.data if k not in special and not k.startswith('_')
@@ -251,17 +264,18 @@ class PromptGenerator:
         required_set = set(self._required_categories)
 
         for cat in required_set - all_cats:
-            warnings.append(f"必有标签 '{cat}' 在 标签.* 中未定义，MiniRerank 验证将失败")
+            warnings.append(f"必有标签 '{cat}' 在 标签.* 中未定义，Jev-rerank 验证将失败")
         for cat in all_cats - required_set:
-            warnings.append(f"大类 '{cat}' 未加入 必有标签，MiniRerank 将跳过该类别验证")
+            warnings.append(f"大类 '{cat}' 未加入 必有标签，Jev-rerank 将跳过该类别验证")
 
-        verify_cfg = self._full_data.get('其他参数设置', {}).get('MiniCPM验证Prompt', {})
+        settings = self._full_data.get('其他参数设置', {})
+        verify_cfg = settings.get('Jev-rerank验证Prompt', {})
         zh_tpl = verify_cfg.get('zh', {}) if isinstance(verify_cfg, dict) else {}
         tpl_keys = {k for k in zh_tpl if not k.startswith('_')}
         for cat in tpl_keys - all_cats:
-            warnings.append(f"MiniCPM验证Prompt 中的 '{cat}' 在 标签.* 中未定义")
+            warnings.append(f"Jev-rerank验证Prompt 中的 '{cat}' 在 标签.* 中未定义")
         for cat in required_set & all_cats - tpl_keys:
-            warnings.append(f"大类 '{cat}' 缺少 MiniCPM验证Prompt 模板，将使用通用占位符")
+            warnings.append(f"大类 '{cat}' 缺少 Jev-rerank验证Prompt 模板，将使用通用占位符")
 
         return warnings
 
@@ -465,16 +479,10 @@ class AutoSceneSearcher:
         
     """
 
-    # 默认视频名称格式模板
-    # 支持的占位符：{镜头}, {情绪}, {场景}, {主体}, {动作}, {起始帧}, {视频解析名}, {扩展名}
-    # 以及 logic_keywords.json 中定义的任何扩展大类（使用中文键名）
-    DEFAULT_VIDEO_NAME_FORMAT = "{\u4e3b\u4f53}_{\u52a8\u4f5c}_{\u573a\u666f}_{\u60c5\u7eea}_{\u955c\u5934}_{\u8d77\u59cb\u5e27}_{\u89c6\u9891\u89e3\u6790\u540d}"
-
     def __init__(self,
                  io_workers: int = 8,
                  use_fp16: bool = False,
                  cache_dir: str = None,
-                 video_name_format: str = None,
                  use_chinese: bool = False):
         """
                 初始化自动化搜索器（延迟加载模型）
@@ -483,8 +491,6 @@ class AutoSceneSearcher:
                     io_workers: I/O工作线程数
                     use_fp16: 是否使用FP16精度
                     cache_dir: 缓存目录
-                    video_name_format: 自定义视频名称格式模板，支持占位符: {镜头}, {情绪}, {场景}, {主体}, {动作}, {起始帧}, {视频解析名}
-                        以及JSON中定义的任何扩展大类（使用中文键名）。默认: "{镜头}_{情绪}_{场景}_{主体}_{动作}_{起始帧}_{视频解析名}"
                     use_chinese: 是否使用中文模式
                         - False（默认）: 使用英文标签值生成prompt
                         - True: 使用中文标签键名生成prompt
@@ -504,108 +510,12 @@ class AutoSceneSearcher:
         self.use_fp16 = use_fp16
         self.truncate_dim = None  # 延迟检测：在 run_batch_search_optimized 中从索引文件名自动推断
 
-        # 视频名称格式模板
-        self.video_name_format = video_name_format or self.DEFAULT_VIDEO_NAME_FORMAT
-
         # 缓存目录
         if cache_dir is None:
             cache_dir = str(self.resolver.project_root / 'temp' / 'cache')
         self.cache_dir = cache_dir
         os.makedirs(cache_dir, exist_ok=True)
 
-        # 模型相关（延迟初始化）
-        self.processor = None
-
-    def _apply_per_category_intersection(self, result_view, prompt_cache, model_name):
-        """对搜索结果做跨类别交集过滤（流式分批，不一次性加载全部结果）。
-
-        每个场景现在存储多条结果（每条对应一个类别），取每类最高相似度。
-        场景必须命中"必有标签"中配置的所有类别才保留。
-        """
-        cat_idx_map = prompt_cache.get_category_idx_map(model_name)
-        if not cat_idx_map or len(cat_idx_map) < 2:
-            return result_view
-
-        required = getattr(self.prompt_generator, '_required_categories', [])
-        all_categories = set(required) if required else set(cat_idx_map.keys())
-        req_sub = getattr(self.prompt_generator, '_required_subcategories', [])
-        req_lbl = getattr(self.prompt_generator, '_required_labels', [])
-
-        # 流式分批读取，每批大小跟随 lmdb_write_batch_size
-        from .batch_text_search import LMDBCache, LMDBResultView
-        import pickle
-        batch_size = getattr(self, '_lmdb_write_batch_size', 1000) or 1000
-        pending: Dict[str, dict] = {}  # scene_base → {category: data}
-
-        # 创建新 LMDB 用于写过滤结果
-        import tempfile
-        new_cache_dir = os.path.join(
-            os.path.dirname(result_view.cache_dir),
-            'intersection_filtered_' + str(int(time.time()))
-        )
-        new_cache = LMDBCache(new_cache_dir, map_size=1 * 1024 * 1024 * 1024)
-        filtered_count = 0
-
-        try:
-            for batch in result_view.iter_batches(batch_size=batch_size):
-                for key, data in batch:
-                    if not isinstance(data, dict):
-                        continue
-                    prompt_idx = data.get('prompt_idx', -1)
-                    cat = data.get('category')
-                    if cat is None:
-                        for c, idxs in cat_idx_map.items():
-                            if prompt_idx in idxs:
-                                cat = c
-                                break
-                    if cat is None:
-                        continue
-                    video_name = os.path.basename(data.get('video_path', '')) or ''
-                    scene_base = f"{data.get('start_frame', 0)}_{video_name}"
-                    if scene_base not in pending:
-                        pending[scene_base] = {}
-                    existing = pending[scene_base].get(cat)
-                    if existing is None or data.get('similarity', 0) > existing.get('similarity', 0):
-                        pending[scene_base][cat] = data
-
-                # 每批处理完检查哪些场景已收集齐全
-                completed = []
-                for scene_base, cats in pending.items():
-                    if set(cats.keys()) >= all_categories:
-                        completed.append(scene_base)
-                for scene_base in completed:
-                    cats = pending.pop(scene_base)
-                    best_cat = max(cats.keys(), key=lambda c: cats[c].get('similarity', 0))
-                    merged = dict(cats[best_cat])
-                    all_lbl = {}
-                    for c in cats:
-                        lbl = cats[c].get('labels', {})
-                        if isinstance(lbl, dict):
-                            all_lbl.update(lbl)
-                        for key, value in cats[c].items():
-                            if key.endswith('_cn') or key.endswith('_en'):
-                                merged.setdefault(key, value)
-                    merged['all_labels'] = all_lbl
-                    merged['result_name'] = _generate_merged_result_name(merged, self.video_name_format)
-                    if req_sub and not set(req_sub).issubset(all_lbl.keys()):
-                        continue
-                    if req_lbl and not set(req_lbl).issubset(all_lbl.values()):
-                        continue
-                    new_cache.put_result(scene_base, merged)
-                    filtered_count += 1
-
-        finally:
-            new_cache.close()
-
-        if filtered_count == 0:
-            import shutil
-            shutil.rmtree(new_cache_dir, ignore_errors=True)
-            # 不凑齐就不输出，与 OpenAI CLIP 行为一致
-            return LMDBResultView(new_cache_dir)
-
-        result_view.close()
-        result_view._cache.destroy()
-        return LMDBResultView(new_cache_dir)
 
     def find_index_files(self, index_dir: str = None) -> List[str]:
         """
@@ -632,10 +542,6 @@ class AutoSceneSearcher:
     def run_batch_search_optimized(self,
                                     index_paths: List[str] = None,
                                     similarity_threshold: float = 20.0,
-                                    use_reranker: bool = False,
-                                    rerank_top_k: Optional[int] = DEFAULT_RERANK_TOP_K,
-                                    rerank_batch_size: Optional[int] = DEFAULT_RERANK_BATCH_SIZE,
-                                    reranker_output_resolution: str = '384',
                                     candidate_batch_size: Optional[int] = None,
                                     prompt_search_batch_size: Optional[int] = DEFAULT_PROMPT_SEARCH_BATCH_SIZE,
                                     feature_fp16: bool = True,
@@ -648,94 +554,6 @@ class AutoSceneSearcher:
                                     lance_load_workers: Optional[int] = DEFAULT_LANCE_LOAD_WORKERS,
                                     lmdb_write_batch_size: Optional[int] = DEFAULT_LMDB_WRITE_BATCH_SIZE,
                                     vector_dedup_threshold: float = None):
-        rerank_top_k = normalize_optional_positive_int(
-            rerank_top_k,
-            field_name='rerank_top_k',
-        )
-        rerank_batch_size = normalize_optional_positive_int(
-            rerank_batch_size,
-            field_name='rerank_batch_size',
-        )
-        prompt_search_batch_size = normalize_optional_positive_int(
-            prompt_search_batch_size,
-            field_name='prompt_search_batch_size',
-        )
-        prompt_cache_batch_size = normalize_optional_positive_int(
-            prompt_cache_batch_size,
-            field_name='prompt_cache_batch_size',
-        )
-        lance_load_workers = normalize_optional_positive_int(
-            lance_load_workers,
-            field_name='lance_load_workers',
-        )
-        lmdb_write_batch_size = normalize_optional_positive_int(
-            lmdb_write_batch_size,
-            field_name='lmdb_write_batch_size',
-        )
-        candidate_batch_size = normalize_optional_positive_int(
-            candidate_batch_size,
-            field_name='candidate_batch_size',
-        )
-        lance_batch_size = normalize_optional_positive_int(
-            lance_batch_size,
-            field_name='lance_batch_size',
-        )
-        return self._run_batch_search_optimized_stream(
-            index_paths=index_paths,
-            similarity_threshold=similarity_threshold,
-            use_reranker=use_reranker,
-            rerank_top_k=rerank_top_k,
-            rerank_batch_size=rerank_batch_size,
-            reranker_output_resolution=reranker_output_resolution,
-            candidate_batch_size=candidate_batch_size,
-            prompt_search_batch_size=prompt_search_batch_size,
-            feature_fp16=feature_fp16,
-            lance_batch_size=lance_batch_size,
-            use_diskcache=use_diskcache,
-            diskcache_dir=diskcache_dir,
-            search_mode=search_mode,
-            top_k=top_k,
-            prompt_cache_batch_size=prompt_cache_batch_size,
-            lance_load_workers=lance_load_workers,
-            lmdb_write_batch_size=lmdb_write_batch_size,
-            vector_dedup_threshold=vector_dedup_threshold,
-        )
-    def _run_batch_search_optimized_stream(self,
-                                           index_paths: List[str] = None,
-                                           similarity_threshold: float = 20.0,
-                                           use_reranker: bool = False,
-                                           rerank_top_k: Optional[int] = DEFAULT_RERANK_TOP_K,
-                                           rerank_batch_size: Optional[int] = DEFAULT_RERANK_BATCH_SIZE,
-                                           reranker_output_resolution: str = '384',
-                                           candidate_batch_size: Optional[int] = None,
-                                           prompt_search_batch_size: Optional[int] = DEFAULT_PROMPT_SEARCH_BATCH_SIZE,
-                                           feature_fp16: bool = True,
-                                           lance_batch_size: Optional[int] = None,
-                                           use_diskcache: bool = True,
-                                           diskcache_dir: str = None,
-                                           search_mode: int = 0,
-                                           top_k: Optional[int] = None,
-                                           prompt_cache_batch_size: Optional[int] = DEFAULT_PROMPT_CACHE_BATCH_SIZE,
-                                           lance_load_workers: Optional[int] = DEFAULT_LANCE_LOAD_WORKERS,
-                                           lmdb_write_batch_size: Optional[int] = DEFAULT_LMDB_WRITE_BATCH_SIZE,
-                                           vector_dedup_threshold: float = None):
-        import hashlib as _hashlib
-        from .batch_text_search import (
-            LMDBCache,
-            LMDBResultView,
-            extract_label_key_from_result_name,
-            extract_video_parsed_name,
-            is_op_ed_video,
-            _deduplicate_vectors_matrix_cross_video,
-        )
-        rerank_top_k = normalize_optional_positive_int(
-            rerank_top_k,
-            field_name='rerank_top_k',
-        )
-        rerank_batch_size = normalize_optional_positive_int(
-            rerank_batch_size,
-            field_name='rerank_batch_size',
-        )
         prompt_search_batch_size = normalize_optional_positive_int(
             prompt_search_batch_size,
             field_name='prompt_search_batch_size',
@@ -761,7 +579,6 @@ class AutoSceneSearcher:
             field_name='lance_batch_size',
         )
         top_k = normalize_top_k(top_k)
-        self._lmdb_write_batch_size = lmdb_write_batch_size
         if index_paths is None:
             index_paths = self.find_index_files()
         if not index_paths:
@@ -792,671 +609,167 @@ class AutoSceneSearcher:
             if detected_dim is not None:
                 self.truncate_dim = detected_dim
                 print(f"[优化搜索] 从索引文件名自动检测到 truncate_dim={detected_dim}")
-        processor = None
-        batch_engine = None
-        cache_iterator = None
-        prompt_meta_lookup = None
-        try:
-            from A_coreUtils.prompt.prompt_vector_cache import PromptVectorCache
-            effective_prompt_cache_batch_size = prompt_cache_batch_size
-            if effective_prompt_cache_batch_size is None:
-                effective_prompt_cache_batch_size = max(1, sum(1 for _ in self.prompt_generator.iterate_all_labels_flat()))
-            prompt_cache = PromptVectorCache(
-                processor=None,
-                batch_size=effective_prompt_cache_batch_size,
-                use_chinese=self.use_chinese
-            )
-            cache_valid = prompt_cache.cache_exists(model_name=model_name)
-            if not cache_valid:
-                processor = EmbeddingModelProcessor(
-                    model_name=model_name,
-                    model_type=model_type,
-                    truncate_dim=self.truncate_dim,
-                    io_workers=self.io_workers,
-                    use_fp16=self.use_fp16
-                )
-            batch_engine = BatchTextSearchEngine(
-                processor=None,
-                index_paths=index_paths,
-                cache_dir=self.cache_dir,
-                load_workers=lance_load_workers,
-                use_fp16=feature_fp16,
-                lance_batch_size=lance_batch_size,
-                video_name_format=self.video_name_format,
-                search_mode=search_mode,
-                top_k=top_k,
-                lmdb_write_batch_size=lmdb_write_batch_size,
-                truncate_dim=self.truncate_dim,
-                logit_scale=100.0
-            )
-            if not cache_valid:
-                prompt_cache.processor = processor
-                prompt_cache.generate_cache()
-            cache_info = prompt_cache.get_cache_info(model_name=model_name)
-            cached_total = int(cache_info.get('total_prompts', 0) or 0)
-            effective_prompt_search_batch_size = (
-                prompt_search_batch_size
-                if prompt_search_batch_size is not None
-                else max(1, cached_total)
-            )
-            cache_iterator = prompt_cache.load_cache_batched(
-                model_name=model_name,
-                batch_size=effective_prompt_search_batch_size,
-                use_fp16=self.use_fp16
-            )
-            prompt_meta_lookup = prompt_cache.load_meta_lookup(model_name=model_name)
-            print(f"[优化搜索] 缓存信息: {cached_total} 个prompt, {cache_info['file_size_mb']:.1f} MB")
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            raise RuntimeError(f"检查/生成prompt缓存时出错: {e}")
-        video_name_parser = VideoNameParser()
-        config_payload = {
-            'similarity_threshold': similarity_threshold,
-            'search_mode': search_mode,
-            'top_k': top_k,
-            'use_reranker': use_reranker,
-            'rerank_top_k': rerank_top_k,
-            'rerank_batch_size': rerank_batch_size,
-            'reranker_output_resolution': reranker_output_resolution,
-            'candidate_batch_size': candidate_batch_size,
-            'prompt_search_batch_size': prompt_search_batch_size,
-            'prompt_cache_batch_size': prompt_cache_batch_size,
-            'feature_fp16': feature_fp16,
-            'lance_batch_size': lance_batch_size,
-            'use_diskcache': use_diskcache,
-            'vector_dedup_threshold': vector_dedup_threshold,
-            'use_chinese': self.use_chinese,
-            'index_files': sorted([os.path.basename(p) for p in index_paths]),
-        }
-        config_hash = _hashlib.md5(json.dumps(config_payload, ensure_ascii=False, sort_keys=True).encode('utf-8')).hexdigest()
-        diskcache_root = None
-        search_cache_dir = None
-        lance_merge_cache_dir = None
-        if use_diskcache:
-            if diskcache_dir is None:
-                diskcache_root = str(self.resolver.project_root / 'temp' / 'cache' / 'search_results')
-            else:
-                diskcache_root = diskcache_dir
-            search_cache_dir = os.path.join(diskcache_root, 'inner_search')
-            lance_merge_cache_dir = os.path.join(diskcache_root, 'lance_merge')
-            os.makedirs(search_cache_dir, exist_ok=True)
-            os.makedirs(lance_merge_cache_dir, exist_ok=True)
-        start_time = time.time()
-        clip_initial_threshold = SimilarityThresholdConfig.get_threshold(model_type, use_reranker=False) if use_reranker else similarity_threshold
-        reranker_loader = None
-        if use_reranker:
-            reranker_model_path = self.resolver.resolve_str('models/Qwen3-VL-Reranker-2B')
-            rerank_cache_dir = os.path.join(self.cache_dir, 'rerank_cache')
-            def _lazy_load_reranker():
-                from A_coreUtils.qwen_models.qwen3_vl_reranker import Qwen3VLReranker
-                return Qwen3VLReranker(
-                    model_name_or_path=reranker_model_path,
-                    cache_dir=rerank_cache_dir,
-                    torch_dtype="auto"
-                )
-            reranker_loader = _lazy_load_reranker
-        search_kwargs = dict(
-            cache_iterator=cache_iterator,
-            threshold=similarity_threshold,
-            initial_threshold=clip_initial_threshold,
-            video_name_parser=video_name_parser,
-            use_diskcache=use_diskcache,
-            cache_dir=search_cache_dir,
-            rerank_top_k=rerank_top_k,
-            use_reranker=use_reranker,
-            reranker=None,
-            reranker_loader=reranker_loader,
-            reranker_weight=SimilarityThresholdConfig.RERANKER_WEIGHT,
-            reranker_output_resolution=reranker_output_resolution,
-            rerank_batch_size=rerank_batch_size,
-            rerank_per_cat_top_k=3,
-            candidate_batch_size=candidate_batch_size,
-            search_mode=search_mode,
-            result_top_k=top_k,
-            config_hash=config_hash,
-            prompt_meta_lookup=prompt_meta_lookup,
-            required_categories=getattr(self.prompt_generator, '_required_categories', None),
-        )
-        if batch_engine._preload_all:
-            if batch_engine.all_features_gpu is None:
-                batch_engine._preload_all_features()
-            result_view = batch_engine.search_with_batched_cache(**search_kwargs)
-        else:
-            total_lances = len(batch_engine.index_paths)
-            lance_bs = batch_engine.lance_batch_size
-            total_batches = (total_lances + lance_bs - 1) // lance_bs
-            lance_batch_hash = _hashlib.md5(f"lance_batch|{config_hash}|{total_lances}|{lance_bs}".encode()).hexdigest()
-            lance_batch_lmdb_dir = lance_merge_cache_dir
-            if lance_batch_lmdb_dir is None:
-                lance_batch_lmdb_dir = str(self.resolver.project_root / 'temp' / 'cache' / 'search_results')
-            os.makedirs(lance_batch_lmdb_dir, exist_ok=True)
-            lance_batch_lmdb = LMDBCache(lance_batch_lmdb_dir, map_size=10 * 1024 * 1024 * 1024)
-            start_lance_batch = 0
-            checkpoint = lance_batch_lmdb.load_checkpoint()
-            if checkpoint and checkpoint.get('config_hash') == lance_batch_hash and checkpoint.get('phase') == 'lance_batch':
-                start_lance_batch = checkpoint.get('last_completed_lance_batch', -1) + 1
-            else:
-                lance_batch_lmdb.clear_candidates()
-                lance_batch_lmdb.clear_results()
-            for batch_idx in range(start_lance_batch, total_batches):
-                batch_start = batch_idx * lance_bs
-                batch_end = min(batch_start + lance_bs, total_lances)
-                batch_paths = batch_engine.index_paths[batch_start:batch_end]
-                batch_engine._load_lance_batch_to_merged(batch_paths)
-                if batch_engine.all_features_gpu is None:
-                    lance_batch_lmdb.save_checkpoint({
-                        'config_hash': lance_batch_hash,
-                        'last_completed_lance_batch': batch_idx,
-                        'total_batches': total_batches,
-                        'phase': 'lance_batch',
-                        'timestamp': time.time()
-                    })
-                    batch_engine._unload_merged_features()
-                    continue
-                cache_iterator.reset()
-                clip_batch_kwargs = dict(search_kwargs)
-                clip_batch_kwargs['required_categories'] = None  # 分批CLIP不提前过滤
-                clip_batch_kwargs['cache_iterator'] = cache_iterator
-                clip_batch_kwargs['threshold'] = clip_initial_threshold
-                clip_batch_kwargs['use_diskcache'] = True
-                clip_batch_kwargs['cache_dir'] = lance_batch_lmdb_dir
-                clip_batch_kwargs['use_reranker'] = False
-                clip_batch_kwargs['reranker'] = None
-                clip_batch_kwargs['reranker_loader'] = None
-                clip_batch_kwargs['candidate_batch_size'] = None
-                clip_batch_kwargs['result_top_k'] = None
-                clip_batch_kwargs['search_mode'] = 0
-                clip_batch_kwargs['config_hash'] = None
-                clip_batch_kwargs['append_to_lmdb_cache'] = True
-                clip_batch_kwargs['prompt_meta_lookup'] = prompt_meta_lookup
-                batch_engine.search_with_batched_cache(**clip_batch_kwargs)
-                lance_batch_lmdb.save_checkpoint({
-                    'config_hash': lance_batch_hash,
-                    'last_completed_lance_batch': batch_idx,
-                    'total_batches': total_batches,
-                    'phase': 'lance_batch',
-                    'timestamp': time.time()
-                })
-                batch_engine._unload_merged_features()
-            lance_batch_lmdb.close()
-            rerank_search_kwargs = dict(search_kwargs)
-            rerank_search_kwargs['cache_iterator'] = None
-            rerank_search_kwargs['use_diskcache'] = True
-            rerank_search_kwargs['cache_dir'] = lance_batch_lmdb_dir
-            rerank_search_kwargs['skip_clip_search'] = True
-            rerank_search_kwargs['result_top_k'] = top_k
-            rerank_search_kwargs['search_mode'] = search_mode
-            rerank_search_kwargs['config_hash'] = None
-            rerank_search_kwargs['prompt_meta_lookup'] = prompt_meta_lookup
-            result_view = batch_engine.search_with_batched_cache(**rerank_search_kwargs)
-        if result_view is None:
-            return None
-        # 跨类别交集过滤
-        if result_view.count() > 0:
-            result_view = self._apply_per_category_intersection(result_view, prompt_cache, model_name)
-            print(f"[交集过滤] 过滤后结果数: {result_view.count()}")
-        if vector_dedup_threshold is not None and result_view.count() > 0:
-            print(f"[向量去重] 开始, 阈值: {vector_dedup_threshold}")
-            result_scene_keys = set()
-            for batch in result_view.iter_batches(batch_size=2000):
-                for scene_key, _ in batch:
-                    result_scene_keys.add(scene_key)
-            scene_features = {}
-            if batch_engine.all_features_gpu is not None:
-                all_features_cpu = batch_engine.all_features_gpu.float().cpu().numpy()
-                feat_idx = 0
-                for scene_idx, scene_info in enumerate(batch_engine.scene_map):
-                    video_name = os.path.basename(scene_info['video_path']) if scene_info.get('video_path') else ''
-                    scene_key = f"{scene_info['start_frame']}_{video_name}"
-                    count = batch_engine.feature_counts[scene_idx]
-                    if scene_key in result_scene_keys:
-                        scene_features[scene_key] = all_features_cpu[feat_idx:feat_idx + count]
-                    feat_idx += count
-            elif not batch_engine._preload_all:
-                lance_bs = batch_engine.lance_batch_size
-                total_lances = len(batch_engine.index_paths)
-                total_batches = (total_lances + lance_bs - 1) // lance_bs
-                for batch_idx in range(total_batches):
-                    batch_start = batch_idx * lance_bs
-                    batch_end = min(batch_start + lance_bs, total_lances)
-                    batch_paths = batch_engine.index_paths[batch_start:batch_end]
-                    batch_engine._load_lance_batch_to_merged(batch_paths)
-                    if batch_engine.all_features_gpu is None:
-                        batch_engine._unload_merged_features()
-                        continue
-                    all_features_cpu = batch_engine.all_features_gpu.float().cpu().numpy()
-                    feat_idx = 0
-                    for scene_idx, scene_info in enumerate(batch_engine.scene_map):
-                        video_name = os.path.basename(scene_info['video_path']) if scene_info.get('video_path') else ''
-                        scene_key = f"{scene_info['start_frame']}_{video_name}"
-                        count = batch_engine.feature_counts[scene_idx]
-                        if scene_key in result_scene_keys and scene_key not in scene_features:
-                            scene_features[scene_key] = all_features_cpu[feat_idx:feat_idx + count]
-                        feat_idx += count
-                    batch_engine._unload_merged_features()
-                    if len(scene_features) >= len(result_scene_keys):
-                        break
-            if scene_features:
-                from .batch_text_search import deduplicate_by_vector_lmdb
-                dedup_cache = str(self.resolver.project_root / 'temp' / 'cache' / 'search_results' / 'vector_dedup')
-                result_view = deduplicate_by_vector_lmdb(
-                    result_view=result_view,
-                    scene_features=scene_features,
-                    video_name_format=self.video_name_format,
-                    similarity_threshold=vector_dedup_threshold,
-                    scene_lance_map=None,
-                    cache_dir=dedup_cache
-                )
-                print(f"[去重] 去重完成, 结果数: {result_view.count()}")
-        if batch_engine is not None:
-            batch_engine.cleanup()
-        if processor is not None:
+        from A_coreUtils.prompt.prompt_vector_cache import PromptVectorCache
+        prompt_cache = PromptVectorCache(batch_size=prompt_cache_batch_size or DEFAULT_PROMPT_CACHE_BATCH_SIZE,
+                                         use_chinese=self.use_chinese)
+        if not prompt_cache.cache_exists(model_name=model_name):
+            processor = EmbeddingModelProcessor(model_name=model_name, model_type=model_type,
+                                               truncate_dim=self.truncate_dim, io_workers=self.io_workers,
+                                               use_fp16=self.use_fp16)
+            prompt_cache.processor = processor
+            prompt_cache.generate_cache()
+            prompt_cache.processor = None
             del processor
-        _cleanup_gpu_memory()
-        return result_view
-    def _format_video_name(self, combo: Dict, start_frame: int, video_parsed_name: str) -> str:
-        """
-                根据格式模板生成视频名称（动态占位符处理）
-                
-                Args:
-                    combo: 关键词组合字典，包含各大类的中文值（如 lens_cn, mood_cn 等）
-                    start_frame: 起始帧号
-                    video_parsed_name: 解析后的视频名称
-                
-                Returns:
-                    格式化后的视频名称（不含扩展名）
-                
-                支持的占位符：
-                    - {镜头}: 镜头类型（中文）
-                    - {情绪}: 情绪类型（中文）
-                    - {场景}: 场景类型（中文）
-                    - {主体}: 主体类型（中文）
-                    - {动作}: 动作类型（中文）
-                    - {起始帧}: 起始帧号
-                    - {视频解析名}: 解析后的视频名称
-                    - 以及 logic_keywords.json 中定义的任何扩展大类（使用中文键名）
-                
-        """
-        import re
-
-        # 1. 从 video_name_format 中动态解析所有占位符
-        placeholders = re.findall(r'\{(\w+)\}', self.video_name_format)
-
-        # 2. 为所有占位符预设空字符串默认值
-        format_dict = {ph: "" for ph in placeholders}
-
-        # 3. 填充系统占位符
-        format_dict['起始帧'] = str(start_frame)
-        format_dict['视频解析名'] = _sanitize_filename(video_parsed_name)
-
-        # 4. 填充大类中文值（从 combo 的 xxx_cn 动态字段）
-        for key, value in combo.items():
-            if key.endswith('_cn'):
-                category_name = key[:-3]
-                if category_name in format_dict:
-                    format_dict[category_name] = _sanitize_filename(value)
-
-        # 6. 使用格式模板生成名称（所有占位符都已预设默认值，不会 KeyError）
-        result_name = self.video_name_format.format(**format_dict)
-
-        # 7. 动态清理连续分隔符（从格式模板中提取分隔符）
-        # 提取占位符之间的分隔符
-        separators = re.findall(r'\}([^\{]+)\{', self.video_name_format)
-        for sep in set(separators):
-            if sep:
-                # 清理连续的分隔符（2个及以上）
-                double_sep = sep + sep
-                while double_sep in result_name:
-                    result_name = result_name.replace(double_sep, sep)
-        # 清理首尾分隔符
-        for sep in set(separators):
-            if sep:
-                result_name = result_name.strip(sep)
-
-        return result_name
-# ============================================================
-# 从JSON动态获取第一个大类的子类列表（用于分配规则）
-# ============================================================
+            _cleanup_gpu_memory()
+        prompts = prompt_cache.load_cache_batched(model_name=model_name,
+                    batch_size=prompt_search_batch_size or DEFAULT_PROMPT_SEARCH_BATCH_SIZE, use_fp16=self.use_fp16)
+        root = diskcache_dir or os.path.join(self.cache_dir, 'search_results')
+        parallel = min(lance_load_workers or DEFAULT_LANCE_LOAD_WORKERS, lance_batch_size or len(index_paths), len(index_paths))
+        engine = BatchTextSearchEngine(candidate_batch_size or 128, feature_fp16, self.truncate_dim)
+        try:
+            return engine.search(index_paths, prompts, self.prompt_generator, similarity_threshold,
+                                 search_mode, top_k, vector_dedup_threshold, root,
+                                 use_diskcache, parallel, lmdb_write_batch_size or DEFAULT_LMDB_WRITE_BATCH_SIZE)
+        finally:
+            prompts.close()
+            _cleanup_gpu_memory()
 
 
 class SimilarityThresholdConfig:
-    """
-        相似度阈值配置（从config.json读取）
-        
-        不同模型和模式的推荐阈值：
-        - CLIP Large: 21
-        - FG-CLIP2: 14
-        - Reranker: 51
-        - 混合模式: clip_threshold * (1 - N) + 51 * N, N = 0.6
-        
-        配置文件: config.json -> similarity_thresholds
-        
-    """
+    """按本次搜索的 Lance 模型选择召回阈值。"""
 
-    # 默认值（当config.json不存在或读取失败时使用）
-    _DEFAULT_CLIP_LARGE = 21.0
-    _DEFAULT_FGCLIP2 = 14.0
-    _DEFAULT_RERANKER = 51.0
-    _DEFAULT_RERANKER_WEIGHT = 0.6
-
-    # 缓存的配置值
-    _config_loaded = False
-    _clip_large = None
-    _fgclip2 = None
-    _reranker = None
-    _reranker_weight = None
-
-    @classmethod
-    def _load_config(cls):
-        """Load similarity thresholds from config.json."""
-        if cls._config_loaded:
-            return
-
+    @staticmethod
+    def get_threshold(model_type: str = 'clip', thresholds: Optional[Dict] = None) -> float:
+        key = 'fgclip2' if model_type.lower() in ('fgclip2', 'fg-clip2', 'fg_clip2') else 'clip_large'
+        if thresholds is not None and thresholds.get(key) is not None:
+            return float(thresholds[key])
         try:
-            resolver = PathResolver()
-            config_path = str(resolver.project_root / 'config.json')
-
-            with open(config_path, 'r', encoding='utf-8') as f:
+            with (PathResolver().project_root / 'config.json').open(encoding='utf-8') as f:
                 config = json.load(f)
-
-            thresholds = config.get('similarity_thresholds', {})
-            cls._clip_large = thresholds.get('clip_large', cls._DEFAULT_CLIP_LARGE)
-            cls._fgclip2 = thresholds.get('fgclip2', cls._DEFAULT_FGCLIP2)
-            cls._reranker = thresholds.get('reranker', cls._DEFAULT_RERANKER)
-            cls._reranker_weight = thresholds.get('reranker_weight', cls._DEFAULT_RERANKER_WEIGHT)
-
-            # 静默：配置加载信息
-        except Exception as e:
-            print(f"[Warning] failed to load config.json thresholds: {e}; using defaults")
-            cls._clip_large = cls._DEFAULT_CLIP_LARGE
-            cls._fgclip2 = cls._DEFAULT_FGCLIP2
-            cls._reranker = cls._DEFAULT_RERANKER
-            cls._reranker_weight = cls._DEFAULT_RERANKER_WEIGHT
-
-        cls._config_loaded = True
-
-    @classmethod
-    @property
-    def CLIP_LARGE_THRESHOLD(cls) -> float:
-        cls._load_config()
-        return cls._clip_large
-
-    @classmethod
-    @property
-    def FGCLIP2_THRESHOLD(cls) -> float:
-        cls._load_config()
-        return cls._fgclip2
-
-    @classmethod
-    @property
-    def RERANKER_THRESHOLD(cls) -> float:
-        cls._load_config()
-        return cls._reranker
-
-    @classmethod
-    @property
-    def RERANKER_WEIGHT(cls) -> float:
-        cls._load_config()
-        return cls._reranker_weight
-
-    @classmethod
-    def get_threshold(cls, model_type: str = 'clip', use_reranker: bool = False) -> float:
-        """
-                获取推荐的相似度阈值
-                
-                Args:
-                    model_type: 模型类型 ('clip', 'fgclip2', 'auto')
-                    use_reranker: 是否使用reranker
-                
-                Returns:
-                    推荐的相似度阈值
-                
-        """
-        cls._load_config()
-
-        # 获取基础模型阈值
-        if model_type.lower() in ['fgclip2', 'fg-clip2', 'fg_clip2']:
-            base_threshold = cls._fgclip2
-        else:
-            base_threshold = cls._clip_large
-
-        if use_reranker:
-            # 混合模式: base * (1 - N) + reranker * N
-            N = cls._reranker_weight
-            return base_threshold * (1 - N) + cls._reranker * N
-        else:
-            return base_threshold
-
-    @classmethod
-    def get_all_thresholds(cls) -> Dict:
-        """Return all effective threshold values."""
-        cls._load_config()
-        return {
-            "clip_large": cls._clip_large,
-            "fgclip2": cls._fgclip2,
-            "reranker": cls._reranker,
-            "reranker_weight": cls._reranker_weight,
-            "clip_with_reranker": cls.get_threshold('clip', True),
-            "fgclip2_with_reranker": cls.get_threshold('fgclip2', True)
-        }
-# ============================================================
-# 结果源适配工具
-# ============================================================
-
-
-def _iter_result_source_batches(result_source, batch_size: int = 1000) -> Iterator[List[Tuple[str, Dict]]]:
-    if result_source is None:
-        return
-    if isinstance(result_source, dict):
-        buffer: List[Tuple[str, Dict]] = []
-        for scene_key, data in result_source.items():
-            buffer.append((scene_key, data))
-            if len(buffer) >= batch_size:
-                yield buffer
-                buffer = []
-        if buffer:
-            yield buffer
-        return
-    if hasattr(result_source, "iter_batches"):
-        yield from result_source.iter_batches(batch_size=batch_size)
-        return
-    if hasattr(result_source, "__iter__"):
-        buffer: List[Tuple[str, Dict]] = []
-        for item in result_source:
-            buffer.append(item)
-            if len(buffer) >= batch_size:
-                yield buffer
-                buffer = []
-        if buffer:
-            yield buffer
-        return
-    raise TypeError(f"Unsupported result source type: {type(result_source)}")
+            value = config.get('similarity_thresholds', {}).get(key)
+            if value is not None:
+                return float(value)
+        except (OSError, TypeError, ValueError) as exc:
+            print(f"[自动提纯] 读取配置阈值失败，使用模型默认值：{exc}")
+        return 14.0 if key == 'fgclip2' else 21.0
 
 
 def merge_adjacent_scenes(
     result_source,
     adjacent_merge_frames: int,
-    video_name_format: str = None,
+    video_name_format: str,
     output_cache_dir: str = None,
-    batch_size: int = 1000
+    batch_size: int = 1000,
 ):
-    """
-        合并相邻的场景片段
-        
-        当两个片段的 endframe 和 startframe 相差 ≤ N 帧时，合并为一个片段。
-        合并规则：
-        - 时间戳：使用第一个片段的 startframe，最后一个片段的 endframe
-        - 标签去重：同类标签用 "_" 连接
-        - result_name：根据合并后的标签重新生成
-        
-        Args:
-            best_matches: 去重后的搜索结果字典
-                格式: {scene_key: {result_name, similarity, video_path, start_frame, end_frame, ...}}
-            adjacent_merge_frames: 相邻帧阈值 N，endframe 和 startframe 差值 ≤ N 时合并
-            video_name_format: 视频名称格式模板，用于重新生成 result_name
-        
-        Returns:
-            合并后的结果字典
-        
-    """
-    from .batch_text_search import LMDBCache, LMDBResultView
+    """Merge adjacent scenes through a temporary, ordered LMDB store."""
+    from tempfile import mkdtemp
+    from .lmdb_store import LMDBCache, LMDBResultView, _sortable_int
+
     if adjacent_merge_frames is None or adjacent_merge_frames < 0:
         return result_source
-    resolver = PathResolver()
-    if output_cache_dir is None:
-        output_cache_dir = str(resolver.project_root / "temp" / "cache" / "search_results" / "adjacent_merge")
-    stage_cache_dir = os.path.join(output_cache_dir, "stage")
-    merged_cache_dir = os.path.join(output_cache_dir, "merged")
-    os.makedirs(stage_cache_dir, exist_ok=True)
-    os.makedirs(merged_cache_dir, exist_ok=True)
-    stage_cache = LMDBCache(stage_cache_dir, map_size=10 * 1024 * 1024 * 1024)
-    merged_cache = LMDBCache(merged_cache_dir, map_size=10 * 1024 * 1024 * 1024)
-    stage_cache.clear_all()
-    merged_cache.clear_all()
-    print(f"\n[Merge Adjacent] start merging with frame gap <= {adjacent_merge_frames}")
-    stage_buffer: Dict[str, Dict] = {}
-    stage_chunk = max(256, int(batch_size))
-    original_count = 0
-    for batch in _iter_result_source_batches(result_source, batch_size=stage_chunk):
-        for scene_key, scene_data in batch:
-            video_path = str(scene_data.get("video_path", "") or "")
-            start_frame = int(scene_data.get("start_frame", 0) or 0)
-            sort_key = f"stage:{video_path}\t{start_frame:010d}\t{scene_key}"
-            stage_buffer[sort_key] = scene_data
-            original_count += 1
-            if len(stage_buffer) >= stage_chunk:
-                stage_cache.put_many(stage_buffer)
-                stage_buffer.clear()
-    if stage_buffer:
-        stage_cache.put_many(stage_buffer)
-        stage_buffer.clear()
-    merged_buffer: Dict[str, Dict] = {}
-    current_video = None
-    current_group: List[Tuple[str, Dict]] = []
-    def _flush_group():
-        nonlocal current_group
-        if not current_group:
-            return
-        if len(current_group) == 1:
-            scene_key, scene_data = current_group[0]
-            merged_buffer[scene_key] = scene_data
-        else:
-            merged_data = _merge_scene_group(current_group, video_name_format)
-            video_name = os.path.basename(merged_data.get("video_path", ""))
-            new_scene_key = f"{merged_data.get('start_frame', 0)}_{video_name}"
-            merged_buffer[new_scene_key] = merged_data
-        current_group = []
-    for stage_batch in stage_cache.iter_items_with_prefix("stage:", batch_size=stage_chunk):
-        for stage_key, scene_data in stage_batch:
-            _, rest = stage_key.split(":", 1)
-            video_path, _, scene_key = rest.split("\t", 2)
-            scene_start = int(scene_data.get("start_frame", 0) or 0)
-            if current_video is None:
-                current_video = video_path
-                current_group = [(scene_key, scene_data)]
+    root = output_cache_dir or os.path.dirname(result_source.cache_dir)
+    os.makedirs(root, exist_ok=True)
+    output = mkdtemp(dir=root, prefix="merged_")
+    stage_path = mkdtemp(dir=root, prefix="merge_stage_")
+    stage = LMDBCache(stage_path)
+    cache = LMDBCache(output)
+    try:
+        staged = {}
+        for batch in result_source.iter_batches(batch_size):
+            for key, item in batch:
+                video = str(item.get("video_path", "") or "")
+                start = int(item.get("start_frame", 0) or 0)
+                sort_key = (
+                    b"stage:" + video.encode("utf-8", "surrogatepass")
+                    + b"\0" + _sortable_int(start) + b":"
+                    + str(key).encode("utf-8", "surrogatepass")
+                )
+                staged[sort_key] = item
+            if len(staged) >= batch_size:
+                stage.put_many(staged)
+                staged.clear()
+        if staged:
+            stage.put_many(staged)
+
+        def segments():
+            previous_video = None
+            previous_end = None
+            sequence = 0
+            for _, value in stage.iter_raw(b"stage:"):
+                row = pickle.loads(value)
+                video = str(row.get("video_path", "") or "")
+                start = int(row.get("start_frame", 0) or 0)
+                end = int(row.get("end_frame", start) or start)
+                if previous_video != video or previous_end is None or start - previous_end > adjacent_merge_frames:
+                    sequence += 1
+                previous_video, previous_end = video, end
+                yield sequence, row
+
+        buffer = {}
+        for _, grouped_rows in itertools.groupby(segments(), key=lambda value: value[0]):
+            rows = (row for _, row in grouped_rows)
+            try:
+                first = next(rows)
+            except StopIteration:
                 continue
-            if video_path != current_video:
-                _flush_group()
-                current_video = video_path
-                current_group = [(scene_key, scene_data)]
+            try:
+                second = next(rows)
+            except StopIteration:
+                second = None
+            if second is None:
+                key = hashlib.sha256(
+                    json.dumps(
+                        [first.get("video_path", ""), first.get("start_frame", 0), first.get("end_frame", 0)],
+                        ensure_ascii=False,
+                    ).encode("utf-8")
+                ).hexdigest()
+                buffer[key] = first
             else:
-                prev_end = int(current_group[-1][1].get("end_frame", 0) or 0)
-                if scene_start - prev_end <= adjacent_merge_frames:
-                    current_group.append((scene_key, scene_data))
-                else:
-                    _flush_group()
-                    current_group = [(scene_key, scene_data)]
-            if len(merged_buffer) >= stage_chunk:
-                merged_cache.put_results_many(merged_buffer)
-                merged_buffer.clear()
-    _flush_group()
-    if merged_buffer:
-        merged_cache.put_results_many(merged_buffer)
-        merged_buffer.clear()
-    merged_count = merged_cache.count_results()
-    print(f"[相邻合并] 完成: {original_count} -> {merged_count} 个片段 (合并了 {original_count - merged_count} 个)")
-    stage_cache.destroy()
-    merged_cache.close()
-    return LMDBResultView(merged_cache_dir)
+                base_fields = ("video_path", "start_frame", "end_frame", "source_lance", "fps")
+                skipped = {*base_fields, "similarity", "result_name", "prompt"}
+                merged = {field: first.get(field) for field in base_fields}
+                values = {}
+                value_tokens = {}
+                total = 0.0
+                count = 0
+                for row in itertools.chain((first, second), rows):
+                    count += 1
+                    total += float(row.get("similarity", 0.0) or 0.0)
+                    merged["end_frame"] = row.get("end_frame", merged["end_frame"])
+                    for name, value in row.items():
+                        if name in skipped or value in (None, "", [], {}):
+                            continue
+                        token = json.dumps(value, ensure_ascii=False, sort_keys=True)
+                        tokens = value_tokens.setdefault(name, set())
+                        if token not in tokens:
+                            tokens.add(token)
+                            values.setdefault(name, []).append(value)
+                for name, entries in values.items():
+                    merged[name] = entries[0] if len(entries) == 1 else "_".join(str(value) for value in entries)
+                merged["similarity"] = total / max(1, count)
+                merged["result_name"] = _generate_merged_result_name(merged, video_name_format)
+                key = hashlib.sha256(
+                    json.dumps(
+                        [merged.get("video_path", ""), merged.get("start_frame", 0), merged.get("end_frame", 0)],
+                        ensure_ascii=False,
+                    ).encode("utf-8")
+                ).hexdigest()
+                buffer[key] = merged
+            if len(buffer) >= batch_size:
+                cache.put_results_many(buffer)
+                buffer.clear()
+        cache.put_results_many(buffer)
+        cache.close()
+        cache = None
+        return LMDBResultView(output)
+    except BaseException:
+        if cache is not None:
+            cache.destroy()
+        raise
+    finally:
+        stage.destroy()
 
-
-def _merge_scene_group(
-    group: List[Tuple[str, Dict]],
-    video_name_format: str = None
-) -> Dict:
-    """
-        合并一组相邻的场景片段
-        
-        Args:
-            group: [(scene_key, scene_data), ...] 需要合并的片段列表
-            video_name_format: 视频名称格式模板
-        
-        Returns:
-            合并后的场景数据字典
-        
-    """
-    if not group:
-        return {}
-
-    if len(group) == 1:
-        return group[0][1]
-
-    # 提取所有片段的数据
-    first_data = group[0][1]
-    last_data = group[-1][1]
-
-    # 基础字段：使用第一个片段的 start_frame，最后一个片段的 end_frame
-    merged = {
-        'start_frame': first_data.get('start_frame', 0),
-        'end_frame': last_data.get('end_frame', 0),
-        'video_path': first_data.get('video_path', ''),
-        'fps': first_data.get('fps'),
-        'source_lance': first_data.get('source_lance', ''),
-    }
-
-    # 收集所有标签（用于去重和合并）
-    # 标签字段格式: {大类}_cn, {大类}_en, subject_cn, action_cn 等
-    label_fields = {}  # {field_name: [values]}
-    similarity_sum = 0
-
-    for scene_key, scene_data in group:
-        similarity_sum += scene_data.get('similarity', 0)
-
-        for key, value in scene_data.items():
-            # 跳过非标签字段
-            if key in ['start_frame', 'end_frame', 'video_path', 'fps', 'source_lance', 
-                       'similarity', 'result_name', 'prompt']:
-                continue
-
-            if key not in label_fields:
-                label_fields[key] = []
-
-            if value and value not in label_fields[key]:
-                label_fields[key].append(value)
-
-    # 合并标签（同类标签用 "_" 连接，去重）
-    for field_name, values in label_fields.items():
-        if len(values) == 1:
-            merged[field_name] = values[0]
-        else:
-            # 多个值，用 "_" 连接
-            merged[field_name] = "_".join(str(v) for v in values)
-
-    # 计算平均相似度
-    merged['similarity'] = similarity_sum / len(group)
-
-    # 重新生成 result_name
-    if video_name_format:
-        merged['result_name'] = _generate_merged_result_name(merged, video_name_format)
-    else:
-        # 使用默认格式
-        merged['result_name'] = _generate_merged_result_name(merged, None)
-
-    return merged
-
-
-def _generate_merged_result_name(merged_data: Dict, video_name_format: str = None) -> str:
+def _generate_merged_result_name(merged_data: Dict, video_name_format: str) -> str:
     """
         根据合并后的数据生成 result_name（动态占位符处理）
         
@@ -1468,20 +781,13 @@ def _generate_merged_result_name(merged_data: Dict, video_name_format: str = Non
             生成的 result_name
         
     """
-    import re
-
-    # 初始化视频名称解析器
-    video_name_parser = VideoNameParser()
+    # Parsing is cached per source video to avoid repeated work.
 
     # 解析视频名称
     video_path = merged_data.get('video_path', '')
     video_basename = os.path.basename(video_path)
     video_name_no_ext = os.path.splitext(video_basename)[0]
-    parsed_name = video_name_parser.parse_filename(video_name_no_ext)
-
-    # 使用默认格式（如果未指定）
-    if video_name_format is None:
-        video_name_format = "{\u8d77\u59cb\u5e27}_{\u89c6\u9891\u89e3\u6790\u540d}"
+    parsed_name = _parse_merged_video_name(video_name_no_ext)
 
     # 1. 从 video_name_format 中动态解析所有占位符
     placeholders = re.findall(r'\{(\w+)\}', video_name_format)
@@ -1492,6 +798,7 @@ def _generate_merged_result_name(merged_data: Dict, video_name_format: str = Non
     # 3. 填充系统占位符
     format_dict['起始帧'] = str(merged_data.get('start_frame', 0))
     format_dict['视频解析名'] = _sanitize_filename(parsed_name)
+    format_dict['扩展名'] = os.path.splitext(video_basename)[1].lstrip('.')
 
     # 4. 填充大类中文值（从 merged_data 的 xxx_cn 动态字段）
     for key, value in merged_data.items():
@@ -1634,6 +941,7 @@ class VideoExporter:
         progress_callback: Optional[Callable] = None,
         debug_similarity: bool = False,
         post_export_hook: Optional[Callable] = None,
+        use_aesthetic_score: bool = True,
     ) -> Dict:
         """
                 导出去重后的搜索结果
@@ -1667,7 +975,7 @@ class VideoExporter:
             return stats
         print(f"\n开始导出 {stats['total']} 个去重后的视频片段...")
         current = 0
-        for batch in _iter_result_source_batches(result_source, batch_size=256):
+        for batch in result_source.iter_batches(batch_size=256):
             for scene_key, item in batch:
                 current += 1
                 result_name = item.get('result_name', scene_key)
@@ -1686,10 +994,9 @@ class VideoExporter:
                     prefix += f"_{move}" if prefix else move
                 if prefix:
                     prefix += '_'
-                if self._debug_similarity:
-                    output_filename = f"{similarity:.4f}_{prefix}{_sanitize_filename(result_name)}{ext}"
-                else:
-                    output_filename = f"{prefix}{_sanitize_filename(result_name)}{ext}"
+                scores = score_prefix(similarity, item if use_aesthetic_score else {},
+                                      include_similarity=self._debug_similarity)
+                output_filename = f"{scores}{prefix}{_sanitize_filename(result_name)}{ext}"
                 output_path = os.path.join(output_dir, output_filename)
                 if progress_callback:
                     progress_callback(current, total_items, output_filename)
@@ -1711,7 +1018,14 @@ class VideoExporter:
                         post_export_hook(output_path, item)
                 else:
                     stats['failed'] += 1
-                    stats['failed_files'].append(output_filename)
+                    if len(stats['failed_files']) < 256:
+                        stats['failed_files'].append(output_filename)
+                    if 'failure_log' not in stats:
+                        from tempfile import NamedTemporaryFile
+                        with NamedTemporaryFile(dir=output_dir, prefix='export_errors_', suffix='.txt', delete=False) as log:
+                            stats['failure_log'] = log.name
+                    with open(stats['failure_log'], 'a', encoding='utf-8') as log:
+                        print(output_filename, file=log)
         return stats
 # ============================================================
 # ============================================================
@@ -1740,6 +1054,7 @@ def export_video_matches(
     end_frame_offset: int = None,
     debug_similarity: bool = False,
     post_export_hook: Optional[Callable] = None,
+    use_aesthetic_score: bool = False,
 ):
     resolved_output_dir = resolve_video_output_directory(
         resolver=resolver,
@@ -1758,6 +1073,7 @@ def export_video_matches(
         progress_callback=None,
         debug_similarity=debug_similarity,
         post_export_hook=post_export_hook,
+        use_aesthetic_score=use_aesthetic_score,
     )
     return export_stats, resolved_output_dir
 
@@ -1825,9 +1141,9 @@ def attach_shot_analysis(result_view, temp_dir: str = None):
 
     def _store_item(scene_key, item):
         """写回分析结果，并保持原有批量 LMDB 写入行为。"""
-        buffer[cache.RESULT_PREFIX + scene_key] = item
+        buffer[scene_key] = item
         if len(buffer) >= 16:
-            cache.put_many(buffer)
+            cache.put_results_many(buffer)
             buffer.clear()
 
     def _finish_incomplete_plan(plan):
@@ -2112,14 +1428,14 @@ def attach_shot_analysis(result_view, temp_dir: str = None):
                 _drain_jobs(block=True, min_completed=1)
 
         if buffer:
-            cache.put_many(buffer)
+            cache.put_results_many(buffer)
     finally:
         # 即使中途发生异常，也要先等待分析任务结束，再卸载 GPU 模型。
         _flush_shot_batch(force=True)
         while pending_jobs:
             _drain_jobs(block=True, min_completed=1)
         if buffer:
-            cache.put_many(buffer)
+            cache.put_results_many(buffer)
             buffer.clear()
         flow_pool.shutdown(wait=True)
         shot_pool.shutdown(wait=True)
@@ -2132,11 +1448,11 @@ def attach_shot_analysis(result_view, temp_dir: str = None):
 
 
 def _strip_false_labels(item: dict, false_cats: set) -> dict:
-    """从 item 中删除 MiniCPM 判定为否的标签，清理所有相关字段。
+    """从 item 中删除 Jev-rerank 判定为否的标签，清理所有相关字段。
 
     Args:
         item: LMDB 中的一条结果
-        false_cats: MiniCPM 判定为 False 的类别名集合, 如 {'动作', '情绪'}
+        false_cats: Jev-rerank 判定为 False 的类别名集合, 如 {'动作', '情绪'}
 
     Returns:
         原地修改后的 item
@@ -2169,161 +1485,141 @@ def _strip_false_labels(item: dict, false_cats: set) -> dict:
     return item
 
 
-def filter_by_mini_rerank(result_view, min_matches: int = 4, use_chinese: bool = False):
-    """MiniRerank: 用 MiniCPM 验证每类 CLIP 最佳标签是否真实存在于画面中。
+def apply_jev_rerank(result_view, *, verify_labels, aesthetics, min_matches=4, use_chinese=False, settings=None):
+    """按窗口处理镜头中间帧，使用同一份视觉特征验证标签并给保留的镜头评分。"""
+    from A_coreUtils.aftertreatment.jev_rerank import JevReranker, extracted_frames
 
-    流式分批处理，不一次性全扫内存。通过验证的场景中，MiniCPM 判定为否的标签会被
-    从结果中剥离，result_name 也会相应重建。"""
-    import cv2
+    root = PathResolver().project_root
+    cache = result_view._cache
+    if settings is None:
+        with open(root / 'logic_keywords.json', encoding='utf-8') as f:
+            settings = json.load(f)['其他参数设置']
+    name_template = settings['输出视频命名格式']
+    categories = settings.get('必有标签', [])
+    templates = settings.get('Jev-rerank验证Prompt', {})
+    templates = templates.get('zh' if use_chinese else 'en', {})
+    instruction = templates.get('_instruction', '下列描述是否成立？' if use_chinese else 'Does this image match the description?')
+    suffix = '_cn' if use_chinese else '_en'
+    total_groups = 0
+    passed_groups = 0
+    removed_groups = 0
+    missing_frame_groups = 0
+    total_removed = 0
+    threshold = 0.5
+    initial_count = result_view.count()
+    if verify_labels:
+        print(f"[Jev-rerank] 开始复核 {initial_count} 条结果，必有标签最低匹配 {min_matches} 项，判断阈值 {threshold:.2f}")
+    else:
+        print(f"[Jev-rerank] 开始为 {initial_count} 条结果计算美学评分")
+    with JevReranker() as jev:
+        for batch in result_view.iter_batches(batch_size=1024):
+            groups = {}
+            for key, item in batch:
+                scene = (item.get('video_path'), int(item['start_frame']), int(item['end_frame']))
+                groups.setdefault(scene, []).append((key, item))
+            targets = [(vp, (sf + ef) // 2) for vp, sf, ef in groups]
+            updates = {}
+            removed = []
+            with extracted_frames(targets, root / 'temp/cache/jev_rerank') as frames:
+                for ((vp, _, _), items), target in zip(groups.items(), targets):
+                    total_groups += 1
+                    scene = items[0][1]
+                    scene_label = (
+                        f"{os.path.basename(vp or '')} "
+                        f"[{scene.get('start_frame', 0)}-{scene.get('end_frame', 0)}]"
+                    )
+                    labels = {}
+                    if verify_labels:
+                        for _, item in items:
+                            for cat in categories:
+                                value = item.get(cat + suffix)
+                                if cat not in labels and isinstance(value, str) and value.strip():
+                                    labels[cat] = value.strip()
+                        if not labels:
+                            removed.extend(key for key, _ in items)
+                            removed_groups += 1
+                            print(f"[Jev-rerank] {scene_label}: 没有可验证的关键词，淘汰")
+                            continue
+                        if not vp or not os.path.isfile(vp):
+                            removed.extend(key for key, _ in items)
+                            removed_groups += 1
+                            missing_frame_groups += 1
+                            print(f"[Jev-rerank] {scene_label}: 源视频不存在，无法复核，淘汰")
+                            continue
+                    path = frames.get(target)
+                    if not path:
+                        missing_frame_groups += 1
+                        if verify_labels:
+                            removed.extend(key for key, _ in items)
+                            removed_groups += 1
+                            print(f"[Jev-rerank] {scene_label}: 中间帧 {target[1]} 未能抽取，无法复核，淘汰")
+                            continue
+                        if aesthetics:
+                            for key, item in items:
+                                item['aesthetic_score'] = None
+                                updates[key] = item
+                            print(f"[Jev-rerank] {scene_label}: 中间帧 {target[1]} 未能抽取，美学评分记为未知")
+                        continue
 
-    if result_view is None or result_view.count() == 0:
-        return result_view
-
-    from A_coreUtils.aftertreatment.label_verifier import LabelVerifier
-    from A_coreUtils.search.reranker_frame_extractor import RerankerFrameExtractor
-
-    verifier = LabelVerifier()
-    resolver = PathResolver()
-    temp_dir = str(resolver.project_root / 'temp' / 'cache' / 'mini_rerank')
-    os.makedirs(temp_dir, exist_ok=True)
-    mid_extractor = RerankerFrameExtractor(
-        output_resolution='384', cache_dir=os.path.join(temp_dir, 'midframe'),
-    )
-
-    cache = getattr(result_view, '_cache', None)
-    if cache is None:
-        return result_view
-
-    kept_keys = set()
-    removed = 0
-    batch_size = 256
-    window_size = 1024  # 内存窗口上限
-
-    print(f"\n[MiniRerank] 开始分批验证...")
-
-    # 流式分组：每次收集 window_size 条后处理该批
-    window_groups = {}    # (vp, sf, ef) → {items, labels}
-    window_items = 0
-
-    def _flush_window():
-        """处理当前窗口内的所有场景组，清空 window_groups."""
-        nonlocal removed
-        if not window_groups:
-            return
-        # 提取本窗口所有组的帧（一次 batch 调用）
-        window_scenes = []
-        window_key_order = []
-        for (vp, sf, ef), group in window_groups.items():
-            window_scenes.append({
-                'video_path': vp, 'start_frame': sf, 'end_frame': ef,
-                'target_frame_idx': 1,
-            })
-            window_key_order.append((vp, sf, ef))
-        try:
-            all_frame_paths = mid_extractor.extract_batch(window_scenes)
-        except Exception as e:
-            print(f"  [MiniRerank] 帧提取异常: {e}")
-            all_frame_paths = {}
-
-        for i, ((vp, sf, ef), group) in enumerate(window_groups.items()):
-            items = group['items']
-            labels = group['labels']
-            if i < 3:
-                print(f"  [MiniRerank] 组#{i}: vp={os.path.basename(vp)[:30]} sf={sf} labels={labels}")
-            if not labels:
-                removed += len(items)
-                continue
-            try:
-                scene_key = RerankerFrameExtractor.get_scene_key(vp, sf)
-                mid_path = all_frame_paths.get(scene_key) if scene_key else None
-            except Exception:
-                mid_path = None
-            if not mid_path or not os.path.exists(mid_path):
-                for sk in items:
-                    kept_keys.add(sk)
-                continue
-            frame = cv2.imread(mid_path)
-            if frame is None:
-                for sk in items:
-                    kept_keys.add(sk)
-                continue
-            matches = verifier.verify(frame, labels, use_chinese=use_chinese)
-            matched_count = sum(1 for v in matches.values() if v)
-            false_cats = {k for k, v in matches.items() if not v}
-            if matched_count < min_matches:
-                removed += len(items)
-            else:
-                for sk in items:
-                    if false_cats:
-                        item = cache.get_result(sk)
-                        if item:
-                            item = _strip_false_labels(item, false_cats)
-                            item['result_name'] = _generate_merged_result_name(
-                                item, video_name_format)
-                            cache.put_result(sk, item)
-                    kept_keys.add(sk)
-            cats_str = ', '.join(f'{c}={labels[c]}(Y)' if matches.get(c) else f'{c}={labels[c]}(N)' for c in labels)
-            print(f"  [MiniRerank] sf={sf} vid={os.path.basename(vp)[:30]} 匹配{matched_count}/{min_matches} {cats_str}")
-        window_groups.clear()
-
-    try:
-        for batch in result_view.iter_batches(batch_size=batch_size):
-            for scene_key, item in batch:
-                vp = item.get('video_path', '')
-                sf = int(item.get('start_frame', 0) or 0)
-                ef = int(item['end_frame'])
-                if not vp or not os.path.exists(vp):
-                    continue
-                group_key = (vp, sf, ef)
-                grp = window_groups.setdefault(group_key, {'items': {}, 'labels': {}})
-                grp['items'][scene_key] = item
-                # 只取 logic_keywords.json "必有标签" 中定义的大类名
-                import json as _json
-                valid_cats = getattr(filter_by_mini_rerank, '_valid_cats', None)
-                video_name_format = getattr(filter_by_mini_rerank, '_video_name_format', None)
-                if not valid_cats or video_name_format is None:
-                    try:
-                        r = PathResolver()
-                        with open(str(r.project_root / 'logic_keywords.json'), 'r', encoding='utf-8') as _f:
-                            _cfg = _json.loads(_f.read())
-                        other_cfg = _cfg.get('其他参数设置', {})
-                        valid_cats = set(other_cfg.get('必有标签', []))
-                        filter_by_mini_rerank._valid_cats = valid_cats
-                        video_name_format = other_cfg.get('输出视频命名格式', '')
-                        filter_by_mini_rerank._video_name_format = video_name_format
-                    except Exception:
-                        valid_cats = {'主体', '动作', '场景', '情绪'}
-                        video_name_format = ''
-                suffix = '_cn' if use_chinese else '_en'
-                for key, val in item.items():
-                    if key.endswith(suffix) and isinstance(val, str) and val.strip():
-                        cat_name = key[:-len(suffix)]
-                        if cat_name in valid_cats and cat_name not in grp['labels']:
-                            grp['labels'][cat_name] = val.strip()
-                window_items += 1
-
-                if window_items >= window_size:
-                    _flush_window()
-                    window_items = 0
-        _flush_window()
-    finally:
-        verifier.unload()
-        mid_extractor.cleanup(remove_files=True)
-
-    # 流式删除移除的条目
-    try:
-        for batch in result_view.iter_batches(batch_size=batch_size):
-            for sk, _ in batch:
-                if sk not in kept_keys:
-                    try:
-                        cache.delete(cache.RESULT_PREFIX + sk)
-                    except Exception:
-                        pass
-    except Exception:
-        pass
-
-    kept = len(kept_keys)
-    print(f"[MiniRerank] 完成: 保留 {kept} 条, 移除 {removed} 条\n")
+                    questions = {
+                        cat: instruction + ' ' + templates.get(cat, '{cat}: {val}').format(cat=cat, val=val)
+                        for cat, val in labels.items()
+                    }
+                    result = jev.evaluate(
+                        path, questions, use_chinese=use_chinese, aesthetics=aesthetics,
+                        min_matches=min_matches if verify_labels else 0,
+                    )
+                    false_cats = set()
+                    if verify_labels:
+                        decisions = []
+                        for cat, val in labels.items():
+                            score = result['scores'].get(cat)
+                            if score is None:
+                                decision = '无有效判定'
+                                false_cats.add(cat)
+                            else:
+                                if score < threshold:
+                                    false_cats.add(cat)
+                                decision = f"{'否' if score < threshold else '是'} ({score:.3f})"
+                            decisions.append(f"{cat}={val} {decision}")
+                        label_log = ' | '.join(decisions)
+                        matched_count = len(labels) - len(false_cats)
+                        if matched_count < min_matches:
+                            removed.extend(key for key, _ in items)
+                            removed_groups += 1
+                            print(
+                                f"[Jev-rerank] {scene_label}: {label_log} "
+                                f"| 匹配 {matched_count}/{min_matches}，淘汰"
+                            )
+                            continue
+                        passed_groups += 1
+                        print(
+                            f"[Jev-rerank] {scene_label}: {label_log} "
+                            f"| 匹配 {matched_count}/{min_matches}，保留"
+                        )
+                    for key, item in items:
+                        if false_cats:
+                            _strip_false_labels(item, false_cats)
+                            item['result_name'] = _generate_merged_result_name(item, name_template)
+                        if aesthetics:
+                            item['aesthetic_score'] = result.get('aesthetic_score')
+                        if false_cats or aesthetics:
+                            updates[key] = item
+            cache.put_results_many(updates)
+            if removed:
+                deleted = cache.delete_results_many(removed)
+                if deleted != len(removed):
+                    raise RuntimeError(f"[Jev-rerank] 应删除 {len(removed)} 条结果，LMDB 实际删除 {deleted} 条")
+                total_removed += deleted
+    if verify_labels:
+        print(
+            f"[Jev-rerank] 完成：复核场景 {total_groups}，通过 {passed_groups}，"
+            f"淘汰 {removed_groups} 组 / {total_removed} 条结果，"
+            f"缺帧或源视频异常 {missing_frame_groups} 组；"
+            f"结果 {initial_count} -> {result_view.count()}"
+        )
+    else:
+        print(f"[Jev-rerank] 美学评分完成：处理 {total_groups} 个场景，缺帧 {missing_frame_groups} 个")
     return result_view
 
 
@@ -2339,10 +1635,6 @@ def run_interactive_search(
     index_directory: str = None,
     output_directory: str = None,
     use_fp16: bool = True,
-    use_reranker: bool = False,
-    rerank_top_k: Optional[int] = DEFAULT_RERANK_TOP_K,
-    rerank_batch_size: Optional[int] = DEFAULT_RERANK_BATCH_SIZE,
-    reranker_output_resolution: str = '384',
     candidate_batch_size: Optional[int] = None,
     video_output_directory: str = None,
     video_copy_mode: bool = False,
@@ -2354,7 +1646,6 @@ def run_interactive_search(
     lance_batch_size: Optional[int] = None,
     use_diskcache: bool = True,
     diskcache_dir: str = None,
-    video_name_format: str = None,
     debug_similarity: bool = False,
     search_mode: int = 0,
     top_k: Optional[int] = None,
@@ -2362,14 +1653,17 @@ def run_interactive_search(
     use_chinese: bool = False,
     lance_load_workers: Optional[int] = DEFAULT_LANCE_LOAD_WORKERS,
     lmdb_write_batch_size: Optional[int] = DEFAULT_LMDB_WRITE_BATCH_SIZE,
-     vector_dedup_threshold: float = None,
-     adjacent_merge_frames: int = None,
-     use_shot_analysis: bool = False,
-     use_mini_rerank: bool = False,
-     mini_rerank_min_matches: int = 4,
-     search_threshold: float = None,
-     lance_indexes: Optional[list] = None,
- ) -> Dict:
+    vector_dedup_threshold: float = None,
+    adjacent_merge_frames: int = None,
+    use_shot_analysis: bool = False,
+    use_jev_rerank: bool = False,
+    jev_rerank_min_matches: int = 4,
+    search_threshold: float = None,
+    lance_indexes: Optional[list] = None,
+    use_aesthetic_score: bool = False,
+    *,
+    similarity_thresholds: Optional[Dict] = None,
+) -> Dict:
     resolver = PathResolver()
     if index_directory is None:
         index_directory = str(resolver.project_root / 'indexes')
@@ -2381,14 +1675,6 @@ def run_interactive_search(
         output_directory = str(resolver.resolve(output_directory))
     if feature_fp16 is None:
         feature_fp16 = use_fp16
-    rerank_top_k = normalize_optional_positive_int(
-        rerank_top_k,
-        field_name='rerank_top_k',
-    )
-    rerank_batch_size = normalize_optional_positive_int(
-        rerank_batch_size,
-        field_name='rerank_batch_size',
-    )
     prompt_search_batch_size = normalize_optional_positive_int(
         prompt_search_batch_size,
         field_name='prompt_search_batch_size',
@@ -2422,19 +1708,10 @@ def run_interactive_search(
         }
     os.makedirs(output_directory, exist_ok=True)
     index_paths = []
-    unsupported_pkl_entries = []
     for filename in os.listdir(index_directory):
         path = os.path.join(index_directory, filename)
         if os.path.isdir(path) and filename.endswith('.lance'):
             index_paths.append(path)
-        elif filename.endswith('.pkl'):
-            unsupported_pkl_entries.append(path)
-    if unsupported_pkl_entries:
-        return {
-            'success': False,
-            'error': f"检测到不支持的 .pkl 索引，请先转换为 .lance: {unsupported_pkl_entries[0]}",
-            'result_count': 0,
-        }
     if not index_paths:
         return {
             'success': False,
@@ -2469,18 +1746,18 @@ def run_interactive_search(
             'result_count': 0,
         }
     detected_model_type = detect_model_type_from_name(detected_model_name)
-    generator = PromptGenerator(use_chinese=use_chinese)
-    all_categories = list(generator._simple_categories.keys())
-    video_name_format = generator._video_name_format
-    is_valid, err = validate_prompt_video_name_format(video_name_format, all_categories)
+    searcher = AutoSceneSearcher(use_fp16=use_fp16, use_chinese=use_chinese)
+    generator = searcher.prompt_generator
+    name_template = generator.name_template
+    all_categories = list(generator._simple_categories)
+    is_valid, err = validate_prompt_video_name_format(name_template, all_categories)
     if not is_valid:
         raise ValueError(f"[自动提纯] 输出视频命名格式无效: {err}")
-    final_threshold = SimilarityThresholdConfig.get_threshold(detected_model_type, use_reranker)
-    searcher = AutoSceneSearcher(
-        use_fp16=use_fp16,
-        video_name_format=video_name_format,
-        use_chinese=use_chinese,
-    )
+    final_threshold = (SimilarityThresholdConfig.get_threshold(detected_model_type, similarity_thresholds)
+                       if search_threshold is None else float(search_threshold))
+    if not math.isfinite(final_threshold):
+        raise ValueError("搜索阈值必须是有限数值")
+    print(f"[自动提纯] 搜索模型 {detected_model_name}，召回阈值 {final_threshold:g}")
     start_time = time.time()
     result_view = None
     merged_count = 0
@@ -2501,10 +1778,6 @@ def run_interactive_search(
         result_view = searcher.run_batch_search_optimized(
             index_paths=index_paths,
             similarity_threshold=final_threshold,
-            use_reranker=use_reranker,
-            rerank_top_k=rerank_top_k,
-            rerank_batch_size=rerank_batch_size,
-            reranker_output_resolution=reranker_output_resolution,
             prompt_search_batch_size=prompt_search_batch_size,
             feature_fp16=feature_fp16,
             lance_batch_size=lance_batch_size,
@@ -2530,7 +1803,7 @@ def run_interactive_search(
             merged_view = merge_adjacent_scenes(
                 result_source=result_view,
                 adjacent_merge_frames=adjacent_merge_frames,
-                video_name_format=video_name_format,
+                video_name_format=name_template,
             )
             if merged_view is not result_view and hasattr(result_view, '_cache') and hasattr(result_view._cache, 'destroy'):
                 result_view._cache.destroy()
@@ -2539,8 +1812,11 @@ def run_interactive_search(
             result_view = merged_view
         merged_count = int(result_view.count())
         if merged_count > 0:
-            if use_mini_rerank:
-                result_view = filter_by_mini_rerank(result_view, min_matches=mini_rerank_min_matches, use_chinese=use_chinese)
+            if use_jev_rerank or use_aesthetic_score:
+                result_view = apply_jev_rerank(result_view, verify_labels=use_jev_rerank,
+                                               aesthetics=use_aesthetic_score,
+                                               min_matches=jev_rerank_min_matches, use_chinese=use_chinese,
+                                               settings=generator._full_data['其他参数设置'])
                 merged_count = int(result_view.count())
             if use_shot_analysis:
                 result_view = attach_shot_analysis(result_view)
@@ -2556,6 +1832,7 @@ def run_interactive_search(
                 end_frame_offset=end_frame_offset,
                 debug_similarity=debug_similarity,
                 post_export_hook=post_export_hook,
+                use_aesthetic_score=use_aesthetic_score,
             )
             export_succeeded = True
         return {
@@ -2590,10 +1867,10 @@ def run_interactive_search(
 # ============================================================
 if __name__ == "__main__":
     generator = PromptGenerator()
-    prompts = list(generator.iterate_all_labels_flat())
-    print(f"统一模式: {len(prompts)} prompts, {len(generator._per_cat_templates)} 模板类别")
-    for cat in generator._per_cat_templates:
-        count = sum(1 for p in prompts if p["category"] == cat)
+    from collections import Counter
+    counts = Counter(p['category'] for p in generator.iterate_all_labels_flat())
+    print(f"统一模式: {sum(counts.values())} prompts, {len(counts)} 模板类别")
+    for cat,count in counts.items():
         print(f"  {cat}: {count} prompts")
-    print(f"命名格式: {generator._video_name_format}")
+    print(f"命名格式: {generator.name_template}")
     print(f"必有标签: {generator._required_categories}")

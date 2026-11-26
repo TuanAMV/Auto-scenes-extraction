@@ -103,7 +103,6 @@
         .model-info .type-clip { background: #cce5ff; color: #004085; }
         .model-info .type-chinese_clip { background: #fff3cd; color: #856404; }
         .model-info .type-fgclip2 { background: #e2d9f3; color: #563d7c; }
-        .model-info .type-qwen_embed { background: #fce4ec; color: #880e4f; }
         .model-info .type-auto { background: #e2e3e5; color: #383d41; }
 
         #logitScaleInfo { margin-top: 5px; padding: 5px 8px; background: #e7f3ff; border-left: 3px solid var(--primary); font-size: 0.85em; border-radius: 4px; }
@@ -556,43 +555,33 @@
                         <input type="range" id="similarity_threshold" name="threshold" min="5" max="80" step="1" value="12">
                         <span id="similarity_val">12</span>
                     </div>
+                    <div class="form-group">
+                        <label for="sceneBatchSize">每批场景数</label>
+                        <input type="number" id="sceneBatchSize" value="128" min="1" max="1024" required>
+                    </div>
                     <div class="slider-info">
                         <div id="thresholdGuidance"></div>
                     </div>
                 </div>
                 <div class="form-group">
-                    <label>4. Reranker</label>
+                    <label>4. Jev-rerank</label>
                     <div class="toggle-row">
-                        <input type="checkbox" id="use_mini_rerank">
-                        <span>启用MiniCPM Mini-Rerank</span>
+                        <input type="checkbox" id="use_jev_rerank">
+                        <label for="use_jev_rerank">启用 Jev-rerank</label>
+                    </div>
+                    <div class="toggle-row">
+                        <input type="checkbox" id="use_aesthetic_score">
+                        <label for="use_aesthetic_score">美学评分</label>
                     </div>
                     <div class="slider-group" style="margin-top: 12px;">
-                        <label for="rerank_top_k">Rerank Top-K</label>
-                        <input type="number" id="rerank_top_k" min="1" max="300" step="1" value="50" style="max-width: 160px;">
+                        <label for="jev_rerank_top_k">Jev-rerank Top-K</label>
+                        <input type="number" id="jev_rerank_top_k" min="1" max="300" step="1" value="10" style="max-width: 160px;">
                         <span>items</span>
                     </div>
                     <div class="slider-group">
-                        <label for="rerank_weight">Rerank 相似度阈值</label>
-                        <input type="range" id="rerank_weight" min="0" max="1" step="0.05" value="0.6" style="max-width: 160px;">
-                        <span id="rerank_weight_val">0.60</span>
-                    </div>
-                    <div style="display:none;">
-                        <div class="toggle-row">
-                            <input type="checkbox" id="use_reranker" checked>
-                            <span>启动Qwen3-VL Reranker</span>
-                        </div>
-                        <div class="slider-group">
-                            <label for="rerank_batch_size">Rerank Batch</label>
-                            <input type="number" id="rerank_batch_size" min="1" max="16" step="1" value="4" style="max-width: 160px;">
-                            <span>batch</span>
-                        </div>
-                        <div class="slider-group">
-                            <label for="reranker_output_resolution">Rerank分辨率</label>
-                            <input type="number" id="reranker_output_resolution" min="64" max="2048" step="1" value="384" style="max-width: 160px;">
-                            <span>px</span>
-                        </div>
-                        <input type="hidden" id="rerank_model_path" value="models/Qwen3-VL-Reranker-2B">
-                        <div class="inline-note" id="rerankInfo">使用默认路径: models/Qwen3-VL-Reranker-2B</div>
+                        <label for="jev_rerank_threshold">Jev-rerank 匹配概率阈值</label>
+                        <input type="range" id="jev_rerank_threshold" min="0" max="1" step="0.05" value="0.6" style="max-width: 160px;">
+                        <span id="jev_rerank_threshold_val">0.60</span>
                     </div>
                 </div>
                 <div class="form-group">
@@ -650,7 +639,8 @@
             </div>
             <hr>
             <div id="resultsGrid"></div>
-            <button id="loadMoreBtn" style="display: none;">加载更多</button>
+            <button id="previousResults" type="button" hidden>上一页</button>
+            <button id="loadMoreBtn" type="button" hidden>下一页</button>
         </div>
     </div>
     <button id="candidateToggleBtn" class="candidate-toggle-btn" type="button" title="展开候选片段">
@@ -669,6 +659,7 @@
                 <button type="button" id="candidateCloseBtn" class="candidate-close-btn">关闭</button>
             </div>
         </div>
+        <div><button type="button" id="previousCandidates" hidden>上一页</button> <button type="button" id="nextCandidates" hidden>下一页</button></div>
         <div id="candidateGrid" class="candidate-grid"></div>
     </aside>
     
@@ -981,14 +972,11 @@
         const indexSelect = document.getElementById('index_select');
         const indexInfo = document.getElementById('indexInfo');
         const indexFullPath = document.getElementById('index_full_path');
-        const useReranker = document.getElementById('use_reranker');
-        const useMiniRerank = document.getElementById('use_mini_rerank');
-        const rerankTopKInput = document.getElementById('rerank_top_k');
-        const rerankWeightInput = document.getElementById('rerank_weight');
-        const rerankWeightVal = document.getElementById('rerank_weight_val');
-        const rerankBatchInput = document.getElementById('rerank_batch_size');
-        const rerankOutputResolutionInput = document.getElementById('reranker_output_resolution');
-        const rerankInfo = document.getElementById('rerankInfo');
+        const aestheticToggle = document.getElementById('use_aesthetic_score');
+        const useJevRerank = document.getElementById('use_jev_rerank');
+        const jevRerankTopKInput = document.getElementById('jev_rerank_top_k');
+        const jevRerankThresholdInput = document.getElementById('jev_rerank_threshold');
+        const jevRerankThresholdVal = document.getElementById('jev_rerank_threshold_val');
         const clearCacheBtn = document.getElementById('clearCacheBtn');
         const useDedup = document.getElementById('use_dedup');
         const dedupThresholdInput = document.getElementById('dedup_threshold');
@@ -1026,9 +1014,10 @@
                         // 清空当前显示的结果（因为视频片段缓存已清理）
                         resultsGrid.innerHTML = '';
                         resultsPanel.style.display = 'none';
-                        allMatches = [];
-                        currentlyDisplayedCount = 0;
-                        updateSelectionUI();
+                        searchId = null;
+                        pageMatches = [];
+                        totalResults = 0;
+                        await syncCandidates();
                     } else {
                         console.error('Clear cache failed:', data.error);
                     }
@@ -1040,22 +1029,25 @@
                 }
             });
         }
-        if (rerankWeightInput && rerankWeightVal) {
-            rerankWeightVal.textContent = Number(rerankWeightInput.value).toFixed(2);
-            rerankWeightInput.addEventListener('input', () => {
-                rerankWeightVal.textContent = Number(rerankWeightInput.value).toFixed(2);
+        if (jevRerankThresholdInput && jevRerankThresholdVal) {
+            jevRerankThresholdVal.textContent = Number(jevRerankThresholdInput.value).toFixed(2);
+            jevRerankThresholdInput.addEventListener('input', () => {
+                jevRerankThresholdVal.textContent = Number(jevRerankThresholdInput.value).toFixed(2);
             });
         }
-        let allMatches = [];
-        let currentlyDisplayedCount = 0;
         const CHUNK_SIZE = 50;
+        let pageMatches = [], pageOffset = 0, totalResults = 0, pageRequest = 0;
+        let searchId = null;
+        const basketId = Array.from(crypto.getRandomValues(new Uint8Array(16)),
+                                    n => n.toString(16).padStart(2,'0')).join('');
+        let basket = {total:0, selected:0, tags:{}, page:[], offset:0};
+        let basketQueue = Promise.resolve();
         let currentSortMode = 'similarity_desc';
         let availableModels = [];
         let availableIndexes = [];
         let currentIndexDir = 'indexes/openai-clip-vit-large-patch14';  // 当前索引目录
         let lockedSearchPrompt = '';  // 最近一次成功搜索的 prompt（勾选时使用）
         let currentlyPlayingCard = null;  // 当前正在播放的卡片
-        let selectedCards = new Set();  // 选中的卡片唯一ID (video_path|start_frame|end_frame)
         function getSelectedIndexPaths() {
             return Array.from(indexSelect.selectedOptions).map(opt => opt.value).filter(v => v);
         }
@@ -1274,66 +1266,46 @@
             const exportMode = document.querySelector('input[name="exportMode"]:checked')?.value || 'copy';
             return {
                 threshold: parseFloat(thresholdSlider.value),
-                use_reranker: useReranker ? useReranker.checked : false,
-                use_mini_rerank: useMiniRerank ? useMiniRerank.checked : false,
-                rerank_top_k: rerankTopKInput ? parseInt(rerankTopKInput.value, 10) : 50,
-                rerank_weight: rerankWeightInput ? parseFloat(rerankWeightInput.value) : 0.6,
-                rerank_batch_size: rerankBatchInput ? parseInt(rerankBatchInput.value, 10) : 4,
-                reranker_output_resolution: rerankOutputResolutionInput ? rerankOutputResolutionInput.value : '384',
+                scene_batch_size: Number(document.getElementById("sceneBatchSize").value) || 128,
+                use_aesthetic_score: aestheticToggle.checked,
+                use_jev_rerank: useJevRerank ? useJevRerank.checked : false,
+                jev_rerank_top_k: jevRerankTopKInput ? parseInt(jevRerankTopKInput.value, 10) : 10,
+                jev_rerank_threshold: jevRerankThresholdInput ? parseFloat(jevRerankThresholdInput.value) : 0.6,
                 use_dedup: useDedup ? useDedup.checked : false,
                 dedup_threshold: dedupThresholdInput ? parseFloat(dedupThresholdInput.value) : 0.95,
                 export_mode: exportMode,
-                start_frame_offset: parseInt(document.getElementById('startFrameOffset').value, 10) || -2,
-                end_frame_offset: parseInt(document.getElementById('endFrameOffset').value, 10) || 2,
+                start_frame_offset: parseInt(document.getElementById('startFrameOffset').value || '-2', 10),
+                end_frame_offset: parseInt(document.getElementById('endFrameOffset').value || '2', 10),
                 export_output_dir: exportOutputDirInput ? exportOutputDirInput.value : '',
                 model_index: document.getElementById('model_index_select').value,
+                lance_indexes: getSelectedIndexPaths().map(path => path.split(/[\\/]/).pop()),
                 ffmpeg_config: collectFfmpegConfig()
             };
         }
-        function applySelectedIndices(indexPaths) {
-            const selectedPaths = Array.isArray(indexPaths) ? indexPaths.filter(Boolean) : [];
-            Array.from(indexSelect.options).forEach(opt => { opt.selected = false; });
-            selectedPaths.forEach(path => {
-                let option = Array.from(indexSelect.options).find(opt => opt.value === path);
-                if (!option) {
-                    option = document.createElement('option');
-                    option.value = path;
-                    const fileName = path.split(/[/\\]/).pop() || path;
-                    option.textContent = `${fileName} (预设)`;
-                    indexSelect.appendChild(option);
-                }
-                option.selected = true;
-            });
-            indexFullPath.value = selectedPaths.join('\n');
-            if (selectedPaths.length > 0) {
-                autoSelectModelFromIndex(selectedPaths[0]);
+        function applySelectedIndices(indexNames) {
+            const missing = new Set(indexNames);
+            for (const option of indexSelect.options) {
+                const name = option.value.split(/[\\/]/).pop();
+                option.selected = Boolean(name) && missing.delete(name);
             }
             indexSelect.dispatchEvent(new Event('change'));
+            indexInfo.textContent = missing.size
+                ? '本机未找到预设中的索引：' + Array.from(missing).join('、')
+                : '按住 Ctrl 可多选';
         }
         async function applyPresetData(presetData) {
             if (!presetData || typeof presetData !== 'object') return;
+            document.getElementById("sceneBatchSize").value = presetData.scene_batch_size ?? 128;
             if (presetData.threshold !== undefined && presetData.threshold !== null) {
                 thresholdSlider.value = String(presetData.threshold);
                 thresholdValueSpan.textContent = parseInt(thresholdSlider.value, 10);
             }
-            if (useReranker && presetData.use_reranker !== undefined) {
-                useReranker.checked = Boolean(presetData.use_reranker);
-            }
-            if (useMiniRerank && presetData.use_mini_rerank !== undefined) {
-                useMiniRerank.checked = Boolean(presetData.use_mini_rerank);
-            }
-            if (rerankTopKInput && presetData.rerank_top_k !== undefined) {
-                rerankTopKInput.value = String(presetData.rerank_top_k);
-            }
-            if (rerankWeightInput && presetData.rerank_weight !== undefined) {
-                rerankWeightInput.value = String(presetData.rerank_weight);
-                rerankWeightVal.textContent = Number(rerankWeightInput.value).toFixed(2);
-            }
-            if (rerankBatchInput && presetData.rerank_batch_size !== undefined) {
-                rerankBatchInput.value = String(presetData.rerank_batch_size);
-            }
-            if (rerankOutputResolutionInput && presetData.reranker_output_resolution !== undefined) {
-                rerankOutputResolutionInput.value = String(presetData.reranker_output_resolution);
+            aestheticToggle.checked = Boolean(presetData.use_aesthetic_score);
+            useJevRerank.checked = Boolean(presetData.use_jev_rerank ?? false);
+            jevRerankTopKInput.value = String(presetData.jev_rerank_top_k ?? 10);
+            if (jevRerankThresholdInput && presetData.jev_rerank_threshold !== undefined) {
+                jevRerankThresholdInput.value = String(presetData.jev_rerank_threshold);
+                jevRerankThresholdVal.textContent = Number(jevRerankThresholdInput.value).toFixed(2);
             }
             if (useDedup && presetData.use_dedup !== undefined) {
                 useDedup.checked = Boolean(presetData.use_dedup);
@@ -1369,10 +1341,15 @@
             // 恢复索引模型选择
             if (presetData.model_index) {
                 const modelSelect = document.getElementById('model_index_select');
-                if (modelSelect.querySelector(`option[value="${presetData.model_index}"]`)) {
+                if (Array.from(modelSelect.options).some(option => option.value === presetData.model_index)) {
                     modelSelect.value = presetData.model_index;
-                    currentIndexDir = 'indexes/' + presetData.model_index;
-                    await loadIndexList();
+                    const loaded = await loadIndexList('indexes/' + presetData.model_index);
+                    if (loaded && Array.isArray(presetData.lance_indexes)) {
+                        applySelectedIndices(presetData.lance_indexes);
+                    }
+                } else if (Array.isArray(presetData.lance_indexes)) {
+                    applySelectedIndices([]);
+                    indexInfo.textContent = '本机未找到预设中的模型索引目录：' + presetData.model_index;
                 }
             }
             updateExportModeControls();
@@ -1495,8 +1472,6 @@
         const candidateSummary = document.getElementById('candidateSummary');
         const candidateCloseBtn = document.getElementById('candidateCloseBtn');
         const candidateClearBtn = document.getElementById('candidateClearBtn');
-        const candidateClips = new Map();  // clip_id -> { match, prompt_tags:Set, added_at, updated_at }
-
         function getClipId(match) {
             return `${match.video_path}|${match.start_frame}|${match.end_frame}`;
         }
@@ -1521,91 +1496,42 @@
             return `${mins}:${secs.toString().padStart(2, '0')}`;
         }
 
-        function normalizePromptTag(promptText) {
-            const cleaned = String(promptText || '').trim();
-            return cleaned || '空提示词';
-        }
-
-        function getCurrentPromptText() {
-            const locked = String(lockedSearchPrompt || '').trim();
-            if (locked) {
-                return locked;
-            }
-            const promptInput = document.getElementById('text_query');
-            return promptInput ? promptInput.value : '';
-        }
-
         function getCandidatePromptList(clipId) {
-            const candidate = candidateClips.get(clipId);
-            return candidate ? Array.from(candidate.prompt_tags) : [];
+            return basket.tags[clipId] || [];
         }
 
-        function upsertCandidate(match, promptText) {
-            if (!match) return null;
-            const clipId = getClipId(match);
-            const now = Date.now();
-            const promptTag = normalizePromptTag(promptText);
-            let candidate = candidateClips.get(clipId);
-            if (!candidate) {
-                candidate = {
-                    clip_id: clipId,
-                    match: { ...match },
-                    prompt_tags: new Set(),
-                    added_at: now,
-                    updated_at: now
-                };
-                candidateClips.set(clipId, candidate);
-            } else {
-                const existingSimilarity = Number(candidate.match?.similarity ?? -Infinity);
-                const incomingSimilarity = Number(match.similarity ?? -Infinity);
-                candidate.match = incomingSimilarity >= existingSimilarity
-                    ? { ...candidate.match, ...match }
-                    : { ...match, ...candidate.match };
-                candidate.updated_at = now;
-            }
-            candidate.prompt_tags.add(promptTag);
-            selectedCards.add(clipId);
-            return clipId;
-        }
-
-        function removeCandidate(clipId) {
-            if (!clipId) return;
-            const selectorId = (window.CSS && typeof window.CSS.escape === 'function')
-                ? window.CSS.escape(clipId)
-                : clipId.replace(/(["\\])/g, '\\$1');
-            const cards = document.querySelectorAll(`.result-card[data-clip-id="${selectorId}"]`);
-            cards.forEach(card => {
-                const video = card.querySelector('video');
-                if (video) {
-                    video.pause();
-                }
-                if (currentlyPlayingCard === card) {
-                    currentlyPlayingCard = null;
-                }
+        async function basketRequest(params) {
+            const response = await fetch('/candidates/' + basketId, {
+                method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(params)
             });
-            selectedCards.delete(clipId);
-            candidateClips.delete(clipId);
+            if (!response.ok) throw new Error('候选片段读取或更新失败');
+            return response.json();
         }
 
-        function getCurrentResultsSelectedCount() {
-            let count = 0;
-            allMatches.forEach(match => {
-                if (selectedCards.has(getClipId(match))) {
-                    count += 1;
-                }
-            });
-            return count;
+        function syncCandidates(action = 'status', clip = '', offset = basket.offset) {
+            const id = searchId;
+            const params = {search_id:id, action, clip, offset, prompt:lockedSearchPrompt,
+                            visible:pageMatches.map(getClipId)};
+            basketQueue = basketQueue.then(async () => {
+                const response = await basketRequest(params);
+                if (id !== searchId) return;
+                basket = response;
+                refreshVisibleCardSelectionState();
+                renderCandidateDrawer();
+                updateSelectionUI();
+            }).catch(error => { alert(error.message); });
+            return basketQueue;
         }
 
         function updateSelectionUI() {
-            const totalCandidateCount = selectedCards.size;
+            const totalCandidateCount = basket.total;
             selectedCountSpan.textContent = `已选择: ${totalCandidateCount}`;
             exportBtn.disabled = totalCandidateCount === 0;
 
-            const currentSelectedCount = getCurrentResultsSelectedCount();
-            if (allMatches.length > 0) {
-                selectAllCheckbox.checked = currentSelectedCount > 0 && currentSelectedCount === allMatches.length;
-                selectAllCheckbox.indeterminate = currentSelectedCount > 0 && currentSelectedCount < allMatches.length;
+            const currentSelectedCount = basket.selected;
+            if (totalResults > 0) {
+                selectAllCheckbox.checked = currentSelectedCount > 0 && currentSelectedCount === totalResults;
+                selectAllCheckbox.indeterminate = currentSelectedCount > 0 && currentSelectedCount < totalResults;
             } else {
                 selectAllCheckbox.checked = false;
                 selectAllCheckbox.indeterminate = false;
@@ -1623,7 +1549,7 @@
             const allVisibleCards = document.querySelectorAll('.result-card');
             allVisibleCards.forEach(card => {
                 const clipId = card.dataset.clipId;
-                const isSelected = selectedCards.has(clipId);
+                const isSelected = getCandidatePromptList(clipId).length > 0;
                 card.classList.toggle('selected', isSelected);
                 const checkbox = card.querySelector('.card-checkbox');
                 if (checkbox) {
@@ -1676,14 +1602,11 @@
         function createResultCard(match, options = {}) {
             const { isCandidateView = false } = options;
             const clipId = getClipId(match);
-            const selected = selectedCards.has(clipId);
+            const selected = getCandidatePromptList(clipId).length > 0;
             const promptList = getCandidatePromptList(clipId);
-            const midFrame = Math.floor((match.start_frame + match.end_frame) / 2);
-            const previewUrl = `/get_preview?video_path=${encodeURIComponent(match.video_path)}&frame=${midFrame}`;
+            const previewFrame = match.matched_frame ?? Math.floor((match.start_frame + match.end_frame) / 2);
+            const previewUrl = `/get_preview?video_path=${encodeURIComponent(match.video_path)}&frame=${previewFrame}${match.matched_frame != null ? '&matched=1' : ''}`;
             const clipUrl = `/get_clip?video_path=${encodeURIComponent(match.video_path)}&start_frame=${match.start_frame}&end_frame=${match.end_frame}`;
-            const baseSimilarity = match.base_similarity;
-            const rerankScore = match.rerank_score;
-            const hasExtraScore = baseSimilarity !== undefined && rerankScore !== undefined;
             const promptTagsHtml = promptList.length > 0
                 ? `<div class="candidate-prompt-list">${promptList.map(tag => `<span class="candidate-prompt-chip" title="${escapeAttr(tag)}">${escapeHtml(tag)}</span>`).join('')}</div>`
                 : '';
@@ -1696,9 +1619,6 @@
             }
 
             const similarityNum = Number(match.similarity ?? 0);
-            const extraScoreHtml = hasExtraScore
-                ? `<span class="sub-score">base ${Number(baseSimilarity).toFixed(1)} | rerank ${Number(rerankScore).toFixed(1)}</span>`
-                : '';
             const candidateMarkText = promptList.length > 1 ? `候选×${promptList.length}` : '候选';
 
             card.innerHTML = `
@@ -1719,11 +1639,11 @@
                     </div>
                 </div>
                 <div class="card-info">
-                    <span class="similarity">相关度: ${similarityNum.toFixed(1)}</span>
+                    <span class="similarity">相关度: ${similarityNum.toFixed(1)}${'aesthetic_score' in match ? (' _ 美学: ' + (match.aesthetic_score == null ? '未评分' : Number(match.aesthetic_score).toFixed(2))) : ''}</span>
+                    ${match.jev_note ? `<span>${escapeHtml(match.jev_note)}</span>` : ''}
                     <span class="duration"> | ${match.duration_display}</span>
                     <span class="video-name" title="${escapeAttr(match.video_path)}">${escapeHtml(match.video_name)}</span>
                     <span class="time-info">⏰ ${escapeHtml(match.start)} → ${escapeHtml(match.end)}</span>
-                    ${extraScoreHtml}
                     ${isCandidateView ? promptTagsHtml : ''}
                 </div>
             `;
@@ -1732,14 +1652,7 @@
             if (cardCheckbox) {
                 cardCheckbox.addEventListener('click', (e) => {
                     e.stopPropagation();
-                    if (cardCheckbox.checked) {
-                        upsertCandidate(match, getCurrentPromptText());
-                    } else {
-                        removeCandidate(clipId);
-                    }
-                    refreshVisibleCardSelectionState();
-                    renderCandidateDrawer();
-                    updateSelectionUI();
+                    syncCandidates(cardCheckbox.checked ? 'add' : 'remove', clipId);
                 });
             }
 
@@ -1747,10 +1660,7 @@
             if (removeBtn) {
                 removeBtn.addEventListener('click', (e) => {
                     e.stopPropagation();
-                    removeCandidate(clipId);
-                    refreshVisibleCardSelectionState();
-                    renderCandidateDrawer();
-                    updateSelectionUI();
+                    syncCandidates('remove', clipId);
                 });
             }
 
@@ -1883,7 +1793,9 @@
         function renderCandidateDrawer() {
             if (!candidateGrid) return;
             candidateGrid.innerHTML = '';
-            const candidateList = Array.from(candidateClips.values()).sort((a, b) => b.updated_at - a.updated_at);
+            const candidateList = basket.page;
+            document.getElementById('previousCandidates').hidden = basket.offset === 0;
+            document.getElementById('nextCandidates').hidden = basket.offset + CHUNK_SIZE >= basket.total;
             if (candidateList.length === 0) {
                 candidateGrid.innerHTML = '<div class="candidate-empty">暂无候选片段。勾选搜索结果后会自动加入这里。</div>';
                 return;
@@ -1895,17 +1807,12 @@
 
         if (selectAllCheckbox) {
             selectAllCheckbox.addEventListener('change', () => {
-                if (selectAllCheckbox.checked) {
-                    allMatches.forEach(match => upsertCandidate(match, getCurrentPromptText()));
-                } else {
-                    allMatches.forEach(match => removeCandidate(getClipId(match)));
-                }
-                refreshVisibleCardSelectionState();
-                renderCandidateDrawer();
-                updateSelectionUI();
+                syncCandidates(selectAllCheckbox.checked ? 'all' : 'none');
             });
         }
 
+        document.getElementById('previousCandidates').onclick = () => syncCandidates('status','',basket.offset-CHUNK_SIZE);
+        document.getElementById('nextCandidates').onclick = () => syncCandidates('status','',basket.offset+CHUNK_SIZE);
         if (candidateToggleBtn) {
             candidateToggleBtn.addEventListener('click', openCandidateDrawer);
         }
@@ -1917,20 +1824,16 @@
         }
         if (candidateClearBtn) {
             candidateClearBtn.addEventListener('click', () => {
-                if (candidateClips.size === 0) return;
+                if (basket.total === 0) return;
                 if (!confirm('确认清空候选片段吗？')) return;
                 stopCurrentlyPlaying();
-                selectedCards.clear();
-                candidateClips.clear();
-                refreshVisibleCardSelectionState();
-                renderCandidateDrawer();
-                updateSelectionUI();
+                syncCandidates('clear');
             });
         }
 
         if (exportBtn) {
             exportBtn.addEventListener('click', () => {
-                if (selectedCards.size === 0) {
+                if (basket.total === 0) {
                     alert('请先选择要导出的视频片段');
                     return;
                 }
@@ -2024,15 +1927,6 @@
                 const startFrameOffset = 0;
                 const endFrameOffset = 0;
 
-                const selectedCandidates = Array.from(candidateClips.values())
-                    .filter(candidate => selectedCards.has(candidate.clip_id))
-                    .sort((a, b) => a.added_at - b.added_at);
-
-                if (selectedCandidates.length === 0) {
-                    alert('没有选中的片段');
-                    return;
-                }
-
                 const sanitizePromptFolderName = (name) => {
                     const safe = String(name || '')
                         .replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')
@@ -2045,20 +1939,6 @@
                     const currentPrompt = String(lockedSearchPrompt || '').trim();
                     return currentPrompt || 'export';
                 })();
-                const promptGroups = new Map();  // prompt -> match[]
-                selectedCandidates.forEach(candidate => {
-                    const tags = Array.from(candidate.prompt_tags || [])
-                        .map(tag => String(tag || '').trim())
-                        .filter(tag => tag && tag !== '空提示词');
-                    // 一个片段只归属一个 prompt：使用它首次加入候选时的 prompt（tags[0]）
-                    const promptName = tags.length > 0 ? tags[0] : fallbackPrompt;
-                    if (!promptGroups.has(promptName)) {
-                        promptGroups.set(promptName, []);
-                    }
-                    promptGroups.get(promptName).push(candidate.match);
-                });
-                const promptGroupEntries = Array.from(promptGroups.entries());
-
                 exportProgress.style.display = 'block';
                 exportProgressFill.style.width = '0%';
                 exportProgressText.textContent = '正在写入 FFmpeg 参数...';
@@ -2068,21 +1948,21 @@
                 try {
                     await saveFfmpegConfig();
                     let totalExportedCount = 0;
-                    let totalPlannedCount = 0;
-                    const exportedDirs = [];
-                    const failedPrompts = [];
-
-                    for (let i = 0; i < promptGroupEntries.length; i += 1) {
-                        const [promptName, groupMatches] = promptGroupEntries[i];
-                        totalPlannedCount += groupMatches.length;
+                    const totalPlannedCount = basket.total;
+                    let failedCount = 0;
+                    for (let offset = 0; offset < totalPlannedCount; offset += CHUNK_SIZE) {
+                        const page = await basketRequest({export:true, offset});
+                        const groups = new Map();
+                        for (const entry of page.page) {
+                            const prompt = (page.tags[entry.clip_id] || []).find(tag => tag !== '空提示词') || fallbackPrompt;
+                            if (!groups.has(prompt)) groups.set(prompt, []);
+                            groups.get(prompt).push(entry.match);
+                        }
+                        for (const [promptName, groupMatches] of groups) {
                         const safePromptFolder = sanitizePromptFolderName(promptName);
-                        const groupOutputDir = outputDir
-                            ? `${outputDir.replace(/[\\/]+$/g, '')}/${safePromptFolder}`
-                            : '';
-                        const progressBase = Math.round((i / promptGroupEntries.length) * 100);
-                        exportProgressFill.style.width = `${progressBase}%`;
-                        exportProgressText.textContent = `正在导出 prompt ${i + 1}/${promptGroupEntries.length}: ${promptName} (${groupMatches.length} 个片段)...`;
-
+                        const groupOutputDir = outputDir ? outputDir.replace(/[\\/]+$/g,'') + '/' + safePromptFolder : '';
+                        exportProgressFill.style.width = Math.round(100*offset/totalPlannedCount)+'%';
+                        exportProgressText.textContent = '正在导出 ' + promptName + '，已处理 ' + offset + '/' + totalPlannedCount;
                         const response = await fetch('/export_clips', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
@@ -2097,23 +1977,16 @@
                         });
                         const data = await response.json();
                         if (!response.ok || !data.success) {
-                            failedPrompts.push(promptName);
+                            failedCount += groupMatches.length;
                             continue;
                         }
-
                         totalExportedCount += Number(data.exported_count || 0);
-                        if (data.output_dir) {
-                            exportedDirs.push(data.output_dir);
+                        failedCount += groupMatches.length - Number(data.exported_count || 0);
                         }
                     }
-
                     exportProgressFill.style.width = '100%';
-                    if (failedPrompts.length > 0) {
-                        exportProgressText.textContent = `⚠️ 部分导出失败。成功 ${totalExportedCount}/${totalPlannedCount}，失败 prompt: ${failedPrompts.join(', ')}`;
-                    } else {
-                        const dirText = exportedDirs.length > 0 ? exportedDirs.join(' | ') : '(默认目录)';
-                        exportProgressText.textContent = `✅ 导出完成！共 ${totalExportedCount} 个片段，按 ${promptGroupEntries.length} 个 prompt 分文件夹保存: ${dirText}`;
-                    }
+                    exportProgressText.textContent = '已导出 ' + totalExportedCount + '/' + totalPlannedCount +
+                        ' 个片段，失败 ' + failedCount + ' 个。目录：' + (outputDir || '默认导出目录');
                     setTimeout(() => {
                         exportModal.style.display = 'none';
                     }, 3000);
@@ -2227,8 +2100,8 @@
                 
                 if (availableIndexes.length === 0) {
                     indexSelect.innerHTML = '<option value="">未找到索引文件</option>';
-                    indexInfo.innerHTML = '';
-                    return;
+                    indexInfo.textContent = '';
+                    return true;
                 }
                 
                 // 填充索引选项（只显示文件名）
@@ -2241,15 +2114,13 @@
                 });
                 
                 indexSelect.disabled = false;
-                
+                indexInfo.textContent = '按住 Ctrl 可多选';
+
                 // 自动选择第一个索引对应的模型
                 if (availableIndexes.length > 0) {
                     autoSelectModelFromIndex(availableIndexes[0].path);
                 }
-                
-                if (data.rerank_used && data.rerank_info) {
-                    console.log(`Search used rerank: ${data.rerank_info.reranked}/${data.rerank_info.candidates}`);
-                }
+                return true;
             } catch (error) {
                 indexSelect.innerHTML = '<option value="">加载失败</option>';
                 indexInfo.innerHTML = `<span style="color: red;">❌ 错误: ${error.message}</span>`;
@@ -2258,8 +2129,8 @@
         
         // 索引选择变化时显示选中的索引信息
         indexSelect.addEventListener('change', () => {
-            const selectedOptions = Array.from(indexSelect.selectedOptions);
-            const selectedPaths = selectedOptions.map(opt => opt.value).filter(v => v);
+            const selectedPaths = getSelectedIndexPaths();
+            indexFullPath.value = selectedPaths.join('\n');
             
             if (selectedPaths.length > 0) {
                 // 提取所有选中索引的模型名
@@ -2281,7 +2152,6 @@
                     console.log(`Selected ${selectedPaths.length} index(es)`);
                 }
                 
-                indexFullPath.value = selectedPaths.join('\n');
             }
         });
         
@@ -2353,7 +2223,7 @@
             const model = availableModels.find(m => m.name === selected.value);
             if (model) {
                 const typeClass = `type-${model.type}`;
-                const typeLabel = model.type === 'qwen_embed' ? 'QWEN_EMBED' : model.type.toUpperCase();
+                const typeLabel = model.type.toUpperCase();
                 modelInfo.innerHTML = `
                     📁 <code>${model.name}</code>
                     <span class="type-badge ${typeClass}">${typeLabel}</span>
@@ -2375,27 +2245,16 @@
                             
                             // 根据模型类型给出阈值建议
                             const guidance = document.getElementById('thresholdGuidance');
-                            if (data.model_type === 'qwen_embed') {
-                                guidance.innerHTML = '🔮 Qwen3-VL-Embedding 模型，建议阈值: 30-60（余弦相似度×100）';
-                                // 自动调整阈值滑块范围和默认值
-                                thresholdSlider.min = 10;
-                                thresholdSlider.max = 80;
-                                if (parseFloat(thresholdSlider.value) > 60) {
-                                    thresholdSlider.value = 40;
-                                    thresholdValueSpan.textContent = '40';
-                                }
+                            // CLIP系模型恢复默认范围
+                            thresholdSlider.min = 5;
+                            thresholdSlider.max = 80;
+                            const logitScale = data.logit_scale;
+                            if (logitScale >= 80) {
+                                guidance.innerHTML = '✨ 高缩放模型 (logit_scale ≥ 80)，建议阈值: 25-40';
+                            } else if (logitScale >= 50) {
+                                guidance.innerHTML = '📊 中等缩放模型 (logit_scale ≥ 50)，建议阈值: 20-35';
                             } else {
-                                // CLIP系模型恢复默认范围
-                                thresholdSlider.min = 5;
-                                thresholdSlider.max = 80;
-                                const logitScale = data.logit_scale;
-                                if (logitScale >= 80) {
-                                    guidance.innerHTML = '✨ 高缩放模型 (logit_scale ≥ 80)，建议阈值: 25-40';
-                                } else if (logitScale >= 50) {
-                                    guidance.innerHTML = '📊 中等缩放模型 (logit_scale ≥ 50)，建议阈值: 20-35';
-                                } else {
-                                    guidance.innerHTML = '📉 低缩放模型 (logit_scale < 50)，建议阈值: 15-25';
-                                }
+                                guidance.innerHTML = '📉 低缩放模型 (logit_scale < 50)，建议阈值: 15-25';
                             }
                         } else {
                             document.getElementById('logitScaleInfo').style.display = 'none';
@@ -2448,29 +2307,7 @@
         function sortResults(mode) {
             currentSortMode = mode;
             
-            if (mode === 'similarity_desc') {
-                allMatches.sort((a, b) => b.similarity - a.similarity);
-            } else if (mode === 'similarity_asc') {
-                allMatches.sort((a, b) => a.similarity - b.similarity);
-            } else if (mode === 'time_asc') {
-                allMatches.sort((a, b) => {
-                    const cmp = a.video_path.localeCompare(b.video_path);
-                    return cmp !== 0 ? cmp : a.start_frame - b.start_frame;
-                });
-            } else if (mode === 'time_desc') {
-                allMatches.sort((a, b) => {
-                    const cmp = b.video_path.localeCompare(a.video_path);
-                    return cmp !== 0 ? cmp : b.start_frame - a.start_frame;
-                });
-            } else if (mode === 'duration_desc') {
-                allMatches.sort((a, b) => b.duration_seconds - a.duration_seconds);
-            } else if (mode === 'duration_asc') {
-                allMatches.sort((a, b) => a.duration_seconds - b.duration_seconds);
-            }
-            
-            currentlyDisplayedCount = 0;
-            resultsGrid.innerHTML = '';
-            renderNextChunk();
+            showResultsPage(0);
             updateSortButtons();
         }
         
@@ -2491,8 +2328,7 @@
             e.preventDefault();
             
             // 获取所有选中的索引
-            const selectedOptions = Array.from(indexSelect.selectedOptions);
-            const selectedIndices = selectedOptions.map(opt => opt.value).filter(v => v);
+            const selectedIndices = getSelectedIndexPaths();
             
             if (selectedIndices.length === 0) {
                 console.error('Search: no index selected');
@@ -2507,16 +2343,15 @@
                 query: document.getElementById('text_query').value,
                 indices: selectedIndices.join('\n'),  // 多个索引用换行分隔
                 threshold: parseFloat(thresholdSlider.value),
-                use_reranker: useReranker ? useReranker.checked : false,
-                use_mini_rerank: useMiniRerank ? useMiniRerank.checked : false,
-                rerank_top_k: rerankTopKInput ? parseInt(rerankTopKInput.value, 10) : 50,
-                rerank_weight: rerankWeightInput ? parseFloat(rerankWeightInput.value) : 0.6,
-                rerank_batch_size: rerankBatchInput ? parseInt(rerankBatchInput.value, 10) : 4,
-                reranker_output_resolution: rerankOutputResolutionInput ? rerankOutputResolutionInput.value : '384',
+                scene_batch_size: Number(document.getElementById("sceneBatchSize").value) || 128,
+                use_aesthetic_score: aestheticToggle.checked,
+                use_jev_rerank: useJevRerank ? useJevRerank.checked : false,
+                jev_rerank_top_k: jevRerankTopKInput ? parseInt(jevRerankTopKInput.value, 10) : 10,
+                jev_rerank_threshold: jevRerankThresholdInput ? parseFloat(jevRerankThresholdInput.value) : 0.6,
                 use_dedup: useDedup ? useDedup.checked : false,
                 dedup_threshold: dedupThresholdInput ? parseFloat(dedupThresholdInput.value) : 0.95,
-                start_frame_offset: parseInt(document.getElementById('startFrameOffset').value, 10) || -2,
-                end_frame_offset: parseInt(document.getElementById('endFrameOffset').value, 10) || 2
+                start_frame_offset: parseInt(document.getElementById('startFrameOffset').value || '-2', 10),
+                end_frame_offset: parseInt(document.getElementById('endFrameOffset').value || '2', 10)
             };
             
             try {
@@ -2528,44 +2363,53 @@
                 const data = await response.json();
                 if (!data.success) throw new Error(data.error);
                 
-                console.log(`Search done: ${data.matches.length} results`);
-                allMatches = data.matches;
-                currentlyDisplayedCount = 0;
+                const previous = searchId;
+                searchId = data.search_id;
+                pageRequest++;
                 currentSortMode = 'similarity_desc';
-                lockedSearchPrompt = String(requestData.query || '').trim();
-                
-                queryDisplay.textContent = requestData.query;
-                resultsCountSpan.textContent = allMatches.length;
+                lockedSearchPrompt = requestData.query.trim();
+                queryDisplay.textContent = lockedSearchPrompt;
                 resultsPanel.style.display = 'block';
                 updateSortButtons();
-                renderNextChunk();
-                
+                await renderPage(data,0);
+                if (previous) fetch('/search_results/'+previous,{method:'DELETE'}).catch(console.error);
                 if (data.rerank_used && data.rerank_info) {
-                    console.log(`Search done: ${data.matches.length} results (rerank ${data.rerank_info.reranked}/${data.rerank_info.total})`);
+                    console.log(`Search done: ${data.total} results (${data.rerank_info.type || 'rerank'} kept ${data.rerank_info.kept ?? '-'})`);
                 }
                 if (data.dedup_info) {
                     console.log(`Dedup: ${data.dedup_info.before} → ${data.dedup_info.after}`);
                 }
 
             } catch (error) {
-                console.error('Search error:', error.message);
+                alert('搜索失败：' + error.message);
             }
         });
-        loadMoreBtn.addEventListener('click', renderNextChunk);
-        
-        function renderNextChunk() {
-            const start = currentlyDisplayedCount;
-            const end = Math.min(start + CHUNK_SIZE, allMatches.length);
-            const chunk = allMatches.slice(start, end);
-            chunk.forEach((match) => {
-                resultsGrid.appendChild(createResultCard(match, { isCandidateView: false }));
-            });
-            currentlyDisplayedCount = end;
-            const remaining = allMatches.length - currentlyDisplayedCount;
-            loadMoreBtn.textContent = `加载更多 (${Math.min(CHUNK_SIZE, remaining)})`;
-            loadMoreBtn.style.display = currentlyDisplayedCount >= allMatches.length ? 'none' : 'block';
-            refreshVisibleCardSelectionState();
-            updateSelectionUI();
+        document.getElementById('previousResults').onclick = () => showResultsPage(pageOffset-CHUNK_SIZE);
+        loadMoreBtn.onclick = () => showResultsPage(pageOffset+CHUNK_SIZE);
+
+        async function showResultsPage(offset) {
+            if (!searchId) return;
+            const serial = ++pageRequest;
+            try {
+                const response = await fetch('/search_results/' + searchId + '?' + new URLSearchParams({
+                    offset, limit:CHUNK_SIZE, sort:currentSortMode
+                }));
+                if (!response.ok) throw new Error('结果页读取失败');
+                const page = await response.json();
+                if (serial === pageRequest) await renderPage(page,offset);
+            } catch (error) { alert(error.message); }
+        }
+
+        async function renderPage(page,offset) {
+            stopCurrentlyPlaying();
+            pageMatches = page.matches;
+            totalResults = page.total;
+            pageOffset = offset;
+            resultsCountSpan.textContent = totalResults;
+            resultsGrid.replaceChildren(...pageMatches.map(match => createResultCard(match)));
+            document.getElementById('previousResults').hidden = offset === 0;
+            loadMoreBtn.hidden = offset + CHUNK_SIZE >= totalResults;
+            await syncCandidates();
         }
         // FFmpeg 参数折叠/展开
         const ffmpegToggle = document.getElementById('ffmpegParamsToggle');

@@ -50,6 +50,8 @@ def _build_table(scene_rows):
             "fps": pa.array(fps_list, type=pa.float32()),
             "feature_count": pa.array(feature_counts, type=pa.int32()),
             "features_blob": pa.array(features_blobs, type=pa.large_binary()),
+            "feature_frames": pa.array([row.get("feature_frames") for row in scene_rows],
+                                       type=pa.list_(pa.int32())),
         }
     )
     return table
@@ -97,6 +99,7 @@ def scenes_to_lance_rows(video_path, scenes, fps):
                 "fps": float(fps),
                 "feature_count": stacked.shape[0],
                 "features_blob": stacked.tobytes(),
+                "feature_frames": scene.get("feature_frames"),
             }
         )
     return rows
@@ -118,6 +121,9 @@ def append_lance_index(lance_path, scene_rows):
     if not os.path.exists(lance_path):
         lance.write_dataset(table, lance_path)
     else:
+        dataset = lance.dataset(lance_path)
+        if "feature_frames" not in dataset.schema.names:
+            dataset.add_columns(table.schema.field("feature_frames"))
         lance.write_dataset(table, lance_path, mode="append")
 
 
@@ -141,99 +147,40 @@ def get_indexed_video_paths(lance_path):
         return set()
 
 
-def read_lance_index_raw(lance_path):
-    """
-    从 Lance 索引读取原始场景数据（替代 _load_single_pkl + NPZ 缓存）
-
-    Args:
-        lance_path: .lance 目录路径
-
-    Returns:
-        tuple: (features_np, scene_map, feature_counts)
-            - features_np: np.ndarray [M, dim] 所有特征向量（float16）
-            - scene_map: list[dict] 每个场景的元信息
-            - feature_counts: list[int] 每个场景的向量数量
-    """
-    ds = lance.dataset(lance_path)
-    table = ds.to_table()
-
-    video_paths = table.column("video_path").to_pylist()
-    start_frames = table.column("start_frame").to_pylist()
-    end_frames = table.column("end_frame").to_pylist()
-    fps_vals = table.column("fps").to_pylist()
-    feat_counts = table.column("feature_count").to_pylist()
-    feat_blobs = table.column("features_blob").to_pylist()
-
-    all_features = []
-    scene_map = []
-    feature_counts = []
-
-    for i in range(len(video_paths)):
-        blob = feat_blobs[i]
-        count = feat_counts[i]
-        if count <= 0 or not blob:
-            continue
-
-        feats = np.frombuffer(blob, dtype=np.float16).copy()
-        dim = feats.shape[0] // count
-        feats = feats.reshape(count, dim)
-        all_features.append(feats)
-
-        scene_map.append(
-            {
-                "video_path": video_paths[i],
-                "start_frame": int(start_frames[i]),
-                "end_frame": int(end_frames[i]),
-                "fps": float(fps_vals[i]),
-                "source_lance": lance_path,
-            }
-        )
-        feature_counts.append(count)
-
-    if not all_features:
-        return None, [], []
-
-    features_np = np.vstack(all_features).astype(np.float16)
-    return features_np, scene_map, feature_counts
+def iter_scene_batches(path, scene_batch_size=128, *, offset=0, version=None):
+    """Read one bounded Arrow batch. A stored scene is the minimum decoding unit."""
+    dataset = lance.dataset(path, version=version)
+    cols = ["video_path", "start_frame", "end_frame", "fps", "feature_count", "features_blob"]
+    if "feature_frames" in dataset.schema.names:
+        cols.append("feature_frames")
+    scanner = dataset.scanner(columns=cols, offset=offset, batch_size=scene_batch_size, batch_readahead=1,
+                              fragment_readahead=1, io_buffer_size=8 << 20, scan_in_order=True)
+    for batch in scanner.to_batches():
+        scenes = []
+        for row in batch.to_pylist():
+            count = row.pop("feature_count")
+            blob = row.pop("features_blob")
+            if count and count > 0 and blob:
+                row["source_lance"] = path
+                scenes.append((row, np.frombuffer(blob, np.float16).reshape(count, -1)))
+        offset += len(batch)
+        yield offset, scenes
 
 
-def read_lance_index_for_reranker(lance_path, needed_scene_keys):
-    """
-    从 Lance 索引按需读取场景特征（用于 Reranker 等按需场景）
-
-    Args:
-        lance_path: .lance 目录路径
-        needed_scene_keys: 需要的场景键集合，格式 "{video_path}_{start_frame}_{end_frame}"
-
-    Returns:
-        dict: {scene_key: np.ndarray} 场景特征向量字典
-    """
-    ds = lance.dataset(lance_path)
-    table = ds.to_table()
-
-    video_paths = table.column("video_path").to_pylist()
-    start_frames = table.column("start_frame").to_pylist()
-    end_frames = table.column("end_frame").to_pylist()
-    feat_counts = table.column("feature_count").to_pylist()
-    feat_blobs = table.column("features_blob").to_pylist()
-
-    scene_features = {}
-    for i in range(len(video_paths)):
-        scene_key = f"{video_paths[i]}_{start_frames[i]}_{end_frames[i]}"
-        if scene_key not in needed_scene_keys:
-            continue
-
-        blob = feat_blobs[i]
-        count = feat_counts[i]
-        if count <= 0 or not blob:
-            continue
-
-        feats = np.frombuffer(blob, dtype=np.float16).copy()
-        dim = feats.shape[0] // count
-        feats = feats.reshape(count, dim)
-        scene_features[scene_key] = feats
-
-    return scene_features
+def iter_vector_tiles(scenes, size_limit):
+    """Pack vectors from adjacent scenes into bounded matrix multiplication tiles."""
+    pieces, owners, size = [], [], 0
+    for idx, (_, vectors) in enumerate(scenes):
+        for start in range(0, len(vectors), size_limit):
+            chunk = vectors[start:start + size_limit]
+            if size + len(chunk) > size_limit:
+                yield np.concatenate(pieces), np.repeat([i for i, _ in owners], [n for _, n in owners])
+                pieces, owners, size = [], [], 0
+            pieces.append(chunk)
+            owners.append((idx, len(chunk)))
+            size += len(chunk)
+    if pieces:
+        yield np.concatenate(pieces), np.repeat([i for i, _ in owners], [n for _, n in owners])
 
 
 class AsyncLanceWriter:

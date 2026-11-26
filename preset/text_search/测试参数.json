@@ -4,11 +4,8 @@
     "updated_at": 1771257530,
     "data": {
         "threshold": 14,
-        "use_reranker": false,
-        "rerank_top_k": 10,
-        "rerank_weight": 1,
-        "rerank_batch_size": 3,
-        "reranker_output_resolution": "384",
+        "jev_rerank_top_k": 10,
+        "jev_rerank_threshold": 1,
         "use_dedup": false,
         "dedup_threshold": 0.99,
         "export_mode": "copy",

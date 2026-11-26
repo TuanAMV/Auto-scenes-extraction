@@ -14,7 +14,6 @@ import time
 import glob
 import numpy as np
 import torch
-from concurrent.futures import ThreadPoolExecutor
 from threading import Thread, Event
 
 # ============================================================
@@ -107,7 +106,7 @@ def extract_single_frame(video_path: str, frame_number: int, fps: float, output_
             '-vf', f"select='eq(n,{relative_frame})',scale=320:-1",
             '-vframes', '1', 
             '-q:v', '3',
-            '-vsync', 'vfr',
+            '-fps_mode', 'vfr',
             output_path
         ]
         
@@ -118,82 +117,6 @@ def extract_single_frame(video_path: str, frame_number: int, fps: float, output_
         return False
 
 
-def extract_single_frame_rerank(
-    video_path: str, 
-    frame_number: int, 
-    fps: float, 
-    output_path: str,
-    output_resolution: str = '384'
-) -> bool:
-    """
-    精确按帧号提取帧图像（用于 Reranker，支持短边缩放）
-    方案3: 快速seek + 精确定位
-    
-    Args:
-        video_path: 视频文件路径
-        frame_number: 目标帧号
-        fps: 视频帧率
-        output_path: 输出图像路径
-        output_resolution: 输出分辨率（短边像素数，如 '384'，或 'original' 保持原始）
-    
-    Returns:
-        bool: 是否成功提取
-    """
-    try:
-        # 提前2秒seek，确保不跳过目标帧
-        approx_time = max(0, (frame_number / fps) - 2.0)
-        seek_frame = int(approx_time * fps)
-        relative_frame = frame_number - seek_frame
-        
-        cmd = [FFMPEG_PATH, '-y',
-            '-ss', str(approx_time),
-            '-i', video_path,
-        ]
-        
-        # 构建滤镜链：精确帧选择 + 可选缩放
-        vf_parts = [f"select='eq(n,{relative_frame})'"]
-        
-        # 使用短边缩放（需要先获取视频尺寸）
-        if output_resolution and output_resolution != 'original':
-            # 获取视频尺寸
-            width, height = _get_video_dimensions(video_path)
-            if width > 0 and height > 0:
-                scale_filter = _build_scale_filter_for_rerank(width, height, output_resolution)
-                if scale_filter:
-                    vf_parts.append(scale_filter)
-        
-        cmd.extend([
-            '-vf', ','.join(vf_parts),
-            '-vframes', '1', 
-            '-q:v', '2',  # 稍高质量用于 reranker
-            '-vsync', 'vfr',
-            output_path
-        ])
-        
-        subprocess.run(cmd, check=True, capture_output=True, text=True, 
-                      encoding='utf-8', errors='ignore')
-        return os.path.exists(output_path)
-    except (subprocess.SubprocessError, OSError):
-        return False
-
-
-def _get_video_dimensions(video_path: str) -> tuple:
-    """获取视频宽高（复用 VideoMetaHelper.get_video_meta）"""
-    _, _, width, height = VideoMetaHelper.get_video_meta(video_path)
-    return width, height
-
-
-def _build_scale_filter_for_rerank(width: int, height: int, output_resolution: str) -> str:
-    """构建短边缩放滤镜（用于 Reranker），委托给 FrameExtractorThread._build_scale_filter"""
-    if not output_resolution:
-        return None
-    scale_filter, _, _ = FrameExtractorThread._build_scale_filter(width, height, output_resolution)
-    return scale_filter
-
-
-# ============================================================
-# 批量帧提取器 - 修复stderr管道死锁
-# ============================================================
 class FrameExtractorThread:
     """CPU线程: ffmpeg提取帧到temp文件夹
     
@@ -234,7 +157,7 @@ class FrameExtractorThread:
             
             output_pattern = os.path.join(self.temp_dir, "frame_%06d.jpg")
             cmd = [FFMPEG_PATH, '-i', self.video_path, '-vf', ','.join(filters),
-                   '-vsync', 'vfr', '-q:v', '2', '-loglevel', 'error', output_pattern]
+                   '-fps_mode', 'vfr', '-q:v', '2', '-loglevel', 'error', output_pattern]
             
             print(f"[CPU] 开始流式提取帧 (预计 {expected_frames} 帧)")
             
@@ -415,13 +338,6 @@ class VideoMetaHelper:
             return 0.0
         
     @staticmethod
-    def frame_to_seconds(frame: int, fps: float) -> float:
-        """将帧号转换为秒数"""
-        if fps <= 0:
-            fps = 25.0
-        return frame / fps
-
-    @staticmethod
     def get_fps_cached(video_path: str, cache: dict = None) -> float:
         """获取视频FPS（带缓存）"""
         if cache is not None and video_path in cache:
@@ -430,7 +346,14 @@ class VideoMetaHelper:
         if cache is not None:
             cache[video_path] = fps
         return fps
-    
+
+    @staticmethod
+    def frame_to_seconds(frame: int, fps: float) -> float:
+        """将帧号转换为秒数"""
+        if fps <= 0:
+            fps = 25.0
+        return frame / fps
+
     @staticmethod
     def format_duration(seconds: float) -> str:
         """将秒数格式化为 MM:SS 或 HH:MM:SS"""
@@ -442,7 +365,7 @@ class VideoMetaHelper:
         if hours > 0:
             return f"{hours:02d}:{minutes:02d}:{secs:02d}"
         return f"{minutes:02d}:{secs:02d}"
-    
+
     @staticmethod
     def seconds_to_timecode(seconds: float) -> str:
         """将秒数转换为时间码 HH:MM:SS.mmm"""
@@ -453,10 +376,9 @@ class VideoMetaHelper:
         secs = seconds % 60
         return f"{hours:02d}:{minutes:02d}:{secs:06.3f}"
 
-# ============================================================
-# 场景边界检测器
-# ============================================================
+
 class SceneBoundaryDetector:
+
     @staticmethod
     def _strict_local_minima_indices(similarities, order: int = 1):
         """
@@ -610,7 +532,7 @@ class SceneBoundaryDetector:
         return end_frame if end_frame in frame_set else frame_indices[0]
 
     @staticmethod
-    def get_scene_features(scene: tuple, frame_indices: list, features) -> list:
+    def get_scene_features(scene: tuple, frame_indices: list, features, *, with_frame_numbers=False):
         """
         获取场景的特征向量（起始帧、中间帧、结束帧）
         
@@ -631,7 +553,8 @@ class SceneBoundaryDetector:
             else:
                 dim = features.shape[1] if len(features.shape) > 1 else 512
                 zero_vec = np.zeros(dim)
-            return [zero_vec, zero_vec, zero_vec]
+            triplet = [zero_vec, zero_vec, zero_vec]
+            return (triplet, [None] * 3) if with_frame_numbers else triplet
         
         start_idx = scene_sample_indices[0]
         start_feature = features[start_idx]
@@ -645,7 +568,13 @@ class SceneBoundaryDetector:
         else:
             mid_feature = (start_feature + end_feature) / 2
         
-        return [start_feature, mid_feature, end_feature]
+        triplet = [start_feature, mid_feature, end_feature]
+        if with_frame_numbers:
+            # 两个样本的均值是合成向量，没有单一来源帧。
+            middle = frame_indices[mid_idx] if len(scene_sample_indices) >= 3 else (
+                frame_indices[start_idx] if start_idx == end_idx else None)
+            return triplet, [frame_indices[start_idx], middle, frame_indices[end_idx]]
+        return triplet
     
     @staticmethod
     def merge_short_scenes(scenes: list, frame_indices: list, features, 

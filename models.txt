@@ -1,0 +1,6 @@
+Auto-scenes-extraction 发布包中的模型与工具
+
+models/openai-clip-vit-large-patch14 和 models/qihoo360-fg-clip2-base 用于向量化和文本召回。
+models/MCG-NJU--VideoJev-4B/snapshots/master 用于 Jev-rerank 和可选美学评分。
+models/aslakey_shot_scale 用于可选景别分析。
+models/ffmpeg/bin 包含 ffmpeg.exe、ffprobe.exe 和匹配的动态库，用于取帧、读取媒体信息和导出。

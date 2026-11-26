@@ -569,19 +569,11 @@
                             <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:2px;">
                                 <div class="form-group">
                                     <label for="sim_clip_large">CLIP阈值</label>
-                                    <input type="number" id="sim_clip_large" value="21" min="0" max="100" step="1">
+                                    <input type="number" id="sim_clip_large" value="{{ similarity_thresholds.get('clip_large', 21) }}" min="0" max="100" step="1">
                                 </div>
                                 <div class="form-group">
                                     <label for="sim_fgclip2">FG-CLIP2阈值</label>
-                                    <input type="number" id="sim_fgclip2" value="14" min="0" max="100" step="1">
-                                </div>
-                                <div class="form-group" style="display:none;">
-                                    <label for="sim_reranker">Reranker阈值</label>
-                                    <input type="number" id="sim_reranker" value="51" min="0" max="100" step="1">
-                                </div>
-                                <div class="form-group" style="display:none;">
-                                    <label for="sim_reranker_weight">Reranker权重</label>
-                                    <input type="number" id="sim_reranker_weight" value="1" min="0" max="10" step="0.1">
+                                    <input type="number" id="sim_fgclip2" value="{{ similarity_thresholds.get('fgclip2', 14) }}" min="0" max="100" step="1">
                                 </div>
                             </div>
                         <!-- 缓存Batch、搜索Batch、LMDB写入批大小 一行 -->
@@ -599,7 +591,7 @@
                                 <input type="text" id="ps_lmdb_write_batch_size" value="" placeholder="留空或 none 使用默认">
                             </div>
                         </div>
-                        <!-- 搜索模式、候选分批大小、Top-K 一行 -->
+                        <!-- 搜索模式、每批场景数、Top-K 一行 -->
                         <div class="three-columns">
                             <div class="form-group">
                                 <label>搜索模式</label>
@@ -610,8 +602,8 @@
                                 </select>
                             </div>
                             <div class="form-group">
-                                <label for="candidate_batch_size">候选分批大小</label>
-                                <input type="text" id="candidate_batch_size" value="" placeholder="留空或 none 使用默认">
+                                <label for="candidate_batch_size">每批场景数</label>
+                                <input type="text" id="candidate_batch_size" value="" placeholder="默认 128">
                             </div>
                             <div class="form-group">
                                 <label for="ps_top_k">Top-K</label>
@@ -632,9 +624,10 @@
                         </div>
                         <!-- 四个勾选一行（Rerank参数上方） -->
                         <div class="toggle-row">
-                            <input type="checkbox" id="ps_use_mini_rerank" data-default-checked="false">
-                            <label for="ps_use_mini_rerank">MiniRerank</label>
-                            <input type="checkbox" id="ps_use_reranker" data-default-checked="false" style="display:none;">
+                            <input type="checkbox" id="ps_use_jev_rerank" data-default-checked="false">
+                            <label for="ps_use_jev_rerank">Jev-rerank</label>
+                            <input type="checkbox" id="ps_use_aesthetic_score" data-default-checked="false" style="margin-left:15px;">
+                            <label for="ps_use_aesthetic_score">美学评分</label>
                             <input type="checkbox" id="use_diskcache" checked data-default-checked="true" style="margin-left:15px;">
                             <label for="use_diskcache">磁盘缓存</label>
                             <input type="checkbox" id="ps_use_chinese_query" data-default-checked="false" style="margin-left:15px;">
@@ -644,11 +637,11 @@
                             <input type="checkbox" id="use_shot_analysis" data-default-checked="false" style="margin-left:15px;">
                             <label for="use_shot_analysis">景别分析</label>
                         </div>
-                        <!-- MiniRerank最低匹配数、向量去重阈值、相邻合并帧数 一行 -->
+                        <!-- Jev-rerank最低匹配数、向量去重阈值、相邻合并帧数 一行 -->
                         <div class="three-columns">
                             <div class="form-group">
-                                <label for="ps_mini_rerank_min_matches">MiniRerank最低匹配数</label>
-                                <input type="text" id="ps_mini_rerank_min_matches" value="4" placeholder="默认4" class="no-spinner">
+                                <label for="ps_jev_rerank_min_matches">Jev-rerank最低匹配数</label>
+                                <input type="text" id="ps_jev_rerank_min_matches" value="4" placeholder="默认4" class="no-spinner">
                             </div>
                             <div class="form-group">
                                 <label for="ps_vector_dedup_threshold">向量去重阈值</label>
@@ -1039,18 +1032,6 @@
             }
         }
         
-        // ============ 搜索模式下拉框联动 ============
-        function updateSearchModeSelect() {
-            const searchModeSelect = document.getElementById('search_mode_select');
-            const lanceBatchEl = document.getElementById('ps_lance_batch_size');
-
-            if (lanceBatchEl) {
-                lanceBatchEl.disabled = false;
-                lanceBatchEl.style.opacity = '';
-                lanceBatchEl.style.backgroundColor = '';
-            }
-        }
-
         // ============ 索引文件列表加载 ============
         async function loadLanceIndexList() {
             const modelName = document.getElementById('search_index_directory').value;
@@ -1245,7 +1226,6 @@
         }
 
         // ???????????
-        document.getElementById('search_mode_select').addEventListener('change', updateSearchModeSelect);
 
         document.querySelectorAll('input[name="export_mode"]').forEach(radio => {
             radio.addEventListener('change', updateExportModeControls);
@@ -1400,11 +1380,7 @@
                 prompt_search: {
                     index_directory: 'indexes/' + document.getElementById('search_index_directory').value,
                     video_output_directory: document.getElementById('ps_video_output_directory').value || null,
-                    use_reranker: document.getElementById('ps_use_reranker').checked,
                     use_chinese: document.getElementById('ps_use_chinese_query').checked,
-                    rerank_top_k: getOptionalPositiveInt('ps_rerank_top_k'),
-                    rerank_batch_size: getOptionalPositiveInt('ps_rerank_batch_size'),
-                    reranker_output_resolution: getOptionalPositiveInt('ps_reranker_resolution'),
                     video_copy_mode: exportMode === 'copy',
                     start_frame_offset: startFrameOffset,
                     end_frame_offset: endFrameOffset,
@@ -1413,8 +1389,9 @@
                     use_diskcache: document.getElementById('use_diskcache').checked,
                     debug_similarity: document.getElementById('debug_similarity').checked,
                     use_shot_analysis: document.getElementById('use_shot_analysis').checked,
-                    use_mini_rerank: document.getElementById('ps_use_mini_rerank').checked,
-                    mini_rerank_min_matches: parseInt(document.getElementById('ps_mini_rerank_min_matches').value) || 4,
+                    use_aesthetic_score: document.getElementById('ps_use_aesthetic_score').checked,
+                    use_jev_rerank: document.getElementById('ps_use_jev_rerank').checked,
+                    jev_rerank_min_matches: parseInt(document.getElementById('ps_jev_rerank_min_matches').value) || 4,
                     search_mode: searchModeSelectValue,
                     top_k: getOptionalPositiveInt('ps_top_k'),
                     candidate_batch_size: selectedCandidateBatchSize,
@@ -1472,15 +1449,15 @@
             }
         }
 
-        async function saveSimilarityConfig() {
-            const payload = {
-                similarity_thresholds: {
-                    clip_large: parseFloat(document.getElementById('sim_clip_large').value),
-                    fgclip2: parseFloat(document.getElementById('sim_fgclip2').value),
-                    reranker: parseFloat(document.getElementById('sim_reranker').value),
-                    reranker_weight: parseFloat(document.getElementById('sim_reranker_weight').value)
-                }
+        function collectSimilarityThresholds() {
+            return {
+                clip_large: document.getElementById('sim_clip_large').valueAsNumber,
+                fgclip2: document.getElementById('sim_fgclip2').valueAsNumber
             };
+        }
+
+        async function saveSimilarityConfig(thresholds) {
+            const payload = { similarity_thresholds: thresholds };
             const response = await fetch('/save_similarity_config', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -1555,12 +1532,7 @@
                 version: 1,
                 pipeline_config: collectConfig(),
                 ffmpeg_config: collectFfmpegConfig(),
-                similarity_thresholds: {
-                    clip_large: parseFloat(document.getElementById('sim_clip_large').value),
-                    fgclip2: parseFloat(document.getElementById('sim_fgclip2').value),
-                    reranker: parseFloat(document.getElementById('sim_reranker').value),
-                    reranker_weight: parseFloat(document.getElementById('sim_reranker_weight').value)
-                }
+                similarity_thresholds: collectSimilarityThresholds()
             };
         }
 
@@ -1619,16 +1591,13 @@
             setInputValue('ps_vector_dedup_threshold', promptConfig.vector_dedup_threshold);
             setInputValue('ps_adjacent_merge_frames', promptConfig.adjacent_merge_frames);
 
-            setInputValue('ps_use_reranker', promptConfig.use_reranker);
             setInputValue('use_diskcache', promptConfig.use_diskcache);
             setInputValue('ps_use_chinese_query', promptConfig.use_chinese);
             setInputValue('debug_similarity', promptConfig.debug_similarity);
             setInputValue('use_shot_analysis', promptConfig.use_shot_analysis);
-            setInputValue('ps_use_mini_rerank', promptConfig.use_mini_rerank);
-            setInputValue('ps_mini_rerank_min_matches', promptConfig.mini_rerank_min_matches);
-            setInputValue('ps_rerank_top_k', promptConfig.rerank_top_k);
-            setInputValue('ps_rerank_batch_size', promptConfig.rerank_batch_size);
-            setInputValue('ps_reranker_resolution', promptConfig.reranker_output_resolution);
+            setInputValue('ps_use_aesthetic_score', promptConfig.use_aesthetic_score ?? false);
+            setInputValue('ps_use_jev_rerank', promptConfig.use_jev_rerank ?? false);
+            setInputValue('ps_jev_rerank_min_matches', promptConfig.jev_rerank_min_matches ?? 4);
 
             const copyMode = promptConfig.video_copy_mode;
             if (copyMode !== undefined) {
@@ -1672,8 +1641,11 @@
             const simConfig = presetData.similarity_thresholds || {};
             setInputValue('sim_clip_large', simConfig.clip_large);
             setInputValue('sim_fgclip2', simConfig.fgclip2);
-            setInputValue('sim_reranker', simConfig.reranker);
-            setInputValue('sim_reranker_weight', simConfig.reranker_weight);
+            if (promptConfig.search_threshold != null) {
+                const indexModel = document.getElementById('search_index_directory').value;
+                const input = /fg[-_]?clip2/i.test(indexModel) ? 'sim_fgclip2' : 'sim_clip_large';
+                setInputValue(input, promptConfig.search_threshold);
+            }
 
             // 恢复选中索引列表
             const lanceIndexes = promptConfig.lance_indexes;
@@ -1684,7 +1656,6 @@
                 });
             }
 
-            updateSearchModeSelect();
             updateExportModeControls();
         }
 
@@ -1831,10 +1802,14 @@
             try {
                 statusDiv.className = 'status-box running';
                 if (config.run_search) {
+                    config.similarity_thresholds = collectSimilarityThresholds();
+                    if (!Object.values(config.similarity_thresholds).every(Number.isFinite)) {
+                        throw new Error('请填写 CLIP 和 FG-CLIP2 的召回阈值。');
+                    }
                     statusDiv.textContent = 'Saving FFmpeg config...';
                     await saveFfmpegConfig();
                     statusDiv.textContent = 'Saving similarity config...';
-                    await saveSimilarityConfig();
+                    await saveSimilarityConfig(config.similarity_thresholds);
                 } else {
                     statusDiv.textContent = 'Preparing (index only)...';
                 }
@@ -1966,7 +1941,6 @@
         // ============ 页面初始化 ============
         document.addEventListener('DOMContentLoaded', async () => {
             // 初始化搜索模式下拉框联动
-            updateSearchModeSelect();
             updateExportModeControls();
             
             // 模型选择变更时更新中文查询可用性

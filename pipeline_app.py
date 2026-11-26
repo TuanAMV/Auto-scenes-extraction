@@ -163,11 +163,7 @@ def detect_model_type(model_path: str) -> str:
     # 检查 FG-CLIP2
     if 'fg-clip2' in model_name_lower or 'fg_clip2' in model_name_lower or 'fgclip2' in model_name_lower:
         return 'fgclip2'
-    
-    # 检查 Qwen
-    if 'qwen' in model_name_lower:
-        return 'qwen_embed'
-    
+
     # 检查配置文件 (open_clip 格式)
     config_path = os.path.join(model_path, 'open_clip_config.json')
     if os.path.exists(config_path):
@@ -250,21 +246,58 @@ def _validate_lance_index_directory(index_directory: str):
             return False, f"索引路径不是目录: {index_directory}"
 
         has_lance = False
-        first_pkl = None
         for file_name in os.listdir(index_directory):
             file_path = os.path.join(index_directory, file_name)
             if os.path.isdir(file_path) and file_name.endswith('.lance'):
                 has_lance = True
-            elif file_name.endswith('.pkl'):
-                first_pkl = file_path
 
-        if first_pkl is not None:
-            return False, f"检测到不支持的 .pkl 索引，请先转换为 .lance: {first_pkl}"
         if not has_lance:
             return False, f"索引目录中没有 .lance 索引: {index_directory}"
         return True, ''
     except Exception as e:
         return False, f"检查索引目录失败: {e}"
+
+
+def _has_lance_indexes(index_directory: str) -> bool:
+    """Return whether a directory directly contains Lance index directories."""
+    try:
+        return os.path.isdir(index_directory) and any(
+            os.path.isdir(os.path.join(index_directory, name)) and name.endswith('.lance')
+            for name in os.listdir(index_directory)
+        )
+    except OSError:
+        return False
+
+
+def _resolve_pipeline_index_directory(output_directory: str, model_name: str = None) -> str:
+    """Resolve the directory created by the indexer for the following search step."""
+    output_directory = resolve_path(output_directory)
+    if _has_lance_indexes(output_directory):
+        return output_directory
+
+    # create_video_index stores indexes in <output>/<model_name> unless the
+    # supplied output directory is already named after the model.
+    model_dir_name = os.path.basename(os.path.normpath(str(model_name or '')))
+    model_directory = output_directory
+    if model_dir_name:
+        model_directory = os.path.join(output_directory, model_dir_name)
+        if _has_lance_indexes(model_directory):
+            return model_directory
+
+    # Keep this useful for a custom model name that has been sanitized by the
+    # indexer, when the output root contains exactly one model directory.
+    try:
+        child_directories = [
+            os.path.join(output_directory, name)
+            for name in os.listdir(output_directory)
+            if os.path.isdir(os.path.join(output_directory, name))
+            and _has_lance_indexes(os.path.join(output_directory, name))
+        ]
+    except OSError:
+        child_directories = []
+    if len(child_directories) == 1:
+        return child_directories[0]
+    return model_directory
 
 
 def _ensure_preset_dir():
@@ -434,19 +467,8 @@ def run_prompt_search_with_config(config):
     log_message("🔍 步骤2: Prompt 组合搜索", 'info')
     log_message("=" * 50, 'info')
     
-    ps_config = config.get('prompt_search', {})
+    ps_config = dict(config.get('prompt_search', {}))
 
-    # 自动从 config.json 获取对应模型的 CLIP 相似度阈值
-    if 'search_threshold' not in ps_config or ps_config.get('search_threshold') is None:
-        project_cfg = _load_project_config()
-        sim_thresholds = project_cfg.get('similarity_thresholds', {})
-        idx_mname = str(config.get('indexer', {}).get('model_name', '')).lower()
-        if 'fg-clip2' in idx_mname or 'fgclip2' in idx_mname:
-            ps_config['search_threshold'] = float(sim_thresholds.get('fgclip2', 14))
-        else:
-            ps_config['search_threshold'] = float(sim_thresholds.get('clip_large', 21))
-        log_message(f"自动设置搜索阈值(按模型): {ps_config['search_threshold']}", 'info')
-    
     # 检查停止请求
     if _stop_requested.value:
         log_message("收到停止请求，终止搜索", 'warning')
@@ -479,32 +501,29 @@ def run_prompt_search_with_config(config):
         normalized_end_offset = _normalize_optional_int(ps_config.get('end_frame_offset'), field_name='prompt_search.end_frame_offset')
         if normalized_end_offset is not None:
             kwargs['end_frame_offset'] = normalized_end_offset
-        if 'reranker_output_resolution' in ps_config:
-            normalized_reranker_resolution = _normalize_optional_positive_int(
-                ps_config.get('reranker_output_resolution'),
-                field_name='prompt_search.reranker_output_resolution'
-            )
-            if normalized_reranker_resolution is not None:
-                kwargs['reranker_output_resolution'] = str(normalized_reranker_resolution)
         # diskcache_dir 经过特殊解析
         if diskcache_dir is not None:
             kwargs['diskcache_dir'] = diskcache_dir
         # 直通参数：仅在预设中存在且非 None 时才传递
-        for key in ('use_fp16', 'use_reranker',
+        for key in ('use_fp16',
                      'video_output_directory', 'video_copy_mode',
                      'feature_fp16',
                      'use_diskcache', 'debug_similarity',
                      'use_chinese',
                      'vector_dedup_threshold', 'adjacent_merge_frames',
-                      'use_shot_analysis',
-                      'use_mini_rerank', 'mini_rerank_min_matches',
+                      'use_shot_analysis', 'use_aesthetic_score',
+                      'use_jev_rerank', 'jev_rerank_min_matches',
                       'search_threshold'):
             if key in ps_config and ps_config[key] is not None:
                 kwargs[key] = ps_config[key]
+        if isinstance(config.get('similarity_thresholds'), dict):
+            kwargs['similarity_thresholds'] = config['similarity_thresholds']
+        if 'use_aesthetic_score' in kwargs:
+            kwargs['use_aesthetic_score'] = kwargs['use_aesthetic_score'] is True
         # lance_indexes: 用户选中的索引文件名列表
         if 'lance_indexes' in ps_config and ps_config.get('lance_indexes'):
             kwargs['lance_indexes'] = ps_config['lance_indexes']
-        for key in ('rerank_top_k', 'rerank_batch_size', 'candidate_batch_size',
+        for key in ('candidate_batch_size',
                     'prompt_search_batch_size', 'lance_batch_size',
                     'prompt_cache_batch_size', 'lance_load_workers',
                     'lmdb_write_batch_size'):
@@ -594,15 +613,19 @@ def run_pipeline_thread(config):
             log_complete(False, "用户取消运行")
             return
         
-        # 流水线串联：如果索引步骤运行了且搜索步骤未显式指定 index_directory，
-        # 自动将索引器的 output_directory 传递给搜索步骤
+        # 流水线串联：索引器会在 output_directory 下按模型名创建 Lance 目录。
+        # 两步同时运行时，搜索必须使用刚生成的实际模型目录；否则自定义
+        # output_directory 会把搜索指向根目录，导致找不到 .lance 索引。
         if run_indexer and run_search:
             idx_config = config.get('indexer', {})
             indexer_output = resolve_path(idx_config.get('output_directory', _path_resolver.join_str('indexes')))
             search_cfg = config.setdefault('prompt_search', {})
-            if 'index_directory' not in search_cfg or not search_cfg['index_directory']:
-                search_cfg['index_directory'] = indexer_output
-                log_message(f"流水线串联: 搜索步骤自动使用索引输出目录 {indexer_output}", 'info')
+            linked_index_directory = _resolve_pipeline_index_directory(
+                indexer_output,
+                idx_config.get('model_name'),
+            )
+            search_cfg['index_directory'] = linked_index_directory
+            log_message(f"流水线串联: 搜索步骤使用本次索引目录 {linked_index_directory}", 'info')
 
         # 步骤2: 场景搜索
         if run_search:
@@ -635,7 +658,11 @@ def run_pipeline_thread(config):
 def index():
     """主页"""
     try:
-        return render_template('Pipeline_control.html')
+        try:
+            thresholds = _load_project_config().get('similarity_thresholds', {})
+        except (OSError, ValueError):
+            thresholds = {}
+        return render_template('Pipeline_control.html', similarity_thresholds=thresholds or {})
     except Exception as e:
         return f"<h1>错误: 无法加载模板</h1><p>{e}</p><p>请确保 templates/Pipeline_control.html 文件存在</p>"
 
@@ -944,7 +971,7 @@ def save_similarity_config():
         if not isinstance(existing_thresholds, dict):
             existing_thresholds = {}
 
-        allowed_fields = {'clip_large', 'fgclip2', 'reranker', 'reranker_weight'}
+        allowed_fields = {'clip_large', 'fgclip2'}
         for key in allowed_fields:
             if key in thresholds_payload:
                 existing_thresholds[key] = thresholds_payload[key]
@@ -1137,7 +1164,7 @@ def main():
     print(f"  访问: http://127.0.0.1:{args.port}")
     print("=" * 60)
     
-    app.run(host='0.0.0.0', port=args.port, debug=False, threaded=True)
+    app.run(host=os.environ.get('ASE_WEB_HOST') or '127.0.0.1', port=args.port, debug=False, threaded=True)
 
 
 if __name__ == '__main__':

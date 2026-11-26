@@ -184,8 +184,16 @@ class RerankerFrameExtractor:
         except (TypeError, ValueError):
             self.jpeg_quality = 95
     
+    def clear_cache_dir(self):
+        """显式清空该抽帧器独占的帧缓存目录。"""
+        with self._cache_lock:
+            self.frame_cache.clear()
+        self._decord_cache.clear()
+        self._decord_reader_output_size.clear()
+        self._clear_cache_dir()
+
     def _clear_cache_dir(self):
-        """清空缓存目录（初始化时调用）"""
+        """清空该抽帧器配置的缓存目录及其全部子目录。"""
         if os.path.exists(self.cache_dir):
             try:
                 for item in os.listdir(self.cache_dir):
@@ -365,7 +373,7 @@ class RerankerFrameExtractor:
         cmd.extend([
             '-i', video_path,
             '-vf', ','.join(filter_parts),
-            '-an', '-sn', '-vsync', '0',
+            '-an', '-sn', '-fps_mode', 'passthrough',
             '-frames:v', str(len(unique_numbers)),
             '-f', 'rawvideo', '-pix_fmt', 'bgr24', 'pipe:1',
         ])
@@ -456,7 +464,11 @@ class RerankerFrameExtractor:
         """释放指定视频的 Decord reader 和关联尺寸缓存。"""
         self._decord_cache.pop(video_path, None)
         self._decord_reader_output_size.pop(video_path, None)
+        self._fps_cache.pop(video_path, None)
+        self._dimension_cache.pop(video_path, None)
+        self._ffmpeg_seek_fps_cache.pop(video_path, None)
     
+
     def _extract_single_frame(self,
                                video_path: str,
                                frame_number: int,
@@ -500,7 +512,7 @@ class RerankerFrameExtractor:
                 '-vf', ','.join(vf_parts),
                 '-vframes', '1',
                 '-q:v', '2',
-                '-vsync', 'vfr',
+                '-fps_mode', 'vfr',
                 '-loglevel', 'error',
                 output_path
             ])
@@ -918,7 +930,7 @@ class RerankerFrameExtractor:
             cmd.extend([
                 '-i', video_path,
                 '-filter_script:v', script_path,
-                '-vsync', 'vfr',
+                '-fps_mode', 'vfr',
                 '-q:v', '2',
                 '-loglevel', 'error',
                 output_pattern
@@ -956,7 +968,7 @@ class RerankerFrameExtractor:
                 return {}
             
             # 建立帧号到文件的映射
-            # FFmpeg -vsync vfr 输出连续编号，与排序后的帧号一一对应
+            # FFmpeg -fps_mode vfr 输出连续编号，与排序后的帧号一一对应
             extracted_files = glob.glob(os.path.join(self.cache_dir, f"{batch_output_prefix}_*.jpg"))
             extracted_files.sort()  # 确保按编号排序
             
@@ -1105,4 +1117,3 @@ class RerankerFrameExtractor:
                 'cached_frames': len(self.frame_cache),
                 'cache_dir': self.cache_dir
             }
-

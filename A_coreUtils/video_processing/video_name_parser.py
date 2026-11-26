@@ -8,7 +8,6 @@ v2.0: 简化重构版
 import os
 import sys
 import re
-from pathlib import Path
 import datetime
 
 # ============================================================
@@ -20,9 +19,6 @@ _a_core_utils_dir = os.path.dirname(_video_processing_dir)
 _cut_detect_scene_dir = os.path.dirname(_a_core_utils_dir)
 if _cut_detect_scene_dir not in sys.path:
     sys.path.insert(0, _cut_detect_scene_dir)
-
-# 导入路径解析器
-from path_resolver import PathResolver
 
 # 尝试导入 guessit
 try:
@@ -310,97 +306,3 @@ class VideoNameParser:
         
         # 组合输出
         return f"{title_str}_{episode_str}"
-    
-    def process_video(self, video_path: str, title: str = None) -> str:
-        """
-        处理单个视频文件
-        
-        参数:
-            video_path: 视频文件路径
-            title: 剧名（可选），如果提供则直接使用，否则从文件名解析
-            
-        返回:
-            格式化的字符串 "剧名_剧集"
-        """
-        if not os.path.exists(video_path):
-            return None
-        
-        return self.parse_filename(video_path, title=title)
-    
-    def process_folder(self, folder_path: str, title: str = None) -> dict:
-        """
-        处理文件夹中的所有视频
-        
-        参数:
-            folder_path: 文件夹路径
-            title: 剧名（可选），如果提供则所有视频使用同一剧名，否则分别解析
-            
-        返回:
-            字典，键为视频文件路径，值为格式化的字符串
-        """
-        # 支持的视频格式
-        video_extensions = {'.mp4', '.avi', '.mkv', '.mov', '.flv', '.wmv', '.webm', '.m4v', 
-                           '.mpg', '.mpeg', '.ts', '.rmvb', '.3gp'}
-        
-        folder = Path(folder_path)
-        if not folder.exists() or not folder.is_dir():
-            return {}
-        
-        results = {}
-        video_files = [f for f in folder.iterdir() 
-                      if f.is_file() and f.suffix.lower() in video_extensions]
-        
-        for video_file in video_files:
-            parsed_name = self.parse_filename(str(video_file), title=title)
-            if parsed_name:
-                results[str(video_file)] = parsed_name
-        
-        return results
-
-
-def main():
-    """测试用例"""
-    parser = VideoNameParser()
-    
-    test_files = [
-        # 标准格式
-        "[Judas] Anne Shirley - S01E01v2.mkv",
-        "MyShow S1E1.mp4",
-        "Show Season 1 E01.mp4",
-        "Show season_1 E_01.mp4",
-        "Show - 05.mp4",
-        "[Group] Anime - 12 [1080p].mkv",
-        
-        # OP/ED
-        "MyAnime NCOP2.mkv",
-        "Anime Opening Theme.mp4",
-        "Show ED.mp4",
-        
-        # 特殊类型
-        "Anime OVA.mp4",
-        "Anime OVA2.mp4",
-        "Show Special 3.mp4",
-        "Movie Film.mp4",
-        
-        # PV/MV
-        "Show PV2.mp4",
-        "Anime MV.mp4",
-        "Show Trailer.mp4",
-        
-        # 边界情况
-        "Random File.mp4",
-    ]
-    
-    print("=" * 60)
-    print("视频文件名解析测试")
-    print("=" * 60)
-    
-    for test_file in test_files:
-        result = parser.parse_filename(test_file)
-        print(f"{test_file}")
-        print(f"  -> {result}")
-        print()
-
-
-if __name__ == '__main__':
-    main()

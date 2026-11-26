@@ -8,20 +8,18 @@ It is a practical inventory, not legal advice.
 | Project | URL |
 |---|---|
 | CLIP | https://github.com/openai/CLIP |
-| Qwen3-VL-Embedding / Reranker | https://github.com/QwenLM/Qwen3-VL-Embedding |
 | FG-CLIP | https://github.com/360CVGroup/FG-CLIP |
-| MiniCPM-V | https://github.com/OpenBMB/MiniCPM-o |
+| VideoJev-4B | https://huggingface.co/MCG-NJU/VideoJev-4B |
 | FFmpeg | https://github.com/FFmpeg/FFmpeg |
 
 ## Bundled Binaries And Model Artifacts
 
 | Component | Path | Declared License | Evidence |
 |---|---|---|---|
-| FFmpeg static build (gyan.dev essentials) | `models/ffmpeg` | GPLv3 | `models/ffmpeg/README.txt`, `models/ffmpeg/LICENSE` |
-| FG-CLIP2 model files | `models/qihoo360_fg-clip2-base` | Apache-2.0 (model card declaration) | `models/qihoo360_fg-clip2-base/README.md` |
-| Qwen3-VL-Reranker-2B model files | `models/Qwen3-VL-Reranker-2B` | Apache-2.0 (model card declaration) | `models/Qwen3-VL-Reranker-2B/README.md` |
+| FFmpeg shared build | `models/ffmpeg` | GPLv3 | `models/ffmpeg/LICENSE.txt` |
+| FG-CLIP2 model files | `models/qihoo360-fg-clip2-base` | Apache-2.0 (model card declaration) | `models/qihoo360-fg-clip2-base/README.md` |
 | openai/clip-vit-large-patch14 model files | `models/openai-clip-vit-large-patch14` | Upstream terms apply (not fully bundled here) | `models/openai-clip-vit-large-patch14/README.md` |
-| MiniCPM-V-4-6 model files | `models/MiniCPM-V-4-6` | Apache-2.0 (model card declaration) | `models/MiniCPM-V-4-6/README.md` |
+| VideoJev-4B model files | `models/MCG-NJU--VideoJev-4B/snapshots/master` | Apache-2.0 (model card declaration) | `models/MCG-NJU--VideoJev-4B/snapshots/master/LICENSE` |
 | aslakey/shot-scale model files | `models/aslakey_shot_scale` | Apache-2.0 (model card declaration) | `models/aslakey_shot_scale/README.md` |
 
 ## Embedded Python Environment (Key Packages)
@@ -36,7 +34,6 @@ Observed in `python/Lib/site-packages` metadata:
 | open_clip_torch | MIT |
 | decord | Apache |
 | av | BSD-3-Clause |
-| qwen-vl-utils | Apache-2.0 |
 
 ## Redistribution Notes
 

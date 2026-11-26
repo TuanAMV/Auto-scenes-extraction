@@ -7,7 +7,7 @@
 Usage:
     from A_coreUtils.aftertreatment.shot_type_classifier import DinoV2ShotClassifier
     clf = DinoV2ShotClassifier()
-    result = clf.analyze("video.mp4")   # {"景别": "中景", "confidence": 0.85}
+    results = clf.analyze_frames_batch([frame_bgr])   # [{"景别": "中景", "confidence": 0.85}]
 """
 
 import os
@@ -112,15 +112,6 @@ class DinoV2ShotClassifier:
         label_en = self._model.config.id2label.get(idx, f"unknown({idx})")
         return DINOV2_LABELS_CN.get(label_en, label_en), conf
 
-    def analyze_frame(self, frame_bgr: np.ndarray) -> dict:
-        """分析一张已经在内存中的 BGR 中间帧，不生成临时图片文件。"""
-        if not self._loaded:
-            self.load()
-        if frame_bgr is None or not isinstance(frame_bgr, np.ndarray) or frame_bgr.size == 0:
-            return {"景别": "未知", "confidence": 0.0}
-        label, conf = self._predict_frame(frame_bgr)
-        return {"景别": label, "confidence": round(conf, 4)}
-
     def analyze_frames_batch(self, frames_bgr: List[np.ndarray]) -> List[dict]:
         """批量分析内存中的 BGR 中间帧，返回结果顺序与输入一致。"""
         if not self._loaded:
@@ -162,68 +153,3 @@ class DinoV2ShotClassifier:
                 "confidence": round(confidence, 4),
             }
         return results
-
-    def _extract_frames(self, video_path: str, num_frames: int = 5) -> List[np.ndarray]:
-        cap = cv2.VideoCapture(video_path)
-        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        if total < 2:
-            cap.release()
-            return []
-        indices = np.linspace(0, total - 1, min(num_frames, total), dtype=int).tolist()
-        frames = []
-        for idx in indices:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-            ret, frame = cap.read()
-            if ret:
-                frames.append(frame)
-        cap.release()
-        return frames
-
-    def analyze(self, file_path: str) -> dict:
-        """分析视频或图片的景别。
-
-        视频：提取 5 帧做加权投票
-        图片：直接分类
-        """
-        if not self._loaded:
-            self.load()
-
-        file_path = os.path.abspath(file_path)
-        if not os.path.exists(file_path):
-            raise FileNotFoundError(f"文件不存在: {file_path}")
-
-        ext = os.path.splitext(file_path)[1].lower()
-        if ext in (".png", ".jpg", ".jpeg", ".webp", ".bmp"):
-            frame = cv2.imread(file_path)
-            if frame is None:
-                return {"景别": "未知", "confidence": 0.0}
-            label, conf = self._predict_frame(frame)
-            return {"景别": label, "confidence": round(conf, 4)}
-
-        frames = self._extract_frames(file_path, num_frames=5)
-        if not frames:
-            return {"景别": "未知", "confidence": 0.0}
-
-        counter = {}
-        for f in frames:
-            label, conf = self._predict_frame(f)
-            counter[label] = counter.get(label, 0.0) + conf
-
-        if not counter:
-            return {"景别": "未知", "confidence": 0.0}
-
-        winner = max(counter, key=counter.get)
-        total = sum(counter.values())
-        return {"景别": winner, "confidence": round(counter[winner] / max(total, 1e-8), 4)}
-
-
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="DinoV2 景别分类测试")
-    parser.add_argument("file", help="图片或视频文件路径")
-    args = parser.parse_args()
-
-    clf = DinoV2ShotClassifier()
-    result = clf.analyze(args.file)
-    print(f"景别: {result['景别']}, 置信度: {result['confidence']:.4f}")

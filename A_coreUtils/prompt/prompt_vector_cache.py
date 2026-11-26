@@ -114,21 +114,6 @@ class PromptVectorCache:
     def get_lance_path(self, model_name: str = None) -> str:
         return self.get_cache_path(model_name) + ".lance"
 
-    def get_category_idx_map(self, model_name: str = None) -> Dict[str, List[int]]:
-        """从 Lance 缓存中读取每个类别的 prompt 索引列表。
-        Returns: {"主体": [0,1,2,...], "动作": [...], "场景": [...], "情绪": [...]}
-        """
-        lance_path = self.get_lance_path(model_name)
-        if not os.path.exists(lance_path):
-            return {}
-        import lance, pickle
-        ds = lance.dataset(lance_path)
-        cat_map = {}
-        for i, row in enumerate(ds.to_table(columns=["metadata"]).column(0)):
-            meta = pickle.loads(row.as_py()) if hasattr(row, 'as_py') else pickle.loads(row)
-            cat = meta.get("category", "?")
-            cat_map.setdefault(cat, []).append(i)
-        return cat_map
 
     def cache_exists(self, model_name: str = None) -> bool:
         lance_path = self.get_lance_path(model_name)
@@ -326,37 +311,6 @@ class PromptVectorCache:
             raise FileNotFoundError(f"Lance 数据集不存在: {lance_path}")
         return PromptVectorBatchIterator(lance_path=lance_path, batch_size=int(batch_size), use_fp16=use_fp16)
 
-    def load_meta_lookup(self, model_name: str = None) -> "PromptMetaLookup":
-        lance_path = self.get_lance_path(model_name)
-        if not os.path.exists(lance_path):
-            raise FileNotFoundError(f"Lance 数据集不存在: {lance_path}")
-        return PromptMetaLookup(lance_path=lance_path)
-
-    def get_cache_info(self, model_name: str = None) -> Dict:
-        import lance
-
-        lance_path = self.get_lance_path(model_name)
-        if not os.path.exists(lance_path):
-            raise FileNotFoundError(f"Lance 数据集不存在: {lance_path}")
-        ds = lance.dataset(lance_path)
-        md = ds.metadata or {}
-        total_prompts = int(ds.count_rows())
-
-        size_mb = 0.0
-        for root, _, files in os.walk(lance_path):
-            for fn in files:
-                fp = os.path.join(root, fn)
-                if os.path.isfile(fp):
-                    size_mb += os.path.getsize(fp) / (1024 * 1024)
-
-        return {
-            "total_prompts": total_prompts,
-            "vector_dim": int(md.get("vector_dim", "0") or 0),
-            "metadata": md,
-            "lance_path": lance_path,
-            "file_size_mb": size_mb,
-        }
-
 
 class PromptVectorBatchIterator:
     """
@@ -374,6 +328,7 @@ class PromptVectorBatchIterator:
         self.use_fp16 = bool(use_fp16)
 
         self._ds = lance.dataset(self.lance_path)
+        self.revision = (os.path.abspath(self.lance_path), self._ds.version, str(self._ds.get_version()["timestamp"]))
         self._ds_meta = self._ds.metadata or {}
 
         self.total_prompts = int(self._ds.count_rows())
@@ -398,7 +353,7 @@ class PromptVectorBatchIterator:
         self._scanner = self._ds.scanner(
             columns=["vector", "prompt", "metadata"],
             scan_in_order=True,
-            batch_size=max(1024, self.batch_size),
+            batch_size=self.batch_size, batch_readahead=1, fragment_readahead=1, io_buffer_size=8 << 20,
         )
         self._rb_iter = iter(self._scanner.to_batches())
 
@@ -412,7 +367,7 @@ class PromptVectorBatchIterator:
         rb = next(self._rb_iter)  # may raise StopIteration
 
         vec_col = rb.column(0)  # fixed_size_list<float32>[dim]
-        flat = vec_col.values.to_numpy(zero_copy_only=False)
+        flat = vec_col.flatten().to_numpy(zero_copy_only=False)
         vecs = flat.reshape(len(vec_col), self._vector_dim)
 
         self._rb = rb
@@ -495,41 +450,3 @@ class PromptVectorBatchIterator:
 
     def __del__(self):
         self.close()
-
-
-class PromptMetaLookup:
-    """
-    按 prompt_idx 批量回查 metadata，避免候选里冗余携带 meta 副本。
-    """
-
-    def __init__(self, lance_path: str):
-        import lance
-
-        self.lance_path = lance_path
-        self._ds = lance.dataset(self.lance_path)
-
-    def get_many(self, prompt_indices: List[int]) -> Dict[int, Dict]:
-        uniq = sorted({int(i) for i in prompt_indices if i is not None and int(i) >= 0})
-        if not uniq:
-            return {}
-
-        try:
-            table = self._ds.take(uniq, columns=["metadata"])
-        except Exception as e:
-            raise RuntimeError(f"PromptMetaLookup.take() 失败: {e}")
-
-        meta_col = table.column("metadata").to_pylist()
-        out: Dict[int, Dict] = {}
-        for idx, raw in zip(uniq, meta_col):
-            if raw is None:
-                out[idx] = {}
-                continue
-            try:
-                data = pickle.loads(raw)
-                out[idx] = data if isinstance(data, dict) else {}
-            except Exception:
-                out[idx] = {}
-        return out
-
-    def get_metadata_by_indices(self, prompt_indices: List[int]) -> Dict[int, Dict]:
-        return self.get_many(prompt_indices)

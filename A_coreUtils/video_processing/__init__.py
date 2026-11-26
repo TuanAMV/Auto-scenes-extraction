@@ -31,7 +31,6 @@ from .video_utils import (
     cleanup_temp_folder,
     sanitize_name,
     extract_single_frame,
-    extract_single_frame_rerank,
     TEMP_DIR,
     DEVICE,
 )
@@ -46,7 +45,6 @@ __all__ = [
     'cleanup_temp_folder',
     'sanitize_name',
     'extract_single_frame',
-    'extract_single_frame_rerank',
     'TEMP_DIR',
     'DEVICE',
     'FFmpegPrecisionCutter',

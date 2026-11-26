@@ -448,19 +448,19 @@
     ],
     "必有子类": [],
     "必有孙类": [],
-    "MiniCPM验证Prompt": {
+    "Jev-rerank验证Prompt": {
       "_说明": "{val}=标签值，_instruction=提示词开头，可自行增删大类",
       "zh": {
-        "_instruction": "判断这张图片是否包含以下描述，只输出一行JSON不要解释:",
+        "_instruction": "根据可见画面判断，下列描述是否成立？",
         "主体": "以{val}为主体",
         "动作": "主体正在{val}",
         "场景": "以{val}为背景",
         "情绪": "画面渲染{val}情绪"
       },
       "en": {
-        "_instruction": "Determine whether this image matches the following descriptions. Output only one line of JSON without explanation:",
+        "_instruction": "Does the visible image match the following description?",
         "主体": "a {val} as the main subject",
-        "动作": "the subject is {val}",
+        "动作": "the main subject is {val}",
         "场景": "with a {val} backdrop",
         "情绪": "with a {val} mood"
       }

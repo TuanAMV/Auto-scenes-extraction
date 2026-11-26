@@ -6,18 +6,19 @@
 
 import os
 import atexit
-import subprocess
-import shutil
 import gc
-from A_coreUtils.lance_index_io import read_lance_index_for_reranker
+from A_coreUtils.aftertreatment.jev_rerank import JevReranker, extracted_frames, score_prefix
+from A_coreUtils.search.lmdb_store import LMDBCache, RankedResults, is_op_ed_video
+from functools import lru_cache
+from uuid import uuid4
+from flask import abort
 import json
 import time
 import re
-import numpy as np
-from collections import defaultdict
 from flask import Flask, render_template, request, jsonify, send_from_directory
 from urllib.parse import unquote
 import hashlib
+import itertools
 
 from A_coreUtils.video_processing.video_utils import VideoMetaHelper, cleanup_temp_folder, TEMP_DIR, extract_single_frame
 
@@ -37,20 +38,12 @@ except ImportError:
 
 # 尝试导入不同的模型处理器
 _EMBEDDING_MODEL_AVAILABLE = False
-_RERANKER_AVAILABLE = False
 
 try:
     from A_coreUtils.embedding.embedding_model import EmbeddingModelProcessor, SemanticSearchEngine as EmbeddingSearchEngine
     _EMBEDDING_MODEL_AVAILABLE = True
 except ImportError:
     pass
-
-try:
-    from A_coreUtils.qwen_models.qwen3_vl_reranker import Qwen3VLReranker
-    from A_coreUtils.search.reranker_frame_extractor import RerankerFrameExtractor
-    _RERANKER_AVAILABLE = True
-except ImportError:
-    _RERANKER_AVAILABLE = False
 
 if not _EMBEDDING_MODEL_AVAILABLE:
     raise ImportError("需要安装 embedding_model 模块")
@@ -70,16 +63,17 @@ PRESET_DIR = _base_resolver.join_str('preset', 'text_search')
 PRESET_META_PATH = _base_resolver.join_str('preset', 'text_search', '_meta.json')
 _PRESET_INVALID_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 CONFIG_PATH = _base_resolver.join_str('config.json')
-DEFAULT_RERANKER_PATH = _base_resolver.join_str('models', 'Qwen3-VL-Reranker-2B')
 PREVIEW_FOLDER = _base_resolver.join_str('temp', 'previews')
 RERANK_CACHE_DIR = _base_resolver.join_str('temp', 'rerank_cache')
+FRAME_EXTRACTOR_CACHE_DIR = _base_resolver.join_str('temp', 'rerank_frames_single')
 CLIPS_FOLDER = _base_resolver.join_str('temp', 'clips')  # 视频片段缓存目录
 # 所有临时文件都放在 temp 下
 PREVIEW_FOLDER = _base_resolver.join_str('temp', 'previews')
 CACHE_DIR = _base_resolver.join_str('temp', 'search_cache')  # 重命名: faiss_cache -> search_cache
 
-# 默认 output_resolution（从前端用户输入获取，此处仅作为默认值）
-DEFAULT_OUTPUT_RESOLUTION = '384'
+# 所有临时文件都放在 temp 下
+PREVIEW_FOLDER = _base_resolver.join_str('temp', 'previews')
+CACHE_DIR = _base_resolver.join_str('temp', 'search_cache')  # 重命名: faiss_cache -> search_cache
 
 os.makedirs(CACHE_DIR, exist_ok=True)
 os.makedirs(PREVIEW_FOLDER, exist_ok=True)
@@ -141,12 +135,9 @@ def _list_preset_names() -> list:
 
 _embedding_processor = None
 _search_engine = None
-_fps_cache = {}
+
+_preview_fps = lru_cache(maxsize=128)(VideoMetaHelper.get_fps_cached)
 _current_model_name = None
-_reranker_engine = None
-_current_reranker_path = None
-_current_rerank_resolution = None
-_mini_reranker_analyzer = None
 
 
 def release_clip_model():
@@ -155,10 +146,6 @@ def release_clip_model():
     if _embedding_processor is not None:
         print("[Info] 释放 CLIP 模型...")
         try:
-            if hasattr(_embedding_processor, 'cleanup'):
-                _embedding_processor.cleanup()
-            if hasattr(_embedding_processor, 'release_models'):
-                _embedding_processor.release_models()
             del _embedding_processor
             del _search_engine
         except Exception as e:
@@ -176,239 +163,43 @@ def release_clip_model():
         print("[Info] CLIP 模型已释放")
 
 
-def release_reranker_model():
-    """释放 Reranker 模型，清理显存"""
-    global _reranker_engine, _current_reranker_path, _current_rerank_resolution
-    if _reranker_engine is not None:
-        print("[Info] 释放 Reranker 模型...")
-        try:
-            # 调用 Qwen3VLReranker 的 cleanup 方法
-            if hasattr(_reranker_engine, 'cleanup'):
-                _reranker_engine.cleanup()
-            del _reranker_engine
-        except Exception as e:
-            print(f"[Warning] 释放 Reranker 模型时出错: {e}")
-        _reranker_engine = None
-        _current_reranker_path = None
-        _current_rerank_resolution = None
-        gc.collect()
-        try:
-            import torch
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except ImportError:
-            pass
-        print("[Info] Reranker 模型已释放")
-
-
 # ============================================================================
-# MiniCPM Mini-Reranker (Qwen Reranker 平替)
+# Jev-rerank
 # ============================================================================
 
-def get_or_create_mini_reranker():
-    """Get or create the MiniCPM mini-reranker (ShotAnalyzer 单例)."""
-    global _mini_reranker_analyzer
-    if _mini_reranker_analyzer is None:
-        from A_coreUtils.aftertreatment.shot_analyzer import ShotAnalyzer
-        _mini_reranker_analyzer = ShotAnalyzer()
-        _mini_reranker_analyzer.load_model()
-        print("[Info] MiniCPM mini-reranker 模型已加载")
-    return _mini_reranker_analyzer
-
-
-def release_mini_reranker_model():
-    """释放 MiniCPM 模型显存"""
-    global _mini_reranker_analyzer
-    if _mini_reranker_analyzer is not None:
-        _mini_reranker_analyzer.unload_model()
-        _mini_reranker_analyzer = None
-        gc.collect()
-        try:
-            import torch as _t
-            if _t.cuda.is_available():
-                _t.cuda.empty_cache()
-        except ImportError:
-            pass
-        print("[Info] MiniCPM mini-reranker 模型已释放")
-
-
-def mini_rerank_text_results(matches: list, query_text: str, threshold: float = 0.6, top_k: int = 50) -> list:
-    """
-    MiniCPM Mini-Rerank: 用 MiniCPM-V-4-6 对 CLIP 搜索结果逐帧判断与查询描述的相似度。
-    
-    Args:
-        matches: CLIP 搜索结果列表
-        query_text: 用户输入的查询文本
-        threshold: 相似度阈值 (0.0-1.0)，低于此值的结果将被移除
-        top_k: 需要验证的 Top-K 结果数量
-    
-    Returns:
-        过滤后的结果列表
-    """
-    import cv2
-    import torch as _t
-    
-    if not matches:
-        return matches
-    
-    matches_to_check = matches[:min(top_k, len(matches))]
-    
-    analyzer = get_or_create_mini_reranker()
-    
-    from A_coreUtils.search.reranker_frame_extractor import RerankerFrameExtractor
-    frame_extractor = RerankerFrameExtractor(
-        output_resolution='384', cache_dir=RERANK_CACHE_DIR,
-    )
-    
-    # 构建提取场景列表
-    scenes = []
-    for match in matches_to_check:
-        video_path = match.get('video_path', '')
-        start_frame = match.get('start_frame', 0)
-        scenes.append({
-            'video_path': video_path,
-            'start_frame': start_frame,
-            'end_frame': start_frame,
-            'fps': VideoMetaHelper.get_fps_cached(video_path, _fps_cache) if video_path else 25.0,
-        })
-    
-    try:
-        frame_paths = frame_extractor.extract_batch(scenes)
-    except Exception as e:
-        print(f"[MiniRerank] 帧提取异常: {e}")
-        frame_paths = {}
-    
-    # MiniCPM 提示词 — JSON 格式输出
-    prompt = (
-        f'判断这张图片与以下描述的画面相似度，只输出一行JSON不要解释:\n'
-        f'{{"相似度": <一个0到1之间的小数, 例如0.85>}}\n'
-        f'描述: {query_text}'
-    )
-    
-    kept = []
-    removed_count = 0
-    total = len(matches_to_check)
-    
-    for idx, match in enumerate(matches_to_check):
-        video_path = match.get('video_path', '')
-        start_frame = match.get('start_frame', 0)
-        video_name = os.path.basename(video_path)
-        frame_key = f"{start_frame}_1_{video_name}"
-        frame_path = frame_paths.get(frame_key)
-        
-        if not frame_path or not os.path.exists(frame_path):
-            kept.append(match)
-            continue
-        
-        frame = cv2.imread(frame_path)
-        if frame is None:
-            kept.append(match)
-            continue
-        
-        try:
-            img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            from PIL import Image
-            pil_img = Image.fromarray(img_rgb)
-            
-            msgs = [{"role": "user", "content": [
-                {"type": "image", "image": pil_img},
-                {"type": "text", "text": prompt},
-            ]}]
-            
-            inputs = analyzer._processor.apply_chat_template(
-                msgs, tokenize=True, add_generation_prompt=True,
-                return_dict=True, return_tensors="pt",
-            ).to(analyzer.device)
-            
-            with _t.no_grad():
-                generated_ids = analyzer._model.generate(
-                    **inputs,
-                    max_new_tokens=32,
-                    do_sample=False,
-                    eos_token_id=analyzer._processor.tokenizer.eos_token_id,
-                )
-            response_ids = generated_ids[0][inputs["input_ids"].shape[1]:]
-            text = analyzer._processor.tokenizer.decode(response_ids, skip_special_tokens=True).strip()
-            
-            # 从 JSON 解析相似度分数
-            score = 0.0
-            start = text.find("{")
-            end = text.rfind("}")
-            if start != -1 and end != -1 and start < end:
-                try:
-                    import json as _json
-                    parsed = _json.loads(text[start:end + 1])
-                    raw_val = parsed.get("相似度", 0)
-                    score = float(raw_val)
-                except Exception:
-                    pass
-            
-            # 归一化：如果模型输出了百分比（如85），转为小数（0.85）
-            raw_score = score
-            if score > 1.0:
-                score = score / 100.0
-            
-            if score >= threshold:
-                match['mini_rerank_score'] = score
-                boost = score * 50
-                match['similarity'] = match.get('similarity', 0) + boost
-                kept.append(match)
-            else:
-                removed_count += 1
-        except Exception as e:
-            print(f"  [MiniRerank] 处理异常: {e}")
-            kept.append(match)
-    
-    # 清理帧提取缓存
-    try:
-        frame_extractor.cleanup(remove_files=True)
-    except Exception:
-        pass
-    
-    print(f"[MiniRerank] 完成: {total}条检查 → 保留 {len(kept)}条 (阈值={threshold})")
-    return kept
-
-
-def get_or_create_reranker(model_path: str, output_resolution: str = '384'):
-    """Get or create the Qwen3-VL reranker engine."""
-    global _reranker_engine, _current_reranker_path, _current_rerank_resolution
-    if not _RERANKER_AVAILABLE:
-        raise RuntimeError("Qwen3-VL Reranker module is not available")
-
-    if not model_path:
-        model_path = DEFAULT_RERANKER_PATH
-
-    model_path = resolve_path(model_path)
-    if not os.path.isabs(model_path):
-        model_path = _base_resolver.join_str(model_path)
-
-    if not os.path.isdir(model_path):
-        raise FileNotFoundError(f"Reranker model path not found: {model_path}")
-
-    # 如果模型路径或分辨率变化，重新创建引擎
-    if _reranker_engine is None or _current_reranker_path != model_path or _current_rerank_resolution != output_resolution:
-        if _reranker_engine is not None:
-            try:
-                del _reranker_engine
-                gc.collect()
-                try:
-                    import torch
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-                except Exception:
-                    pass
-            except Exception:
-                pass
-
-        _reranker_engine = Qwen3VLReranker(
-            model_name_or_path=model_path,
-            cache_dir=RERANK_CACHE_DIR,
-            torch_dtype="auto"
-        )
-        _current_reranker_path = model_path
-        _current_rerank_resolution = output_resolution
-
-    return _reranker_engine
+def evaluate_text_matches(candidates, query_text, *, rerank, aesthetics, threshold, batch_size):
+    """在检索选定的帧上核验；旧索引的中间帧由原始镜头边界计算。"""
+    questions = {'query': f'这张图片是否符合以下描述？{query_text}'} if rerank else {}
+    with JevReranker() as jev:
+        iterator = iter(candidates)
+        while True:
+            rows = list(itertools.islice(iterator, batch_size))
+            if not rows:
+                break
+            batch = [payload for _, payload in rows]
+            targets = [(m['video_path'], m['matched_frame']) for m in batch]
+            with extracted_frames(targets, RERANK_CACHE_DIR) as frames:
+                for (key, _), match, target in zip(rows, batch, targets):
+                    path = frames.get(target)
+                    if path:
+                        result = jev.evaluate(path, questions, aesthetics=aesthetics,
+                                              min_matches=int(rerank), threshold=threshold)
+                        if rerank:
+                            score = result['scores']['query']
+                            if score < threshold:
+                                continue
+                            match['jev_rerank_score'] = score
+                            match['similarity'] += score * 50
+                        if aesthetics:
+                            match['aesthetic_score'] = result['aesthetic_score']
+                    else:
+                        if rerank:
+                            print(f"[Jev-rerank] {target[0]} 命中帧 {target[1]} 读取失败，无法复核，淘汰")
+                            continue
+                        match['jev_note'] = '命中帧读取失败'
+                        if aesthetics:
+                            match['aesthetic_score'] = None
+                    yield key, match
 
 
 def detect_model_type(model_path: str) -> str:
@@ -518,17 +309,34 @@ def get_or_create_processor(model_name: str = None, truncate_dim: int = None, us
 
 
 # text_search.py 自身使用的临时子目录（不包含搜索模式的 LMDB 缓存）
-_TEXT_SEARCH_TEMP_SUBDIRS = [PREVIEW_FOLDER, RERANK_CACHE_DIR, CLIPS_FOLDER, CACHE_DIR]
+SEARCH_BASKET_DIR = os.path.join(os.path.dirname(CACHE_DIR), 'search_baskets')
+_TEXT_SEARCH_TEMP_SUBDIRS = [PREVIEW_FOLDER, RERANK_CACHE_DIR, CLIPS_FOLDER]
+
+
+def _clear_session_lmdbs(root):
+    if not os.path.isdir(root):
+        return
+    for name in os.listdir(root):
+        if not (name.startswith('result_') or name.startswith('basket_')):
+            continue
+        path = os.path.join(root, name)
+        if os.path.isdir(path):
+            cleanup_temp_folder(path)
+            try:
+                os.rmdir(path)
+            except OSError:
+                pass
 
 
 def cleanup_temp_folders():
-    """清理 text_search.py 自身的临时文件夹（保留 cache 目录下的搜索结果 LMDB）"""
-    print("\n--- 清理临时文件夹... ---")
+    """Clear transient files and completed TextSearch session databases."""
+    print("\n--- Clearing temporary files ---")
     for subdir in _TEXT_SEARCH_TEMP_SUBDIRS:
         if os.path.exists(subdir):
             cleanup_temp_folder(subdir)
-            print(f"  ✔ 已清理: {subdir}")
-    # 清理 temp 根目录下的散落文件（不递归进子目录）
+            print(f"  Cleared {subdir}")
+    _clear_session_lmdbs(CACHE_DIR)
+    _clear_session_lmdbs(SEARCH_BASKET_DIR)
     if os.path.exists(TEMP_DIR):
         for item in os.listdir(TEMP_DIR):
             item_path = os.path.join(TEMP_DIR, item)
@@ -537,27 +345,22 @@ def cleanup_temp_folders():
                     os.unlink(item_path)
                 except (PermissionError, OSError):
                     pass
-    print("清理完成")
+    print("Temporary cleanup complete")
 
 
 def startup_cleanup():
-    """启动时清理 text_search.py 自身的临时文件（保留 cache 目录下的搜索结果 LMDB）"""
-    print("--- 启动时清理临时文件... ---")
-    
+    """Remove transient files and stale result/basket LMDBs from prior runs."""
+    print("--- Startup cleanup ---")
     for subdir in _TEXT_SEARCH_TEMP_SUBDIRS:
-        if os.path.exists(subdir):
-            items = os.listdir(subdir)
-            if items:
-                print(f"  发现 {len(items)} 个残留项目在 {os.path.basename(subdir)}/，正在清理...")
-                cleanup_temp_folder(subdir)
-                print(f"  ✔ 已清理: {subdir}")
-    
-    # 确保文件夹存在
+        if os.path.exists(subdir) and os.listdir(subdir):
+            print(f"Removing stale temporary files: {subdir}")
+            cleanup_temp_folder(subdir)
+    _clear_session_lmdbs(CACHE_DIR)
+    _clear_session_lmdbs(SEARCH_BASKET_DIR)
     os.makedirs(TEMP_DIR, exist_ok=True)
     os.makedirs(CACHE_DIR, exist_ok=True)
     os.makedirs(PREVIEW_FOLDER, exist_ok=True)
-    
-    print("启动清理完成")
+    print("Startup cleanup complete")
 
 
 @app.route('/')
@@ -587,12 +390,10 @@ def clear_cache():
         
         # 释放模型
         release_clip_model()
-        release_reranker_model()
-        release_mini_reranker_model()
         cleared_items.append("已释放模型")
         
         # 计算并清理 text_search.py 自身的临时子目录（保留 cache 目录下的搜索结果 LMDB）
-        for subdir in _TEXT_SEARCH_TEMP_SUBDIRS:
+        for subdir in [*_TEXT_SEARCH_TEMP_SUBDIRS, CACHE_DIR, SEARCH_BASKET_DIR]:
             if os.path.exists(subdir):
                 for root, dirs, files in os.walk(subdir):
                     for f in files:
@@ -611,9 +412,22 @@ def clear_cache():
         os.makedirs(RERANK_CACHE_DIR, exist_ok=True)
         os.makedirs(CLIPS_FOLDER, exist_ok=True)
         
+        # 显式清除持久化抽帧器缓存，避免正常结束前退出留下旧帧。
+        if os.path.isdir(FRAME_EXTRACTOR_CACHE_DIR):
+            for root, _, files in os.walk(FRAME_EXTRACTOR_CACHE_DIR):
+                for name in files:
+                    try:
+                        total_size += os.path.getsize(os.path.join(root, name))
+                    except OSError:
+                        pass
+            from A_coreUtils.search.reranker_frame_extractor import RerankerFrameExtractor
+            extractor = RerankerFrameExtractor(cache_dir=FRAME_EXTRACTOR_CACHE_DIR)
+            extractor.clear_cache_dir()
+            stats = extractor.get_cache_stats()
+            cleared_items.append(f"帧提取缓存 ({stats['cache_dir']})")
+
         # 清理 FPS 缓存
-        global _fps_cache
-        _fps_cache.clear()
+        _preview_fps.cache_clear()
         cleared_items.append("FPS缓存")
         
         # 格式化大小
@@ -649,7 +463,7 @@ def list_models():
                     # 检查是否是有效的模型文件夹
                     files = os.listdir(item_path)
                     is_valid = any(f.endswith(('.bin', '.pt', '.pth', '.safetensors', '.json')) for f in files)
-                    if is_valid:
+                    if is_valid and 'clip' in item.lower():
                         model_type = detect_model_type(item_path)
                         models.append({
                             'name': item,
@@ -893,498 +707,273 @@ def extract_model_name_from_index(index_path: str) -> str:
 #  跨视频去重工具函数（复用P模式的去重逻辑）
 # ============================================================
 
-def is_op_ed_video(video_name: str) -> bool:
-    """
-    检查视频名是否包含 OP 或 ED 字段（不分大小写）
-    
-    支持的格式：
-    - 标准格式: op, ed, _op_, _ed_, op_, ed_, _op, _ed
-    - 带编号: op01, ed01, op1, ed1, op_01, ed_01
-    - NC版本: ncop, nced, ncop01, nced01
-    - 混合格式: video_op01_xxx, video_ncop_xxx
-    """
-    import re
-    if not video_name:
-        return False
-    
-    name_lower = video_name.lower()
-    
-    patterns = [
-        # NC版本（无字幕版）: ncop, nced, ncop01, nced01, ncop_01
-        r'(?:^|_)nc(?:op|ed)(?:\d+|_\d+)?(?:_|$)',
-        # 带编号的 OP/ED: op01, ed01, op1, ed1, op_01, ed_01
-        r'(?:^|_)(?:op|ed)(?:\d+|_\d+)(?:_|$)',
-        # 标准 OP/ED: _op_, _ed_, op_, ed_, _op, _ed
-        r'(?:^|_)(?:op|ed)(?:_|$)',
-    ]
-    
-    for pattern in patterns:
-        if re.search(pattern, name_lower):
-            return True
-    return False
+def _result_path(token, kind='result'):
+    if not isinstance(token, str) or not re.fullmatch('[0-9a-f]{32}', token):
+        abort(400)
+    return os.path.join(CACHE_DIR, f'{kind}_{token}.lmdb')
 
 
-def _deduplicate_vectors_matrix(scene_vectors_list: list, threshold: float) -> list:
-    """
-    使用矩阵运算进行余弦相似度去重（支持多帧向量）
-    
-    比较两个场景时，计算所有帧向量之间的最大相似度。
-    例如：场景A有3帧 [a1,a2,a3]，场景B有3帧 [b1,b2,b3]
-    计算 3×3=9 个相似度，取最大值作为两个场景的相似度。
-    
-    Args:
-        scene_vectors_list: 场景向量列表，每个元素是 [k, D] 的矩阵（k帧向量）
-        threshold: 余弦相似度阈值
-    
-    Returns:
-        保留的索引列表
-    """
-    n = len(scene_vectors_list)
-    if n <= 1:
-        return list(range(n))
-    
-    # 获取每个场景的帧数
-    frame_counts = [v.shape[0] for v in scene_vectors_list]
-    total_frames = sum(frame_counts)
-    
-    # 展平所有向量为 [total_frames, D]
-    all_vectors = np.vstack(scene_vectors_list).astype(np.float16)
-    
-    # 向量已经归一化，直接计算相似度矩阵 [total_frames, total_frames]
-    similarity_matrix = all_vectors @ all_vectors.T
-    
-    # 构建场景边界索引
-    scene_boundaries = [0]
-    for count in frame_counts:
-        scene_boundaries.append(scene_boundaries[-1] + count)
-    
-    # 计算场景间最大相似度矩阵 [N, N]
-    scene_max_sim = np.zeros((n, n), dtype=np.float16)
-    for i in range(n):
-        i_start, i_end = scene_boundaries[i], scene_boundaries[i+1]
-        for j in range(i, n):
-            j_start, j_end = scene_boundaries[j], scene_boundaries[j+1]
-            # 取场景 i 和场景 j 之间所有帧向量的最大相似度
-            block = similarity_matrix[i_start:i_end, j_start:j_end]
-            max_sim = block.max()
-            scene_max_sim[i, j] = max_sim
-            scene_max_sim[j, i] = max_sim
-    
-    # 贪心去重：遍历上三角
-    keep_mask = np.ones(n, dtype=bool)
-    
-    for i in range(n):
-        if not keep_mask[i]:
-            continue
-        # 标记与 i 相似度超过阈值的后续场景为重复
-        for j in range(i + 1, n):
-            if keep_mask[j] and scene_max_sim[i, j] > threshold:
-                keep_mask[j] = False
-    
-    return np.where(keep_mask)[0].tolist()
+def _clip_id(match):
+    return f"{match['video_path']}|{match['start_frame']}|{match['end_frame']}"
 
 
-def _deduplicate_vectors_matrix_cross_video(
-    scene_vectors_list: list,
-    scene_video_ids: list,
-    threshold: float
-) -> list:
-    """
-    跨视频去重版本：仅比较不同视频之间的场景相似度，同视频场景互不去重。
-    """
-    n = len(scene_vectors_list)
-    if n <= 1:
-        return list(range(n))
-
-    frame_counts = [vectors.shape[0] for vectors in scene_vectors_list]
-    all_vectors = np.vstack(scene_vectors_list).astype(np.float16)
-    similarity_matrix = all_vectors @ all_vectors.T
-
-    scene_boundaries = [0]
-    for count in frame_counts:
-        scene_boundaries.append(scene_boundaries[-1] + count)
-
-    scene_max_sim = np.zeros((n, n), dtype=np.float16)
-    for i in range(n):
-        i_start, i_end = scene_boundaries[i], scene_boundaries[i + 1]
-        for j in range(i, n):
-            j_start, j_end = scene_boundaries[j], scene_boundaries[j + 1]
-            block = similarity_matrix[i_start:i_end, j_start:j_end]
-            max_sim = block.max()
-            scene_max_sim[i, j] = max_sim
-            scene_max_sim[j, i] = max_sim
-
-    keep_mask = np.ones(n, dtype=bool)
-    for i in range(n):
-        if not keep_mask[i]:
-            continue
-        for j in range(i + 1, n):
-            if not keep_mask[j]:
-                continue
-            if scene_video_ids[i] == scene_video_ids[j]:
-                continue
-            if scene_max_sim[i, j] > threshold:
-                keep_mask[j] = False
-
-    return np.where(keep_mask)[0].tolist()
+def _result_page(store, sort, offset, limit):
+    sort_key = sort if sort in {
+        'time_asc', 'time_desc', 'similarity_desc', 'similarity_asc',
+        'duration_desc', 'duration_asc',
+    } else 'similarity_desc'
+    limit, offset = max(1, min(200, int(limit))), max(0, int(offset))
+    return {
+        'matches': store.page(sort_key, offset, limit),
+        'total': store.count(),
+    }
 
 
-def deduplicate_text_search_results(
-    all_matches: list,
-    scene_features: dict,
-    similarity_threshold: float = 0.95
-) -> list:
-    """
-    text_search 结果去重（跨视频去重）
-    
-    优先规则：
-    - 如果同Lance内有 OP/ED 视频，只保留 OP/ED 视频
-    - 否则进行向量相似度去重
-    
-    去重范围：
-    - 按 source_lance 分组，只在同一Lance内进行去重
-    - 同一Lance内仅跨视频去重，同视频内不去重
-    
-    Args:
-        all_matches: 搜索结果列表
-        scene_features: 场景特征向量 {scene_key: np.ndarray}
-        similarity_threshold: 余弦相似度阈值（0-1），超过则去重
-    
-    Returns:
-        去重后的结果列表
-    """
-    if not all_matches or similarity_threshold is None:
-        return all_matches
-    
-    if not scene_features:
-        print("[去重] 无场景特征向量，跳过去重")
-        return all_matches
-    
-    # Step 1: 按 source_lance 分组
-    groups = defaultdict(list)
-    for idx, match in enumerate(all_matches):
-        lance_path = match.get('source_lance', 'unknown')
-        groups[lance_path].append((idx, match))
-    
-    # Step 2: 每组内去重
-    keep_indices = set()
-    op_ed_priority_count = 0
-    vector_dedup_count = 0
-    
-    for lance_path, group_items in groups.items():
-        if len(group_items) == 1:
-            # 只有一个，直接保留
-            keep_indices.add(group_items[0][0])
-            continue
-        
-        # ========== OP/ED 优先规则 ==========
-        op_ed_items = []
-        non_op_ed_items = []
-        
-        for idx, match in group_items:
-            video_name = match.get('video_name', '')
-            if is_op_ed_video(video_name):
-                op_ed_items.append((idx, match))
-            else:
-                non_op_ed_items.append((idx, match))
-        
-        # 如果有 OP/ED 视频，只保留 OP/ED 视频
-        if op_ed_items:
-            for idx, _ in op_ed_items:
-                keep_indices.add(idx)
-            op_ed_priority_count += len(non_op_ed_items)
-            continue
-        
-        # ========== 向量相似度去重（场景级 + 跨视频） ==========
-        scene_vectors_list = []
-        valid_items = []
-        valid_video_ids = []
-
-        for idx, match in group_items:
-            scene_key = f"{match.get('video_path', '')}_{match.get('start_frame', 0)}_{match.get('end_frame', 0)}"
-            vectors = scene_features.get(scene_key)
-            if vectors is None:
-                # 无向量无法判重，直接保留
-                keep_indices.add(idx)
-                continue
-            scene_vectors_list.append(vectors)
-            valid_items.append((idx, match))
-            valid_video_ids.append(match.get('video_path', '') or '__unknown_video__')
-
-        if len(scene_vectors_list) <= 1:
-            for idx, _ in valid_items:
-                keep_indices.add(idx)
-            continue
-
-        # 矩阵运算去重（仅跨视频比较）
-        before_count = len(valid_items)
-        keep_local_indices = _deduplicate_vectors_matrix_cross_video(
-            scene_vectors_list,
-            valid_video_ids,
-            similarity_threshold
-        )
-        after_count = len(keep_local_indices)
-        vector_dedup_count += (before_count - after_count)
-        
-        # 映射回原始索引
-        for local_idx in keep_local_indices:
-            keep_indices.add(valid_items[local_idx][0])
-    
-    # 打印统计信息
-    total_removed = len(all_matches) - len(keep_indices)
-    print(f"[去重] OP/ED优先过滤: {op_ed_priority_count} 个, 向量相似度去重: {vector_dedup_count} 个")
-    print(f"[去重] 总计去除: {total_removed} 个, 保留: {len(keep_indices)} 个")
-    
-    # Step 3: 返回去重后的结果（保持原顺序）
-    return [all_matches[i] for i in sorted(keep_indices)]
+def _basket_key(clip):
+    return 'basket:' + str(clip)
 
 
-def load_scene_features_from_lance(lance_path: str, matches: list) -> dict:
-    """
-    从 Lance 索引加载场景特征向量（用于去重）
-    
-    Args:
-        lance_path: Lance 索引目录路径
-        matches: 需要加载特征的匹配结果列表
-    
-    Returns:
-        {scene_key: np.ndarray} 场景特征向量字典
-    """
-    scene_features = {}
-    
-    if not os.path.exists(lance_path):
-        return scene_features
-    
+def _tag_prefix(clip):
+    return 'tag:' + str(clip) + ':'
+
+
+def _find_match_by_clip(store, clip):
+    for identifier, match, _, _ in store.iter_inserted():
+        if _clip_id(match) == clip:
+            return identifier, match
+    return None, None
+
+
+def _basket_page(cache, export, offset, limit=50):
+    import heapq
+
+    offset = max(0, int(offset))
+    limit = max(1, min(200, int(limit)))
+    def ordered_entries():
+        for key, record in cache.iter_items('basket:'):
+            clip = key[len('basket:'):]
+            order = (int(record.get('added', 0)), clip) if export else (-int(record.get('updated', 0)), clip)
+            yield order, clip, record
+
+    selected = heapq.nsmallest(offset + limit, ordered_entries(), key=lambda entry: entry[0])
+    selected = selected[offset:]
+    return [{'clip_id': clip, 'match': record['data']} for _, clip, record in selected]
+
+
+@app.route('/search_results/<token>', methods=['GET', 'DELETE'])
+def search_results(token):
+    path = _result_path(token)
+    if not os.path.isdir(path):
+        abort(404)
+    if request.method == 'DELETE':
+        RankedResults(path).destroy()
+        return jsonify(success=True)
+    store = RankedResults(path)
     try:
-        # 构建需要的场景键集合
-        needed_keys = set()
-        for match in matches:
-            if match.get('source_lance') == lance_path:
-                scene_key = f"{match.get('video_path', '')}_{match.get('start_frame', 0)}_{match.get('end_frame', 0)}"
-                needed_keys.add(scene_key)
-        
-        if not needed_keys:
-            return scene_features
-        
-        # 从 Lance 索引按需读取
-        scene_features = read_lance_index_for_reranker(lance_path, needed_keys)
-    except Exception as e:
-        print(f"[Warning] 加载 Lance 特征失败 {lance_path}: {e}")
-    
-    return scene_features
+        return jsonify(_result_page(store, request.args.get('sort'), request.args.get('offset', 0), request.args.get('limit', 50)))
+    finally:
+        store.close()
 
 
+@app.post('/candidates/<token>')
+def candidates(token):
+    data = request.get_json() or {}
+    root = os.path.join(os.path.dirname(CACHE_DIR), 'search_baskets')
+    os.makedirs(root, exist_ok=True)
+    path = os.path.join(root, os.path.basename(_result_path(token, 'basket')))
+    cache = LMDBCache(path)
+    active_store = None
+    try:
+        ids = data.get('visible', [])
+        if not isinstance(ids, list) or len(ids) > 200:
+            abort(400)
+        active = data.get('search_id')
+        if active:
+            result = _result_path(active)
+            if not os.path.isdir(result):
+                abort(404)
+            active_store = RankedResults(result)
+        action = data.get('action', 'status')
+        if action in ('all', 'add', 'none') and active_store is None:
+            abort(400)
+        tag = str(data.get('prompt', '').strip() or '未命名')
+        now = time.time_ns()
+
+        def add_match(match):
+            clip = _clip_id(match)
+            key = _basket_key(clip)
+            old = cache.get(key)
+            if old is None or float(match.get('similarity', 0) or 0) >= float(old.get('score', 0) or 0):
+                record = {
+                    'data': match,
+                    'score': float(match.get('similarity', 0) or 0),
+                    'added': int(old.get('added', now) if old else now),
+                    'updated': now,
+                }
+                cache.put(key, record)
+            else:
+                old['updated'] = now
+                cache.put(key, old)
+            cache.put(_tag_prefix(clip) + tag, True)
+
+        if action == 'all':
+            for _, match in active_store.iter_records('similarity_desc'):
+                add_match(match)
+        elif action == 'add':
+            _, match = _find_match_by_clip(active_store, str(data.get('clip', '')))
+            if match is not None:
+                add_match(match)
+        elif action == 'remove':
+            clip = str(data.get('clip', ''))
+            cache.delete(_basket_key(clip))
+            cache.clear_prefix(_tag_prefix(clip))
+        elif action == 'clear':
+            cache.clear_prefix('basket:')
+            cache.clear_prefix('tag:')
+        elif action == 'none':
+            for _, match in active_store.iter_records('similarity_desc'):
+                clip = _clip_id(match)
+                cache.delete(_basket_key(clip))
+                cache.clear_prefix(_tag_prefix(clip))
+        elif action != 'status':
+            abort(400)
+
+        total = cache.count_prefix('basket:')
+        selected = 0
+        if active_store is not None:
+            for _, match in active_store.iter_records('similarity_desc'):
+                if cache.get(_basket_key(_clip_id(match))) is not None:
+                    selected += 1
+        offset = max(0, int(data.get('offset', 0)))
+        if not data.get('export'):
+            offset = min(offset, max(0, ((total - 1) // 50) * 50))
+        page = _basket_page(cache, bool(data.get('export')), offset)
+        visible = set(str(value) for value in ids)
+        visible.update(item['clip_id'] for item in page)
+        tags = {}
+        for clip in visible:
+            values = [key[len(_tag_prefix(clip)):]
+                      for key, _ in cache.iter_raw(_tag_prefix(clip))]
+            if values:
+                tags[clip] = values
+        return jsonify(total=total, selected=selected, page=page, tags=tags, offset=offset)
+    finally:
+        if active_store is not None:
+            active_store.close()
+        cache.close()
 
 
 @app.route('/search', methods=['POST'])
 def search_similar_scenes():
     try:
-        data = request.json
+        data = request.json or {}
         text_query = data.get('query')
         if not text_query:
-            return jsonify({"success": False, "error": "搜索描述不能为空"}), 400
-        
+            return jsonify({'success': False, 'error': '搜索描述不能为空'}), 400
         index_paths_raw = data.get('indices', '')
         index_paths = [resolve_path(line) for line in index_paths_raw.splitlines() if line.strip()]
-        
         if not index_paths:
-            return jsonify({"success": False, "error": "请提供索引库路径"}), 400
-        
-        # ✅ 修改：从前端获取 threshold，传递给 similarity_threshold
+            return jsonify({'success': False, 'error': '请选择至少一个 Lance 索引'}), 400
         threshold = float(data.get('threshold', 20.0))
-        
         truncate_dim = data.get('truncate_dim')
         if truncate_dim is not None:
             truncate_dim = int(truncate_dim)
-        
-        # 获取 FP16 设置（默认 False）
         use_fp16 = data.get('use_fp16', False)
-
-        # Reranker params
-        use_reranker = bool(data.get('use_reranker', False))
-        rerank_top_k = data.get('rerank_top_k', 50)
-        rerank_batch_size = data.get('rerank_batch_size', 4)
-        rerank_weight = data.get('rerank_weight', 0.6)
-        # 使用固定默认路径，前端不再允许用户手动输入
-        rerank_model_path = DEFAULT_RERANKER_PATH
-        reranker_output_resolution = data.get('reranker_output_resolution', DEFAULT_OUTPUT_RESOLUTION)
-
-        # MiniRerank params (MiniCPM-V-4-6)
-        use_mini_rerank = bool(data.get('use_mini_rerank', False))
-        mini_rerank_threshold = rerank_weight  # reuse rerank_weight slider as threshold
-
+        use_jev_rerank = bool(data.get('use_jev_rerank', False))
+        use_aesthetic_score = data.get('use_aesthetic_score') is True
         try:
-            rerank_top_k = int(rerank_top_k)
-        except Exception:
-            rerank_top_k = 50
-
+            jev_top_k = max(1, int(data.get('jev_rerank_top_k', 10)))
+        except (TypeError, ValueError):
+            jev_top_k = 10
         try:
-            rerank_batch_size = int(rerank_batch_size)
-        except Exception:
-            rerank_batch_size = 4
-
-        try:
-            rerank_weight = float(rerank_weight)
-        except Exception:
-            rerank_weight = 0.6
-        
-        # 确保 reranker_output_resolution 是字符串
-        reranker_output_resolution = str(reranker_output_resolution)
-        
-        # ✅ v3.10: 去重参数
+            jev_threshold = float(data.get('jev_rerank_threshold', 0.6))
+        except (TypeError, ValueError):
+            jev_threshold = 0.6
         use_dedup = bool(data.get('use_dedup', False))
-        dedup_threshold = data.get('dedup_threshold', 0.95)
         try:
-            dedup_threshold = float(dedup_threshold)
+            dedup_threshold = float(data.get('dedup_threshold', 0.95))
         except Exception:
             dedup_threshold = 0.95
-        
-        # ✅ v3.11: 检查多索引是否来自相同模型
-        model_names = set()
-        for index_path in index_paths:
-            model_name = extract_model_name_from_index(index_path)
-            if model_name:
-                model_names.add(model_name)
-            else:
-                model_names.add("unknown")
-        
-        # 如果有多个不同模型，返回错误
+
+        model_names = {extract_model_name_from_index(path) or 'unknown' for path in index_paths}
         if len(model_names) > 1:
-            return jsonify({
-                "success": False,
-                "error": f"多索引搜索要求所有索引来自相同模型，但检测到 {len(model_names)} 个不同模型: {', '.join(model_names)}"
-            }), 400
-        
-        # 使用检测到的模型名
-        model_name = list(model_names)[0] if model_names else None
-        if not model_name or model_name == "unknown":
-            return jsonify({"success": False, "error": "无法从索引文件名中提取模型名"}), 400
-        
-        print(f"[Info] 多索引搜索: {len(index_paths)} 个索引，模型: {model_name}")
-        
+            return jsonify({'success': False, 'error': f'所选索引来自不同向量模型: {", ".join(model_names)}'}), 400
+        model_name = next(iter(model_names), None)
+        if not model_name or model_name == 'unknown':
+            return jsonify({'success': False, 'error': '无法从索引名称识别向量模型'}), 400
+        print(f'[Info] 搜索 {len(index_paths)} 个索引，模型为 {model_name}')
         processor, search_engine = get_or_create_processor(model_name, truncate_dim, use_fp16)
-        
-        # 检测模型类型
-        model_path = _base_resolver.join_str('models', model_name) if not os.path.isabs(model_name) else model_name
-        model_type = detect_model_type(model_path)
-        
-        all_matches = []
-        
-        for index_path in index_paths:
-            print(f"  - 搜索索引: {os.path.basename(index_path)}")
-            
-            # CLIP 系模型搜索
-            initial_threshold = threshold
-            if use_reranker and rerank_weight > 0 and _RERANKER_AVAILABLE:
-                initial_threshold = max(5, threshold * 0.5)
-            
-            matches = search_engine.search_by_text(
-                text_query,
-                [index_path],
-                similarity_threshold=initial_threshold
-            )
-            # ✅ v3.10: 为每个 match 添加 source_lance 字段
-            for match in matches:
-                match['source_lance'] = index_path
-            all_matches.extend(matches)
-        
-        # 按相似度排序（基础召回）
-        all_matches.sort(key=lambda x: x.get('similarity', 0), reverse=True)
-
-        # ✅ 按需释放 CLIP 模型，避免与 MiniRerank 同时占用显存
-        need_release_clip = use_mini_rerank and all_matches
-        if need_release_clip:
-            release_clip_model()
-
-        rerank_used = False
+        batch_size = max(1, min(int(data.get('scene_batch_size', 128)), 1024))
+        token = uuid4().hex
+        path = _result_path(token)
+        hits = RankedResults(path)
         rerank_info = None
-
-        # ========================================================================
-        # MiniCPM Mini-Rerank（优先，与 Qwen Reranker 互斥）
-        # ========================================================================
-        if use_mini_rerank and all_matches:
-            try:
-                all_matches = mini_rerank_text_results(
-                    all_matches,
-                    query_text=text_query,
-                    threshold=mini_rerank_threshold,
-                    top_k=rerank_top_k,
-                )
-                all_matches.sort(key=lambda x: x.get('similarity', 0), reverse=True)
-                rerank_used = True
-                rerank_info = {"type": "mini_rerank", "kept": len(all_matches)}
-            except Exception as e:
-                print(f"[Warning] MiniRerank failed: {e}")
-                import traceback
-                traceback.print_exc()
-            finally:
-                release_mini_reranker_model()
-
-
-
-        # ========================================================================
-        # 帧偏移：直接调整搜索结果帧范围（保存原始值，展示偏移后的值）
-        # ========================================================================
-        start_frame_offset = data.get('start_frame_offset', -2)
-        end_frame_offset = data.get('end_frame_offset', 2)
+        rerank_used = False
         try:
-            start_frame_offset = int(start_frame_offset)
-            end_frame_offset = int(end_frame_offset)
-        except Exception:
-            start_frame_offset = -2
-            end_frame_offset = 2
+            try:
+                start_offset = int(data.get('start_frame_offset', -2))
+                end_offset = int(data.get('end_frame_offset', 2))
+            except (ValueError, TypeError):
+                start_offset, end_offset = -2, 2
 
-        if start_frame_offset != 0 or end_frame_offset != 0:
-            offset_info = {"start_offset": start_frame_offset, "end_offset": end_frame_offset}
-            for m in all_matches:
-                sf = int(m.get('start_frame', 0) or 0)
-                ef = int(m.get('end_frame', sf + 1) or sf + 1)
-                m['original_start_frame'] = sf
-                m['original_end_frame'] = ef
-                m['start_frame'] = max(0, sf + start_frame_offset)
-                m['end_frame'] = max(m['start_frame'] + 1, ef + end_frame_offset)
-        else:
-            offset_info = None
+            pending = []
+            for match, vectors in search_engine.iter_text_matches(text_query, index_paths, threshold, batch_size):
+                if start_offset or end_offset:
+                    sf, ef = int(match.get('start_frame', 0) or 0), int(match.get('end_frame', 0) or 0)
+                    match = dict(match)
+                    match.update(original_start_frame=sf, original_end_frame=ef)
+                    match['start_frame'] = max(0, sf + start_offset)
+                    match['end_frame'] = max(match['start_frame'] + 1, ef + end_offset)
+                pending.append((match, match.get('source_lance', ''), is_op_ed_video(match.get('video_name') or match.get('video_path')), vectors if use_dedup else None))
+                if len(pending) >= 256:
+                    hits.add_many(pending)
+                    pending.clear()
+            if pending:
+                hits.add_many(pending)
 
-        # ✅ v3.10: 最终阈值过滤 - 应用于 rerank 后的最终相似度
-        all_matches = [m for m in all_matches if m.get('similarity', 0) >= threshold]
+            if (use_jev_rerank or use_aesthetic_score) and hits.count():
+                del processor, search_engine
+                release_clip_model()
+                shortlist = hits.shortlist(jev_top_k) if use_jev_rerank else hits.iter_records('similarity_desc')
+                verified = []
+                for identifier, match in evaluate_text_matches(
+                    shortlist,
+                    text_query,
+                    rerank=use_jev_rerank,
+                    aesthetics=use_aesthetic_score,
+                    threshold=jev_threshold,
+                    batch_size=min(batch_size, 256),
+                ):
+                    hits.update(identifier, match)
+                    if use_jev_rerank:
+                        verified.append(identifier)
+                if use_jev_rerank:
+                    hits.delete_except(verified, batch_size=batch_size)
+                    rerank_used = True
+                    rerank_info = {'type': 'Jev-rerank', 'kept': len(verified), 'verified': len(verified)}
 
-        # ✅ v3.10: 跨视频去重（如果启用）
-        dedup_info = None
-        if use_dedup and all_matches:
-            print(f"[去重] 开始跨视频去重，阈值={dedup_threshold}")
-            before_count = len(all_matches)
-            
-            # 加载场景特征向量
-            scene_features = {}
-            unique_lances = set(m.get('source_lance') for m in all_matches if m.get('source_lance'))
-            for lance_path in unique_lances:
-                lance_feats = load_scene_features_from_lance(lance_path, all_matches)
-                scene_features.update(lance_feats)
-            
-            # 执行去重
-            all_matches = deduplicate_text_search_results(
-                all_matches,
-                scene_features,
-                similarity_threshold=dedup_threshold
+            below = (
+                identifier for identifier, match in hits.iter_records('__inserted__')
+                if float(match.get('similarity', 0) or 0) < threshold
             )
-            
-            after_count = len(all_matches)
-            dedup_info = {"before": before_count, "after": after_count, "removed": before_count - after_count}
-            print(f"[去重] 完成: {before_count} -> {after_count} (去除 {before_count - after_count} 个)")
-
-        return jsonify({
-            "success": True,
-            "matches": all_matches,
-            "rerank_used": rerank_used,
-            "rerank_info": rerank_info,
-            "dedup_info": dedup_info,
-            "model_used": model_name
-        })
+            hits.delete_ids(below, batch_size=batch_size)
+            dedup_info = None
+            if use_dedup:
+                before = hits.count()
+                hits.deduplicate(dedup_threshold, batch_size)
+                after = hits.count()
+                dedup_info = {'before': before, 'after': after, 'removed': before - after}
+            page = _result_page(hits, 'similarity_desc', 0, data.get('page_size', 50))
+            hits.close()
+            return jsonify(success=True, search_id=token, **page, rerank_used=rerank_used,
+                           rerank_info=rerank_info, dedup_info=dedup_info, model_used=model_name)
+        except BaseException:
+            hits.destroy()
+            raise
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 @app.route('/get_preview')
@@ -1395,16 +984,23 @@ def get_preview():
     if frame is None:
         return "Missing frame parameter", 400
     
-    fps = VideoMetaHelper.get_fps_cached(video_path, _fps_cache)
-    
+    matched = request.args.get('matched') == '1'
     os.makedirs(PREVIEW_FOLDER, exist_ok=True)
-    unique_id = f"{video_path}_{frame}".encode('utf-8')
+    unique_id = f"{video_path}_{frame}_{matched}".encode('utf-8')
     filename = hashlib.md5(unique_id).hexdigest() + ".jpg"
     output_path = os.path.join(PREVIEW_FOLDER, filename)
     
     if not os.path.exists(output_path):
-        if not extract_single_frame(video_path, frame, fps, output_path):
-            return "Failed to extract frame", 500
+        if matched:
+            with extracted_frames([(video_path, frame)], PREVIEW_FOLDER) as paths:
+                image_path = paths.get((video_path, frame))
+                if not image_path:
+                    return "Failed to extract matched frame", 500
+                os.replace(image_path, output_path)
+        else:
+            fps = _preview_fps(video_path)
+            if not extract_single_frame(video_path, frame, fps, output_path):
+                return "Failed to extract frame", 500
     
     return send_from_directory(PREVIEW_FOLDER, filename)
 
@@ -1442,9 +1038,6 @@ def get_clip():
     # 如果缓存存在，直接返回
     if os.path.exists(clip_path):
         return send_from_directory(CLIPS_FOLDER, clip_filename, mimetype='video/mp4')
-    
-    # 获取视频 fps
-    fps = VideoMetaHelper.get_fps_cached(video_path, _fps_cache)
     
     try:
         # 使用 export_video_clip 导出视频片段（copy模式，尾帧+2）
@@ -1558,13 +1151,14 @@ def export_clips():
                     parsed_name = os.path.splitext(os.path.basename(video_path))[0]
             else:
                 parsed_name = os.path.splitext(os.path.basename(video_path))[0]
-            output_filename = f"{start_frame}_{parsed_name}{ext}"
+            scores = score_prefix(float(clip['similarity']), clip) if 'aesthetic_score' in clip else ''
+            output_filename = f"{scores}{start_frame}_{parsed_name}{ext}"
             output_path = os.path.join(output_dir, output_filename)
             
             # 避免文件名冲突
             counter = 1
             while os.path.exists(output_path):
-                output_filename = f"{start_frame}_{parsed_name}_{counter}{ext}"
+                output_filename = f"{scores}{start_frame}_{parsed_name}_{counter}{ext}"
                 output_path = os.path.join(output_dir, output_filename)
                 counter += 1
             
@@ -1774,4 +1368,4 @@ if __name__ == '__main__':
     print("  访问: http://127.0.0.1:5006")
     print("=" * 60)
     
-    app.run(host='0.0.0.0', port=5006, debug=False)
+    app.run(host=os.environ.get('ASE_WEB_HOST') or '127.0.0.1', port=5006, debug=False)

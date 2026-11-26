@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # 本文件使用 UTF-8 编码，请勿使用 GBK 或其他编码打开/保存
 """
-MiniCPM-V-4-6 标签验证模块 — mini_rerank（Reranker 平替）
+MiniCPM-V 标签验证模块 — mini_rerank（Reranker 平替）
 
 对 CLIP 筛选出的每类最佳标签做存在性校验：
 输入中间帧 + {类别: 标签}，输出 {类别: 是否匹配}。
@@ -61,7 +61,7 @@ def _load_verify_templates():
 
 
 class LabelVerifier:
-    """基于 MiniCPM-V-4-6 的标签存在性验证器。"""
+    """基于 MiniCPM-V 的标签存在性验证器。"""
 
     def __init__(self):
         self._analyzer = None

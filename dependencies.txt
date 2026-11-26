@@ -1,0 +1,12 @@
+Auto-scenes-extraction 发布运行环境（2026-11-27）
+
+两个 BAT 从各自所在目录启动 python/python.exe。Jev-rerank 和美学评分的工作进程复用该解释器。项目应整目录分发，包含 python、models、templates、A_coreUtils 和配置文件。运行无需系统 Python。两个网页默认只监听 127.0.0.1。
+
+Windows x64，嵌入式 Python 3.11.2。GPU 测试环境为兼容 CUDA 12.8 的 NVIDIA 驱动。VideoJev 需要 CUDA。
+torch 2.11.0+cu128、torchvision 0.26.0+cu128、transformers 5.14.1、torchcodec 0.17.0。
+检索与索引使用 pylance 14.0.2（import lance）、pyarrow 25.0.0、lmdb 2.3.0、numpy 2.4.6。
+视频与图像使用 opencv-python 5.0.0.93、decord 0.6.0、av 16.1.0、pillow 12.2.0。
+OpenCLIP、SentencePiece、Flask、guessit、winshell 和 pywin32 均安装在 python/Lib/site-packages。
+全部已安装发行包及其版本见 requirements-embedded.txt。可运行 python/python.exe -m pip check 检查包元数据。
+VideoJev 使用 PyTorch 推理路径。权重仓库中 XTuner 是其他 MoE 配置的可选实验后端，发布入口不启用。
+FFmpeg 命令行程序和对应动态库统一位于 models/ffmpeg/bin。
