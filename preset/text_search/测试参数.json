@@ -1,17 +1,21 @@
 {
     "name": "测试参数",
     "created_at": 1771255745,
-    "updated_at": 1771257530,
+    "updated_at": 1795717121,
     "data": {
         "threshold": 14,
+        "use_aesthetic_score": false,
+        "use_jev_rerank": false,
         "jev_rerank_top_k": 10,
-        "jev_rerank_threshold": 1,
+        "jev_rerank_threshold": 0.6,
         "use_dedup": false,
         "dedup_threshold": 0.99,
         "export_mode": "copy",
         "start_frame_offset": -2,
         "end_frame_offset": 2,
         "export_output_dir": "",
+        "model_index": "",
+        "lance_indexes": [],
         "ffmpeg_config": {
             "video_output": {
                 "copy_mode": true,

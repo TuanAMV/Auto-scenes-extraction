@@ -1530,7 +1530,7 @@
             };
         }
 
-        function applyPresetData(presetData) {
+        async function applyPresetData(presetData) {
             if (!presetData || typeof presetData !== 'object') {
                 return;
             }
@@ -1568,7 +1568,10 @@
                     const matchOpt = Array.from(select.options).find(
                         opt => opt.value === presetSubName || opt.value === promptConfig.index_directory
                     );
-                    if (matchOpt) select.value = matchOpt.value;
+                    if (matchOpt && select.value !== matchOpt.value) {
+                        select.value = matchOpt.value;
+                        await loadLanceIndexList();
+                    }
                 }
             }
             setInputValue('ps_video_output_directory', promptConfig.video_output_directory);
@@ -1642,7 +1645,7 @@
 
             // 恢复选中索引列表
             const lanceIndexes = promptConfig.lance_indexes;
-            if (Array.isArray(lanceIndexes) && lanceIndexes.length > 0) {
+            if (Array.isArray(lanceIndexes)) {
                 const lanceSelect = document.getElementById('search_lance_indexes');
                 Array.from(lanceSelect.options).forEach(opt => {
                     opt.selected = lanceIndexes.includes(opt.value);
@@ -1672,7 +1675,7 @@
             if (!response.ok || !data.success) {
                 throw new Error(data.message || data.error || '加载预设失败');
             }
-            applyPresetData(data.data || {});
+            await applyPresetData(data.data || {});
             presetSelect.value = data.name || name;
             presetNameInput.value = data.name || name;
             if (!silent) {

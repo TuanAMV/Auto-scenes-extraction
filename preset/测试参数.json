@@ -1,7 +1,7 @@
 {
     "name": "测试参数",
     "created_at": 1771239741,
-    "updated_at": 1780543814,
+    "updated_at": 1795717121,
     "data": {
         "version": 1,
         "pipeline_config": {
@@ -32,7 +32,6 @@
                 "index_directory": "indexes/openai-clip-vit-large-patch14",
                 "video_output_directory": null,
                 "use_chinese": false,
-
                 "video_copy_mode": true,
                 "start_frame_offset": null,
                 "end_frame_offset": null,
@@ -41,6 +40,7 @@
                 "use_diskcache": true,
                 "debug_similarity": true,
                 "use_shot_analysis": true,
+                "use_aesthetic_score": false,
                 "use_jev_rerank": true,
                 "jev_rerank_min_matches": 4,
                 "search_mode": null,
